@@ -9,8 +9,13 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use std::borrow::Cow;
+use std::time::{Duration, Instant};
+
 use anyhow::{Context, Result};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+
+use crate::termview::Snapshot;
 
 /// Lines kept in the emulator's scrollback.
 const SCROLLBACK: usize = 5000;
@@ -18,10 +23,34 @@ const SCROLLBACK: usize = 5000;
 /// capture never has to deal with huge bursts at once.
 const CHUNK: usize = 4096;
 
-/// Answers to queries the child sends to its terminal.
+/// A synchronized frame (`?2026h` … `?2026l`) that takes longer than this
+/// is shown as it is: the program may have died mid-frame.
+const SYNC_LIMIT: Duration = Duration::from_millis(250);
+
+/// Terminal state outside the `vt100` screen: answers to the child's
+/// queries and synchronized output.
 #[derive(Default)]
 pub struct Replies {
     out: Vec<u8>,
+    /// The child is inside a synchronized frame since then.
+    sync_since: Option<Instant>,
+    /// The screen as it was when the frame started: shown until it ends.
+    frozen: Option<Snapshot>,
+}
+
+impl Replies {
+    fn in_sync_frame(&self) -> bool {
+        self.sync_since.is_some_and(|t| t.elapsed() < SYNC_LIMIT)
+    }
+}
+
+/// What to draw for a session: the live screen, or the last complete frame
+/// while the program draws the next one.
+pub fn view(parser: &Parser) -> Cow<'_, Snapshot> {
+    match &parser.callbacks().frozen {
+        Some(frozen) if parser.callbacks().in_sync_frame() => Cow::Borrowed(frozen),
+        _ => Cow::Owned(Snapshot::of(parser.screen())),
+    }
 }
 
 impl vt100::Callbacks for Replies {
@@ -48,6 +77,18 @@ impl vt100::Callbacks for Replies {
             (None, 'c', _) => self.out.extend_from_slice(b"\x1b[?1;2c"),
             // DA2.
             (Some(b'>'), 'c', _) => self.out.extend_from_slice(b"\x1b[>0;0;0c"),
+            // Synchronized output: begin / end of a frame.
+            (Some(b'?'), 'h' | 'l', _) if params.iter().any(|p| *p == [2026]) => {
+                if c == 'h' {
+                    if self.sync_since.is_none() {
+                        self.frozen = Some(Snapshot::of(screen));
+                        self.sync_since = Some(Instant::now());
+                    }
+                } else {
+                    self.sync_since = None;
+                    self.frozen = None;
+                }
+            }
             _ => {}
         }
     }
@@ -180,21 +221,25 @@ impl PtySession {
                             Ok(0) | Err(_) => break,
                             Ok(n) => n,
                         };
-                        let replies = {
+                        let (replies, mid_frame) = {
                             let mut p = parser.lock().unwrap();
                             p.process(&buf[..n]);
                             let lines = p.screen_mut().take_scrolled_lines();
                             if !lines.is_empty() {
                                 scrolled.lock().unwrap().extend(lines);
                             }
-                            std::mem::take(&mut p.callbacks_mut().out)
+                            let mid_frame = p.callbacks().in_sync_frame();
+                            (std::mem::take(&mut p.callbacks_mut().out), mid_frame)
                         };
                         if !replies.is_empty() {
                             let mut w = writer.lock().unwrap();
                             let _ = w.write_all(&replies);
                             let _ = w.flush();
                         }
-                        on_output();
+                        // Nothing new to show until the frame is complete.
+                        if !mid_frame {
+                            on_output();
+                        }
                     }
                     exited.store(true, Ordering::SeqCst);
                     on_output();
@@ -269,5 +314,38 @@ impl Drop for PtySession {
         if !self.has_exited() {
             self.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(view: &Snapshot) -> String {
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 10, 1));
+        crate::termview::draw_rows(
+            view,
+            0,
+            ratatui::layout::Rect::new(0, 0, 10, 1),
+            &mut buf,
+            ratatui::style::Style::reset(),
+        );
+        (0..10)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn shows_last_complete_frame_during_synchronized_output() {
+        let mut p = Parser::new_with_callbacks(1, 10, 0, Replies::default());
+        p.process(b"old");
+        p.process(b"\x1b[?2026h\r\x1b[Knew");
+        assert_eq!(
+            text(&view(&p)).trim_end(),
+            "old",
+            "mid-frame: the previous frame"
+        );
+        p.process(b"\x1b[?2026l");
+        assert_eq!(text(&view(&p)).trim_end(), "new");
     }
 }

@@ -8,4 +8,5 @@ pub mod panel;
 pub mod term;
 pub mod termview;
 pub mod theme;
+pub mod tui;
 pub mod wm;

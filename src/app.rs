@@ -12,7 +12,6 @@ use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
-use ratatui::DefaultTerminal;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
@@ -198,7 +197,15 @@ impl App {
         }
     }
 
-    pub fn run(mut self, terminal: &mut DefaultTerminal, rx: Receiver<AppMsg>) -> Result<()> {
+    pub fn run(mut self, terminal: &mut crate::tui::Tui, rx: Receiver<AppMsg>) -> Result<()> {
+        let frame_log = std::env::var_os("AFAR_DEBUG_FRAMES").and_then(|_| {
+            std::fs::File::options()
+                .create(true)
+                .append(true)
+                .open(self.journal.dir().join("frames.log"))
+                .ok()
+        });
+        let mut frame_log = frame_log;
         let size = terminal.size()?;
         self.wm.set_extent(
             wm::MAIN_SPLIT,
@@ -208,13 +215,22 @@ impl App {
         let (rows, cols) = self.last_agent_size();
         self.start_agent(cols, rows);
         loop {
-            terminal.draw(|frame| {
+            let stats = terminal.draw(|frame| {
                 let area = frame.area();
                 let cursor = self.draw(area, frame.buffer_mut());
                 if let Some(pos) = cursor {
                     frame.set_cursor_position(pos);
                 }
             })?;
+            if let Some(log) = &mut frame_log {
+                use std::io::Write as _;
+                let _ = writeln!(
+                    log,
+                    "{} bytes, {:.2} ms",
+                    stats.bytes,
+                    stats.elapsed.as_secs_f64() * 1000.0
+                );
+            }
             if self.quit {
                 return Ok(());
             }
@@ -1406,7 +1422,13 @@ impl App {
         // own colors.
         buf.set_style(l.agent, Style::reset());
         if let Some(agent) = &self.agent {
-            let c = termview::draw_rows(agent.parser().screen(), 0, l.agent, buf, Style::reset());
+            let c = termview::draw_rows(
+                &crate::term::view(&agent.parser()),
+                0,
+                l.agent,
+                buf,
+                Style::reset(),
+            );
             if agent_focused {
                 cursor = c;
             }
@@ -1484,7 +1506,8 @@ impl App {
                 };
                 let live = Rect::new(area.x, area.bottom() - live_rows, area.width, live_rows);
                 self.last_live = live;
-                cursor = termview::draw_rows(screen, 0, live, buf, Style::reset());
+                cursor =
+                    termview::draw_rows(&crate::term::view(&parser), 0, live, buf, Style::reset());
                 self.history.iter().chain(run.captured.iter()).collect()
             }
             None => self.history.iter().collect(),

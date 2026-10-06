@@ -55,18 +55,9 @@ fn main() -> anyhow::Result<()> {
     let token = new_token();
     let port = afar::mcp::start(tx.clone(), token.clone())?;
 
-    // ratatui::init enters raw mode and the alternate screen and restores
-    // the terminal on panic.
-    let mut terminal = ratatui::init();
-    // Mouse capture: Shift+drag still selects text in the terminal.
-    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
-    let ratatui_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
-        ratatui_hook(info);
-    }));
+    // Raw mode, alternate screen, mouse; restored on exit and on panic.
+    let mut terminal = afar::tui::Tui::init()?;
     let result = App::new(tx, session_dir, AgentLink { port, token }).run(&mut terminal, rx);
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
-    ratatui::restore();
+    afar::tui::restore();
     result
 }
