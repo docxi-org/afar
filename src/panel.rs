@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::theme;
+use crate::{theme, tr};
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -120,7 +120,7 @@ impl FilePanel {
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
         let path = strip_verbatim(path);
         if !path.is_dir() {
-            return Err(format!("{} — не каталог", path.display()));
+            return Err(tr!("not-a-folder", path = path.display().to_string()));
         }
         // Coming back up, put the cursor on the directory we left.
         let focus = self
@@ -235,10 +235,10 @@ impl FilePanel {
             buf[(cx - 1, y1 - 2)].set_symbol("┴");
         }
         let header = theme::PANEL_COLUMN_TITLE;
-        put_centered(buf, col_x[0], y0 + 1, name_w, "Имя", header);
-        put_centered(buf, col_x[1], y0 + 1, size_w, "Размер", header);
-        put_centered(buf, col_x[2], y0 + 1, date_w, "Дата", header);
-        put_centered(buf, col_x[3], y0 + 1, time_w, "Время", header);
+        put_centered(buf, col_x[0], y0 + 1, name_w, &tr!("MColumnName"), header);
+        put_centered(buf, col_x[1], y0 + 1, size_w, &tr!("MColumnSize"), header);
+        put_centered(buf, col_x[2], y0 + 1, date_w, &tr!("MColumnDate"), header);
+        put_centered(buf, col_x[3], y0 + 1, time_w, &tr!("MColumnTime"), header);
 
         // Scroll so that the cursor is visible.
         if list_h > 0 {
@@ -260,9 +260,9 @@ impl FilePanel {
             let style = theme::file_style(&attrs, e.selected, is_cursor);
             put(buf, col_x[0], y, name_w, &e.name, style);
             let size = if e.is_up() {
-                "Вверх".to_string()
+                tr!("MListUp")
             } else if e.is_dir {
-                "Папка".to_string()
+                tr!("MListFolder")
             } else {
                 group_thousands(e.size)
             };
@@ -297,7 +297,7 @@ impl FilePanel {
             (None, Some(e)) => {
                 let (date, time) = e.modified.map(format_time).unwrap_or_default();
                 let size = if e.is_dir {
-                    "Папка".to_string()
+                    tr!("MListFolder")
                 } else {
                     group_thousands(e.size)
                 };
@@ -309,12 +309,24 @@ impl FilePanel {
         };
         put(buf, x0 + 1, y1 - 1, inner_w, &status, theme::PANEL_TEXT);
 
-        // Footer: selection summary.
-        let (count, bytes) = self
-            .selected()
-            .fold((0, 0), |(c, b), e| (c + 1, b + e.size));
-        if count > 0 {
-            let text = format!(" {} байт в {} эл. ", group_thousands(bytes), count);
+        // Selection summary over the separator, as Far draws it.
+        let (files, dirs, bytes) = self.selected().fold((0, 0, 0), |(f, d, b), e| {
+            if e.is_dir {
+                (f, d + 1, b)
+            } else {
+                (f + 1, d, b + e.size)
+            }
+        });
+        if files + dirs > 0 {
+            let text = format!(
+                " {} ",
+                tr!(
+                    "MListFileSize",
+                    p0 = group_thousands(bytes),
+                    p1 = files,
+                    p2 = dirs
+                )
+            );
             let w = text.chars().count() as u16;
             put(
                 buf,

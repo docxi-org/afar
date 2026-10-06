@@ -1,0 +1,53 @@
+# Строки самого afar (строки Far Manager — в far/*.ftl).
+
+objects = { $count ->
+    [one] { $count } объект
+    [few] { $count } объекта
+   *[many] { $count } объектов
+}
+
+## Панель агента
+agent-title = Агент · claude · { $status }
+agent-running = работает
+agent-not-started = не запущен — Enter: запуск
+agent-exited = завершён (код { $code }) — Enter: перезапуск
+observe-live = ● live
+observe-on-demand = ○ по запросу
+agent-footer = { $scroll }{ $mode } · +{ $unseen } соб. · Ctrl+Space
+agent-config-failed = Не удалось подготовить конфигурацию агента: { $error }
+agent-start-failed = Не удалось запустить claude: { $error }
+observe-switched-live = Агент видит ваши действия сразу (live). afar:live — переключить
+observe-switched-on-demand = Агент читает журнал по необходимости. afar:live — переключить
+agent-asks = Агент просит { $what }
+requested-by-agent = — запрошено агентом —
+
+## Подсказки фокуса в строке клавиш
+hint-agent = Ввод идёт агенту · Ctrl+Space — к панелям
+hint-command = Ввод идёт команде · Ctrl+Space — к агенту · Ctrl+O — экран команды
+
+## Сообщения
+command-busy = Команда уже выполняется — дождитесь завершения
+command-start-failed = Ошибка запуска: { $error }
+quit-confirm = Агент или команда ещё работают. F10 ещё раз — выход
+not-implemented = F{ $n } — ещё не реализовано
+not-a-folder = { $path } — не папка
+op-waits-answer = Файловая операция ждёт ответа — Ctrl+Space
+
+## Режим разработки
+dev-building = afar: сборка…
+dev-built = afar: собрано за { $secs } с — перезапуск
+dev-build-failed = afar: ошибка сборки — Ctrl+O
+dev-restart-waits = afar: перезапуск ждёт — { $reason }
+dev-only = Перезапуск работает в режиме разработки: afar --dev
+dev-blocker-dialog = открыт диалог
+dev-blocker-operation = идёт файловая операция
+dev-blocker-command = выполняется команда
+dev-blocker-agent-busy = агент работает
+dev-blocker-agent-starting = агент запускается
+
+## Файловые операции (формулировки afar там, где у Far своих нет)
+copy-nothing = Нечего копировать
+copy-root = { $path }: нельзя копировать или переносить корень диска
+copy-file-where-folder = на месте папки уже есть файл с тем же именем
+copy-folder-where-file = { $path }: на этом месте папка
+link-create-failed = не удалось создать ссылку: { $error }

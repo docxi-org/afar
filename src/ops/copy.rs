@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
+use crate::tr;
+
 use super::{
     ConflictAction, ConflictAnswer, FileInfo, Flow, Next, OpId, OpMsg, Overwrite, Worker,
     remove_file_forced,
@@ -32,20 +34,15 @@ pub struct CopyJob {
 /// anything is touched: not into itself, not into its own subdirectory.
 pub fn plan_targets(job: &CopyJob) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     if job.sources.is_empty() {
-        return Err("Нечего копировать".into());
+        return Err(tr!("copy-nothing"));
     }
     let dest_text = job.dest.to_string_lossy();
     let into = job.dest.is_dir() || dest_text.ends_with(['\\', '/']) || job.sources.len() > 1;
-    let (verb, verb_dir) = if job.moving {
-        ("перенести", "перенести")
-    } else {
-        ("скопировать", "скопировать")
-    };
     let mut pairs = Vec::new();
     for src in &job.sources {
         let name = src
             .file_name()
-            .ok_or_else(|| format!("{}: нельзя {verb} корень диска", src.display()))?;
+            .ok_or_else(|| tr!("copy-root", path = src.display().to_string()))?;
         let target = if into {
             job.dest.join(name)
         } else {
@@ -54,17 +51,21 @@ pub fn plan_targets(job: &CopyJob) -> Result<Vec<(PathBuf, PathBuf)>, String> {
         let (s, t) = (normalize(src), normalize(&target));
         // Moving to the same name in another letter case is a real rename.
         let case_rename = job.moving && src != &target;
+        // Far's message: three lines — what, the path, "onto itself".
+        let onto_itself =
+            |first: &str, last: &str| format!("{}\n{}\n{}", tr!(first), src.display(), tr!(last));
         if s == t && !case_rename {
-            return Err(format!(
-                "Нельзя {verb} файл в самого себя:\n{}",
-                src.display()
-            ));
+            return Err(if src.is_dir() {
+                onto_itself("MCannotCopyFolderToItself1", "MCannotCopyFolderToItself2")
+            } else {
+                onto_itself("MCannotCopyFileToItself1", "MCannotCopyFileToItself2")
+            });
         }
         let sep = std::path::MAIN_SEPARATOR;
         if src.is_dir() && t.starts_with(&format!("{s}{sep}")) {
-            return Err(format!(
-                "Нельзя {verb_dir} папку в её собственную подпапку:\n{}",
-                src.display()
+            return Err(onto_itself(
+                "MCannotCopyFolderToItself1",
+                "MCannotCopyFolderToItself2",
             ));
         }
         pairs.push((src.clone(), target));
@@ -232,9 +233,9 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
         let exists = match std::fs::symlink_metadata(target) {
             Ok(m) if m.is_dir() => true,
             Ok(_) => {
-                return self.w.attempt(target, |_| {
-                    Err("на месте папки уже есть файл с тем же именем".into())
-                });
+                return self
+                    .w
+                    .attempt(target, |_| Err(tr!("copy-file-where-folder")));
             }
             Err(_) => false,
         };
@@ -277,7 +278,10 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
         if let Ok(existing) = std::fs::symlink_metadata(&target) {
             if existing.is_dir() {
                 return self.w.attempt(src, |_| {
-                    Err(format!("{}: на этом месте папка", target.display()))
+                    Err(tr!(
+                        "copy-folder-where-file",
+                        path = target.display().to_string()
+                    ))
                 });
             }
             match self.decide(src, &target, meta) {
@@ -447,7 +451,7 @@ fn copy_link(src: &Path, target: &Path) -> Result<(), String> {
         } else {
             std::os::windows::fs::symlink_file(&to, target)
         };
-        r.map_err(|e| format!("не удалось создать ссылку: {e}"))
+        r.map_err(|e| tr!("link-create-failed", error = e.to_string()))
     }
     #[cfg(not(windows))]
     {

@@ -25,7 +25,7 @@ use crate::term::{PtySession, SpawnOptions};
 use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
 mod fileops;
-use crate::{keys, termview, theme};
+use crate::{keys, termview, theme, tr};
 use fileops::{Overlay, RunningOp};
 
 pub enum AppMsg {
@@ -287,18 +287,18 @@ impl App {
     }
 
     /// Development mode: what keeps a restart waiting.
-    fn restart_blocker(&self) -> Option<&'static str> {
+    fn restart_blocker(&self) -> Option<String> {
         let dev = self.dev.as_ref()?;
         if self.has_overlay() {
-            Some("открыт диалог")
+            Some(tr!("dev-blocker-dialog"))
         } else if !self.ops.is_empty() {
-            Some("идёт файловая операция")
+            Some(tr!("dev-blocker-operation"))
         } else if self.running.is_some() {
-            Some("выполняется команда")
+            Some(tr!("dev-blocker-command"))
         } else if self.agent_alive() && dev.last_agent_output.elapsed() < Duration::from_secs(3) {
-            Some("агент работает")
+            Some(tr!("dev-blocker-agent-busy"))
         } else if self.agent_alive() && self.agent_started.elapsed() < Duration::from_secs(10) {
-            Some("агент запускается")
+            Some(tr!("dev-blocker-agent-starting"))
         } else {
             None
         }
@@ -309,7 +309,7 @@ impl App {
         match msg {
             DevMsg::BuildStarted => {
                 dev.building = true;
-                self.say("afar: сборка…");
+                self.say(tr!("dev-building"));
             }
             DevMsg::BuildFinished {
                 ok,
@@ -319,13 +319,13 @@ impl App {
                 dev.building = false;
                 if ok {
                     dev.ready = true;
-                    self.say(format!(
-                        "afar: собрано за {:.0} с — перезапуск",
-                        duration.as_secs_f64()
+                    self.say(tr!(
+                        "dev-built",
+                        secs = format!("{:.0}", duration.as_secs_f64())
                     ));
                 } else {
                     self.record_build_failure(output);
-                    self.say("afar: ошибка сборки — Ctrl+O");
+                    self.say(tr!("dev-build-failed"));
                 }
             }
         }
@@ -377,7 +377,7 @@ impl App {
         }
         if let Some(reason) = self.restart_blocker() {
             if dev.restart_now {
-                self.say(format!("afar: перезапуск ждёт — {reason}"));
+                self.say(tr!("dev-restart-waits", reason = reason));
             }
             return;
         }
@@ -583,7 +583,7 @@ impl App {
         let args = match self.agent_args() {
             Ok(args) => args,
             Err(e) => {
-                self.say(format!("Не удалось подготовить конфигурацию агента: {e:#}"));
+                self.say(tr!("agent-config-failed", error = format!("{e:#}")));
                 vec![]
             }
         };
@@ -627,7 +627,7 @@ impl App {
             },
         ) {
             Ok(pty) => self.agent = Some(pty),
-            Err(e) => self.say(format!("Не удалось запустить claude: {e:#}")),
+            Err(e) => self.say(tr!("agent-start-failed", error = format!("{e:#}"))),
         }
     }
 
@@ -677,9 +677,9 @@ impl App {
                 _ => {}
             }
             self.say(if self.live {
-                "Агент видит действия сразу (live). afar:live — переключить"
+                tr!("observe-switched-live")
             } else {
-                "Агент читает журнал по запросу. afar:live — переключить"
+                tr!("observe-switched-on-demand")
             });
             self.clear_cmdline();
             return;
@@ -690,7 +690,7 @@ impl App {
             return;
         }
         if self.running.is_some() {
-            self.say("Команда уже выполняется — дождитесь завершения");
+            self.say(tr!("command-busy"));
             return;
         }
 
@@ -748,7 +748,7 @@ impl App {
                 self.focus = Focus::Command;
             }
             Err(e) => {
-                self.push_history([format!("Ошибка запуска: {e:#}")]);
+                self.push_history([tr!("command-start-failed", error = format!("{e:#}"))]);
                 self.journal.push(
                     Actor::System,
                     Event::CommandFinished {
@@ -984,7 +984,7 @@ impl App {
                     self.quit = true;
                 } else {
                     self.quit_armed = Some(Instant::now());
-                    self.say("Агент или команда ещё работают. F10 ещё раз — выход");
+                    self.say(tr!("quit-confirm"));
                 }
             }
             KeyCode::Char('o') if ctrl => {
@@ -1084,7 +1084,7 @@ impl App {
             }
             KeyCode::Char('r') if ctrl => self.panels[a].reload(None),
             KeyCode::F(n @ (1..=9 | 11 | 12)) if !alt && !ctrl => {
-                self.say(format!("F{n} — ещё не реализовано в прототипе"));
+                self.say(tr!("not-implemented", n = n));
             }
             _ => {
                 self.cmdline_key(&key);
@@ -1112,7 +1112,7 @@ impl App {
                 dev.restart_now = true;
                 self.maybe_restart();
             }
-            None => self.say("Перезапуск работает в режиме разработки: afar --dev"),
+            None => self.say(tr!("dev-only")),
         }
     }
 
@@ -1621,12 +1621,12 @@ impl App {
         // Agent pane: a Far-style frame on the panel's blue background.
         let agent_focused = self.focus == Focus::Agent;
         let status = match &self.agent {
-            None => "не запущен — Enter: запуск".to_string(),
-            Some(a) if a.has_exited() => format!(
-                "завершён (код {}) — Enter: перезапуск",
-                a.exit_code().map_or(-1, |c| c as i64)
+            None => tr!("agent-not-started"),
+            Some(a) if a.has_exited() => tr!(
+                "agent-exited",
+                code = a.exit_code().map_or(-1, |c| c as i64)
             ),
-            Some(_) => "работает".to_string(),
+            Some(_) => tr!("agent-running"),
         };
         let frame = l.agent_frame;
         crate::panel::draw_frame(buf, frame, theme::PANEL_BOX);
@@ -1635,13 +1635,13 @@ impl App {
         } else {
             theme::PANEL_TITLE
         };
-        let title = format!(" Агент · claude · {status} ");
+        let title = format!(" {} ", tr!("agent-title", status = status));
         crate::panel::put_title(buf, frame, frame.y, &title, title_style);
         let unseen = self.journal.last_seq().saturating_sub(self.agent_seen_seq);
         let mode = if self.live {
-            "● live"
+            tr!("observe-live")
         } else {
-            "○ по запросу"
+            tr!("observe-on-demand")
         };
         let scrolled = self
             .agent
@@ -1652,7 +1652,15 @@ impl App {
         } else {
             String::new()
         };
-        let hint = format!(" {scroll_note}{mode} · +{unseen} соб. · Ctrl+Space ");
+        let hint = format!(
+            " {} ",
+            tr!(
+                "agent-footer",
+                scroll = scroll_note,
+                mode = mode,
+                unseen = unseen
+            )
+        );
         let hint_w = hint.chars().count() as u16;
         if frame.width > hint_w + 4 {
             let y = frame.bottom() - 1;
@@ -1774,51 +1782,74 @@ impl App {
         cursor
     }
 
+    /// Far's key bar (keybar.cpp): number, label of at least 6 cells, a
+    /// space; at 98 columns and more the labels widen, below that the bar
+    /// is cut off at the right edge.
     fn draw_keybar(&self, area: Rect, buf: &mut Buffer) {
-        let labels: [&str; 12] = match self.focus {
-            Focus::Panels => [
-                "Помощь",
-                "ПользМ",
-                "Просм",
-                "Редакт",
-                "Копир",
-                "Перен",
-                "Папка",
-                "Удален",
-                "КонфМн",
-                "Выход",
-                "Модули",
-                "Экраны",
-            ],
-            _ => ["", "", "", "", "", "", "", "", "", "", "", ""],
-        };
-        buf.set_style(area, theme::KEYBAR_NUM);
+        const MIN_LABEL: u16 = 6;
+        buf.set_style(area, theme::KEYBAR_TEXT);
+        for x in area.left()..area.right() {
+            buf[(x, area.y)].set_symbol(" ");
+        }
         if self.focus != Focus::Panels {
             let text = match self.focus {
-                Focus::Agent => " Ввод идёт агенту · Ctrl+Space — к панелям",
-                _ => " Ввод идёт команде · Ctrl+Space — к агенту · Ctrl+O — экран команды",
+                Focus::Agent => tr!("hint-agent"),
+                _ => tr!("hint-command"),
             };
-            put(buf, area.x, area.y, area.width, text, theme::KEYBAR_TEXT);
+            put(
+                buf,
+                area.x,
+                area.y,
+                area.width,
+                &format!(" {text}"),
+                theme::KEYBAR_TEXT,
+            );
             return;
         }
-        let cell = (area.width / 12).max(4);
-        for (i, label) in labels.iter().enumerate() {
-            let x = area.x + i as u16 * cell;
-            if x >= area.right() {
+        let width = area.width;
+        let mut pos = 0u16;
+        for i in 0..12u16 {
+            if pos >= width {
                 break;
             }
             let num = (i + 1).to_string();
-            let w = cell.min(area.right() - x);
-            put(buf, x, area.y, num.len() as u16, &num, theme::KEYBAR_NUM);
-            let lw = w.saturating_sub(num.len() as u16 + 1);
+            let num_w = num.len() as u16;
+            let gap = u16::from(i < 11);
+            let min_end = pos + num_w + MIN_LABEL + gap;
+            let end = if width >= 98 {
+                min_end.max((i + 1) * width / 12)
+            } else {
+                min_end
+            }
+            .min(width);
+            let x = area.x + pos;
             put(
                 buf,
-                x + num.len() as u16,
+                x,
                 area.y,
-                lw,
-                label,
-                theme::KEYBAR_TEXT,
+                num_w.min(width - pos),
+                &num,
+                theme::KEYBAR_NUM,
             );
+            let label_x = pos + num_w;
+            if label_x < end {
+                let label_w = end.saturating_sub(label_x + gap).min(width - label_x);
+                let label = crate::i18n::plain(&tr!(&format!("MF{}", i + 1)));
+                put(
+                    buf,
+                    area.x + label_x,
+                    area.y,
+                    label_w,
+                    &label,
+                    theme::KEYBAR_TEXT,
+                );
+                if gap == 1 && end - 1 < width {
+                    buf[(area.x + end - 1, area.y)]
+                        .set_symbol(" ")
+                        .set_style(theme::KEYBAR_NUM);
+                }
+            }
+            pos = end;
         }
     }
 }

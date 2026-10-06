@@ -1,6 +1,7 @@
 pub mod app;
 pub mod dev;
 pub mod dialog;
+pub mod i18n;
 pub mod journal;
 pub mod keys;
 pub mod mcp;
