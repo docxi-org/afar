@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local};
 use serde::Serialize;
 
+use crate::ops::OpKind;
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Actor {
@@ -43,6 +45,23 @@ pub enum Event {
         exit_code: Option<u32>,
         duration_ms: u64,
         lines: usize,
+    },
+    FileOpStarted {
+        op_id: u64,
+        op: OpKind,
+        count: usize,
+        /// Up to 20 paths.
+        sources: Vec<PathBuf>,
+        dest: Option<PathBuf>,
+    },
+    FileOpFinished {
+        op_id: u64,
+        op: OpKind,
+        done: usize,
+        failed_count: usize,
+        /// Up to 20 failures.
+        failed: Vec<(PathBuf, String)>,
+        cancelled: bool,
     },
 }
 
@@ -90,10 +109,10 @@ impl Journal {
             actor,
             event,
         };
-        if let Some(f) = &mut self.file {
-            if let Ok(line) = serde_json::to_string(&entry) {
-                let _ = writeln!(f, "{line}");
-            }
+        if let Some(f) = &mut self.file
+            && let Ok(line) = serde_json::to_string(&entry)
+        {
+            let _ = writeln!(f, "{line}");
         }
         self.entries.push(entry);
         seq
@@ -162,6 +181,45 @@ pub fn format_entries(entries: &[Entry]) -> String {
                     "done   [cmd-{cmd_id}] exit {code}, {:.1}s, {lines} lines of output",
                     *duration_ms as f64 / 1000.0
                 )
+            }
+            Event::FileOpStarted {
+                op_id,
+                op,
+                count,
+                sources,
+                dest,
+            } => {
+                let names: Vec<String> = sources.iter().map(|p| p.display().to_string()).collect();
+                let more = if *count > sources.len() { ", …" } else { "" };
+                let dest = dest
+                    .as_ref()
+                    .map(|d| format!(" → {}", d.display()))
+                    .unwrap_or_default();
+                format!(
+                    "{:<6} {count} item(s): {}{more}{dest}  [op-{op_id}]",
+                    op.name(),
+                    names.join(", ")
+                )
+            }
+            Event::FileOpFinished {
+                op_id,
+                op,
+                done,
+                failed_count,
+                failed,
+                cancelled,
+            } => {
+                let mut s = format!("done   [op-{op_id}] {}: {done} ok", op.name());
+                if *failed_count > 0 {
+                    s.push_str(&format!(", {failed_count} failed"));
+                    if let Some((p, e)) = failed.first() {
+                        s.push_str(&format!(" (first: {}: {e})", p.display()));
+                    }
+                }
+                if *cancelled {
+                    s.push_str(", cancelled");
+                }
+                s
             }
         };
         out.push_str(&format!(

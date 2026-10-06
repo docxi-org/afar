@@ -97,9 +97,10 @@ impl FilePanel {
             );
         }
         self.entries = entries;
+        // When the item is gone (deleted), stay at the same position.
         self.cursor = keep
             .and_then(|k| self.entries.iter().position(|e| e.name == k))
-            .unwrap_or(0)
+            .unwrap_or(self.cursor)
             .min(self.entries.len().saturating_sub(1));
     }
 
@@ -123,6 +124,7 @@ impl FilePanel {
             .map(|c| c.as_os_str().to_string_lossy().into_owned());
         let old = std::mem::replace(&mut self.path, path);
         self.entries.clear();
+        self.cursor = 0;
         self.top = 0;
         self.reload(focus.as_deref());
         Ok(old)
@@ -163,10 +165,10 @@ impl FilePanel {
     }
 
     pub fn toggle_selection(&mut self) {
-        if let Some(e) = self.entries.get_mut(self.cursor) {
-            if !e.is_up() {
-                e.selected = !e.selected;
-            }
+        if let Some(e) = self.entries.get_mut(self.cursor)
+            && !e.is_up()
+        {
+            e.selected = !e.selected;
         }
     }
 
@@ -363,7 +365,7 @@ pub fn group_thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(' ');
         }
         out.push(c);

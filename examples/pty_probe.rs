@@ -94,15 +94,15 @@ fn main() -> anyhow::Result<()> {
     if let Ok(cells) = std::env::var("PROBE_CELLS") {
         for rc in cells.split(';') {
             let mut it = rc.split(',').filter_map(|n| n.trim().parse::<u16>().ok());
-            if let (Some(r), Some(c)) = (it.next(), it.next()) {
-                if let Some(cell) = screen.cell(r, c) {
-                    println!(
-                        "=== cell {r},{c}: {:?} fg {:?} bg {:?}",
-                        cell.contents(),
-                        cell.fgcolor(),
-                        cell.bgcolor()
-                    );
-                }
+            if let (Some(r), Some(c)) = (it.next(), it.next())
+                && let Some(cell) = screen.cell(r, c)
+            {
+                println!(
+                    "=== cell {r},{c}: {:?} fg {:?} bg {:?}",
+                    cell.contents(),
+                    cell.fgcolor(),
+                    cell.bgcolor()
+                );
             }
         }
     }

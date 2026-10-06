@@ -19,16 +19,21 @@ use ratatui::style::Style;
 
 use crate::journal::{Actor, Event, Journal, format_entries};
 use crate::mcp::{McpMsg, Reply, Request};
+use crate::ops::{OpId, OpMsg};
 use crate::panel::{FilePanel, put};
 use crate::term::{PtySession, SpawnOptions};
 use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
+
+mod fileops;
 use crate::{keys, termview, theme};
+use fileops::{Overlay, RunningOp};
 
 pub enum AppMsg {
     Input(TermEvent),
     AgentOutput,
     CommandOutput,
     Mcp(McpMsg),
+    Op(OpMsg),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -143,6 +148,10 @@ pub struct App {
     last_live: Rect,
     /// Last left click (time, panel, item) to detect double clicks.
     last_click: Option<(Instant, usize, usize)>,
+    /// Dialogs and progress windows over the layout, topmost last.
+    overlays: Vec<Overlay>,
+    ops: std::collections::HashMap<OpId, RunningOp>,
+    next_op_id: OpId,
 }
 
 impl App {
@@ -183,6 +192,9 @@ impl App {
             last_layout: None,
             last_live: Rect::default(),
             last_click: None,
+            overlays: Vec::new(),
+            ops: std::collections::HashMap::new(),
+            next_op_id: 0,
         }
     }
 
@@ -229,10 +241,23 @@ impl App {
             AppMsg::Input(TermEvent::Mouse(mouse)) => self.on_mouse(mouse),
             AppMsg::Input(_) | AppMsg::AgentOutput => {}
             AppMsg::CommandOutput => self.on_command_output(),
-            AppMsg::Mcp(msg) => {
-                let reply = self.on_mcp(msg.request);
-                let _ = msg.reply.send(reply);
-            }
+            AppMsg::Mcp(McpMsg { request, reply }) => match request {
+                // Answered later: after the user's confirmation.
+                Request::Delete {
+                    side,
+                    names,
+                    permanent,
+                } => match self.resolve_side(&side) {
+                    Ok(side) => self.agent_delete(side, &names, permanent, reply),
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                    }
+                },
+                request => {
+                    let _ = reply.send(self.on_mcp(request));
+                }
+            },
+            AppMsg::Op(msg) => self.on_op(msg),
         }
     }
 
@@ -642,6 +667,11 @@ impl App {
         if self.focus != Focus::Panels {
             self.quit_armed = None;
         }
+        // Dialogs take the keyboard, except while talking to the agent.
+        if self.focus != Focus::Agent && self.has_overlay() {
+            self.overlay_key(key);
+            return;
+        }
         match self.focus {
             Focus::Agent => self.agent_key(key),
             Focus::Command => {
@@ -738,6 +768,19 @@ impl App {
                 self.cmdline_key(&key);
             }
             KeyCode::Tab => self.active = 1 - a,
+            KeyCode::F(7) if !alt && !ctrl && !shift => self.mkdir_dialog(),
+            KeyCode::F(8) if !alt && !ctrl => {
+                let targets = self.delete_targets(shift);
+                self.delete_dialog(targets, false, Actor::User, None);
+            }
+            KeyCode::Delete if shift => {
+                let targets = self.delete_targets(false);
+                self.delete_dialog(targets, true, Actor::User, None);
+            }
+            KeyCode::Delete if !alt && !ctrl && self.cmdline.is_empty() => {
+                let targets = self.delete_targets(false);
+                self.delete_dialog(targets, false, Actor::User, None);
+            }
             KeyCode::Up if shift => {
                 self.panels[a].toggle_selection();
                 self.panels[a].move_cursor(-1);
@@ -899,10 +942,10 @@ impl App {
                 self.active = side;
                 self.set_panels_visible(true);
                 let mut note = String::new();
-                if let Some(name) = cursor {
-                    if !self.panels[side].set_cursor_by_name(&name) {
-                        note = format!(" ({name} not found there)");
-                    }
+                if let Some(name) = cursor
+                    && !self.panels[side].set_cursor_by_name(&name)
+                {
+                    note = format!(" ({name} not found there)");
                 }
                 let panel = &self.panels[side];
                 Ok(format!(
@@ -947,6 +990,11 @@ impl App {
                 }
                 Ok(out)
             }
+            Request::MkDir { side, names } => {
+                let side = self.resolve_side(&side)?;
+                self.agent_mkdir(side, &names)
+            }
+            Request::Delete { .. } => Err("handled asynchronously".into()),
             Request::HookPrompt => Ok(self.prompt_context()),
             Request::HookSessionStart => Ok(format!(
                 "[afar] left panel: {} | right panel: {} | active: {} | journal at #{} | mode: {}",
@@ -1082,6 +1130,12 @@ impl App {
         let pos = Position::new(ev.column, ev.row);
         let pressed = matches!(ev.kind, MouseEventKind::Down(_));
 
+        // Dialogs take the mouse, except over the agent pane.
+        if self.has_overlay() && !l.agent_frame.contains(pos) {
+            self.overlay_mouse(&ev);
+            return;
+        }
+
         // Dragging a boundary between windows.
         if let Some((id, offset)) = self.drag {
             match ev.kind {
@@ -1099,11 +1153,11 @@ impl App {
                 _ => self.drag = None,
             }
         }
-        if ev.kind == MouseEventKind::Down(MouseButton::Left) {
-            if let Some(grab) = l.arrangement.grab(pos) {
-                self.drag = Some(grab);
-                return;
-            }
+        if ev.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(grab) = l.arrangement.grab(pos)
+        {
+            self.drag = Some(grab);
+            return;
         }
 
         if l.agent_frame.contains(pos) {
@@ -1376,6 +1430,21 @@ impl App {
         }
 
         self.draw_keybar(l.keybar, buf);
+
+        // Overlay: dialogs and progress windows over everything but the
+        // bottom bars.
+        if self.has_overlay() {
+            let over = Rect::new(
+                area.x,
+                area.y,
+                area.width,
+                l.cmdline.y.saturating_sub(area.y),
+            );
+            let c = self.draw_overlays(over, buf);
+            if self.focus != Focus::Agent {
+                cursor = c;
+            }
+        }
         cursor
     }
 

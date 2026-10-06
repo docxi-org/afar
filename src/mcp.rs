@@ -50,6 +50,16 @@ pub enum Request {
         names: Vec<String>,
         add: bool,
     },
+    MkDir {
+        side: String,
+        names: Vec<String>,
+    },
+    /// Answered after the user confirms and the deletion finishes.
+    Delete {
+        side: String,
+        names: Vec<String>,
+        permanent: bool,
+    },
     /// `UserPromptSubmit` hook: journal delta (live) or a summary.
     HookPrompt,
     /// `SessionStart` hook: short description of the environment.
@@ -64,13 +74,17 @@ pub struct McpMsg {
 }
 
 async fn ask(tx: &Sender<AppMsg>, request: Request) -> Reply {
+    ask_within(tx, request, Duration::from_secs(30)).await
+}
+
+async fn ask_within(tx: &Sender<AppMsg>, request: Request, limit: Duration) -> Reply {
     let (reply, rx) = oneshot::channel();
     tx.send(AppMsg::Mcp(McpMsg { request, reply }))
-        .map_err(|_| "afar завершается".to_string())?;
-    match tokio::time::timeout(Duration::from_secs(30), rx).await {
+        .map_err(|_| "afar is shutting down".to_string())?;
+    match tokio::time::timeout(limit, rx).await {
         Ok(Ok(r)) => r,
-        Ok(Err(_)) => Err("afar не ответил".into()),
-        Err(_) => Err("afar занят: нет ответа 30 с".into()),
+        Ok(Err(_)) => Err("afar did not answer".into()),
+        Err(_) => Err(format!("no answer from afar within {} s", limit.as_secs())),
     }
 }
 
@@ -120,6 +134,25 @@ pub struct SelectParams {
     pub names: Vec<String>,
     /// Add to the current selection instead of replacing it.
     pub add: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct MkDirParams {
+    /// `left`, `right`, `active` (default) or `passive`.
+    pub side: Option<String>,
+    /// Directory names relative to the panel's directory (nested paths like
+    /// `a/b/c` are fine) or absolute paths.
+    pub names: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct DeleteParams {
+    /// `left`, `right`, `active` (default) or `passive`.
+    pub side: Option<String>,
+    /// File or directory names in the panel's directory, or absolute paths.
+    pub names: Vec<String>,
+    /// Delete permanently instead of moving to the recycle bin.
+    pub permanent: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -252,6 +285,45 @@ impl AfarMcp {
         };
         result(ask(&self.tx, request).await)
     }
+
+    #[tool(
+        description = "Create directories in an afar panel (no confirmation needed); the panel \
+        shows the new directory. Returns the created paths."
+    )]
+    async fn afar_mkdir(
+        &self,
+        Parameters(p): Parameters<MkDirParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let side = p.side.unwrap_or_else(|| "active".into());
+        result(
+            ask(
+                &self.tx,
+                Request::MkDir {
+                    side,
+                    names: p.names,
+                },
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "Delete files or directories through afar: the user sees the items \
+        selected in the panel and confirms in a dialog (\"requested by the agent\"). Goes to the \
+        recycle bin unless permanent. Waits for the user (up to 10 minutes); returns the result \
+        or that the user declined. Prefer this over deleting with shell commands."
+    )]
+    async fn afar_delete(
+        &self,
+        Parameters(p): Parameters<DeleteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let request = Request::Delete {
+            side: p.side.unwrap_or_else(|| "active".into()),
+            names: p.names,
+            permanent: p.permanent.unwrap_or(false),
+        };
+        result(ask_within(&self.tx, request, Duration::from_secs(600)).await)
+    }
 }
 
 const INSTRUCTIONS: &str = "afar is the two-panel file manager (Far Manager style) the user works \
@@ -372,22 +444,23 @@ pub fn run_hook(event: &str) -> anyhow::Result<()> {
     let mut response = Vec::new();
     let _ = stream.read_to_end(&mut response);
     let response = String::from_utf8_lossy(&response);
-    if let Some((head, body)) = response.split_once("\r\n\r\n") {
-        if head.starts_with("HTTP/1.1 200") && !body.is_empty() {
-            // JSON hook output: the text goes into the model's context as
-            // additional context rather than as plain hook output.
-            let event_name = match event {
-                "session-start" => "SessionStart",
-                _ => "UserPromptSubmit",
-            };
-            let out = serde_json::json!({
-                "hookSpecificOutput": {
-                    "hookEventName": event_name,
-                    "additionalContext": body,
-                }
-            });
-            print!("{out}");
-        }
+    if let Some((head, body)) = response.split_once("\r\n\r\n")
+        && head.starts_with("HTTP/1.1 200")
+        && !body.is_empty()
+    {
+        // JSON hook output: the text goes into the model's context as
+        // additional context rather than as plain hook output.
+        let event_name = match event {
+            "session-start" => "SessionStart",
+            _ => "UserPromptSubmit",
+        };
+        let out = serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": event_name,
+                "additionalContext": body,
+            }
+        });
+        print!("{out}");
     }
     Ok(())
 }

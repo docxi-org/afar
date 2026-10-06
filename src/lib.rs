@@ -1,7 +1,9 @@
 pub mod app;
+pub mod dialog;
 pub mod journal;
 pub mod keys;
 pub mod mcp;
+pub mod ops;
 pub mod panel;
 pub mod term;
 pub mod termview;

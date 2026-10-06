@@ -37,6 +37,8 @@ MSYS_NO_PATHCONV=1 PROBE_INPUT='dir /b\r||^O' cargo run -q --example pty_probe -
 - `PROBE_CELLS="row,col;…"` — печатает цвета ячеек.
 - `MSYS_NO_PATHCONV=1` обязателен: иначе Git Bash превращает `/c` в путь.
 - Каждый запуск afar создаёт сессию в `%LOCALAPPDATA%\afar\sessions\<время>\`: `journal.jsonl`, `output\cmd-N.log`, `mcp.json` (порт и токен MCP), `settings.json` (хуки), `keys.log` при `AFAR_DEBUG_KEYS=1`. По `mcp.json` можно проверять MCP-сервер curl'ом.
+- Файловые операции (F7/F8 и т. п.) проверять только в песочнице, не в каталоге проекта: `mkdir "$TEMP/afar-sandbox"`, `cd` туда и запускать уже собранные `target/debug/examples/pty_probe.exe` и `afar.exe` по Windows-пути (`'F:\AGI\far\target\debug\afar.exe'`, путь вида `/f/...` CreateProcess не понимает).
+- `tools/mcp_call.sh <каталог сессии> <инструмент> '<json>'` — вызов MCP-инструмента запущенного afar без модели (например, `afar_delete` в паре с `PROBE_INPUT='\r'`, подтверждающим диалог). `curl` здесь — Windows-бинарник: временные файлы только в `%TEMP%`, не `/tmp` и не `/dev/null`.
 - Запуск afar поднимает настоящий `claude`; запросы модели в тестах расходуют лимит пользователя — делать их только при необходимости.
 
 ## Архитектура
@@ -49,6 +51,7 @@ MSYS_NO_PATHCONV=1 PROBE_INPUT='dir /b\r||^O' cargo run -q --example pty_probe -
 - **Захват вывода**: строки, уходящие за верх экрана, забираются через доработку `vt100` (`set_line_capture` / `take_scrolled_lines`) + итоговый экран (`termview::screen_lines`). Это то, что видел пользователь, без полос прогресса и VT.
 - **`vendor/vt100`** — копия vt100 0.16.2 (MIT) с этой доработкой, помечена `AFAR-PATCH`. Не заменять на версию с crates.io.
 - **`keys.rs`** — клавиши и мышь → xterm-последовательности для программ в PTY; `normalize` сопоставляет кириллицу (ЙЦУКЕН) латинским клавишам для Ctrl/Alt-сочетаний (с русской раскладкой `Ctrl+O` приходит как `Ctrl+Щ`).
+- **Диалоги и операции**: `dialog.rs` — диалог в стиле Far (элементы, клавиши, мышь, отрисовка); `ops.rs` — файловые операции в фоновом потоке, сообщения `OpMsg` (прогресс, вопрос при ошибке — поток ждёт ответа, итог); `app/fileops.rs` — оверлей `App` (стек `overlays`: диалоги с `Purpose` — что делать при закрытии, окна прогресса), F7/F8, `afar_mkdir`/`afar_delete`. Пока есть оверлей, клавиши и мышь идут ему, кроме фокуса на агенте. Запросы агента, ждущие пользователя (`Request::Delete`), отвечают позже — oneshot-отправитель хранится в `Purpose`/`RunningOp`.
 - **`journal.rs`** — журнал событий (в памяти + JSONL); `format_entries` — компактный текст для агента.
 - **`mcp.rs`** — MCP-сервер (`rmcp`, Streamable HTTP через `axum` на `127.0.0.1`, случайный порт, bearer-токен) с инструментами `afar_*`, эндпоинт `/hook/{event}` и клиент хуков `afar hook <event>` (печатает JSON `hookSpecificOutput.additionalContext`).
 - **Агент** запускается как `claude --settings <session>/settings.json --append-system-prompt … --mcp-config <session>/mcp.json` (`--mcp-config` вариадический — держать последним), с `AFAR_ENDPOINT`/`AFAR_TOKEN` в окружении и без служебных переменных внешней сессии Claude Code (`CLAUDE_SESSION_VARS` в `app.rs`). Глобальные настройки `~/.claude` не трогаются.

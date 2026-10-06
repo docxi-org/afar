@@ -54,10 +54,9 @@ pub fn normalize(mut key: KeyEvent) -> KeyEvent {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     if (ctrl ^ alt)
         && let KeyCode::Char(c) = key.code
+        && let Some(l) = latin_equivalent(c)
     {
-        if let Some(l) = latin_equivalent(c) {
-            key.code = KeyCode::Char(l);
-        }
+        key.code = KeyCode::Char(l);
     }
     key
 }
