@@ -9,14 +9,13 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
 use crate::tr;
 
 use super::{
-    ConflictAction, ConflictAnswer, ErrorContext, FileInfo, Flow, Next, OpId, OpMsg, Overwrite,
-    Worker, remove_file_forced,
+    ConflictAction, ConflictAnswer, ErrorContext, FileInfo, Flow, Next, OpControl, OpId, OpMsg,
+    Overwrite, Worker, remove_file_forced,
 };
 
 const BUFFER: usize = 1 << 20;
@@ -101,14 +100,14 @@ pub fn spawn_copy(
     pairs: Vec<(PathBuf, PathBuf)>,
     moving: bool,
     overwrite: Overwrite,
-    cancel: Arc<AtomicBool>,
+    control: Arc<OpControl>,
     send: impl Fn(OpMsg) + Send + 'static,
 ) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name(format!("op-{id}"))
         .spawn(move || {
             let mut c = Copier {
-                w: Worker::new(id, cancel, &send),
+                w: Worker::new(id, control, &send),
                 moving,
                 policy: overwrite,
             };
@@ -493,16 +492,9 @@ mod tests {
         };
         let pairs = plan_targets(&job).unwrap();
         let (tx, rx) = mpsc::channel();
-        spawn_copy(
-            1,
-            pairs,
-            moving,
-            overwrite,
-            Arc::new(AtomicBool::new(false)),
-            move |m| {
-                let _ = tx.send(m);
-            },
-        )
+        spawn_copy(1, pairs, moving, overwrite, OpControl::new(), move |m| {
+            let _ = tx.send(m);
+        })
         .unwrap();
         drive(rx, ErrorAnswer::Cancel, conflict)
     }

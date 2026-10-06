@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -22,8 +21,8 @@ use crate::dialog::{
 use crate::journal::{Actor, Event};
 use crate::mcp::Reply;
 use crate::ops::{
-    self, ConflictAction, ConflictAnswer, CopyJob, ErrorAnswer, ErrorContext, FileInfo, OpId,
-    OpKind, OpMsg, OpReport, Overwrite,
+    self, ConfirmAnswer, ConflictAction, ConflictAnswer, CopyJob, DeleteMode, ErrorAnswer,
+    ErrorContext, FileInfo, OpControl, OpId, OpKind, OpMsg, OpReport, Overwrite, Question,
 };
 use crate::panel::{group_thousands, size_float};
 use crate::tr;
@@ -64,7 +63,7 @@ pub(super) enum Purpose {
     },
     Delete {
         targets: Vec<PathBuf>,
-        permanent: bool,
+        mode: DeleteMode,
         actor: Actor,
         reply: Option<oneshot::Sender<Reply>>,
     },
@@ -78,6 +77,15 @@ pub(super) enum Purpose {
     },
     OpError {
         reply: mpsc::Sender<ErrorAnswer>,
+    },
+    /// A question of a running deletion; `answers` maps the buttons.
+    OpConfirm {
+        reply: mpsc::Sender<ConfirmAnswer>,
+        answers: Vec<ConfirmAnswer>,
+    },
+    /// Esc during an operation: "cancel it?" (the operation is paused).
+    AbortOp {
+        op: OpId,
     },
     Conflict {
         target: PathBuf,
@@ -113,7 +121,7 @@ pub(super) struct RunningOp {
     kind: OpKind,
     actor: Actor,
     reply: Option<oneshot::Sender<Reply>>,
-    cancel: Arc<AtomicBool>,
+    control: Arc<OpControl>,
     /// Item to put the cursor on when done: panel and name.
     focus: Option<(usize, String)>,
     /// Where things go (copy/move), for the agent's answer.
@@ -272,7 +280,19 @@ impl App {
                 if key.code == KeyCode::Esc
                     && let Some(op) = self.ops.get(&p.op)
                 {
-                    op.cancel.store(true, Ordering::SeqCst);
+                    // Far: the operation stops while it asks.
+                    op.control.set_paused(true);
+                    let id = p.op;
+                    let dialog = Dialog::message(
+                        &tr!("MKeyESCWasPressed"),
+                        &[tr!("MDoYouWantToCancel")],
+                        &[&tr!("MYes"), &tr!("MNo")],
+                        true,
+                    );
+                    self.overlays.push(Overlay::Dialog {
+                        dialog,
+                        purpose: Purpose::AbortOp { op: id },
+                    });
                 }
             }
             Some(Overlay::Dialog { dialog, .. }) => {
@@ -315,12 +335,12 @@ impl App {
             }
             Purpose::Delete {
                 targets,
-                permanent,
+                mode,
                 actor,
                 reply,
             } => {
                 if button == Some(0) {
-                    self.start_delete(targets, permanent, actor, reply);
+                    self.start_delete(targets, mode, actor, reply);
                 } else if let Some(reply) = reply {
                     let _ = reply.send(Err("the user declined the deletion".into()));
                 }
@@ -383,6 +403,20 @@ impl App {
                 let _ = reply.send(ConflictAnswer { action, all: false });
             }
             Purpose::Message => {}
+            Purpose::OpConfirm { reply, answers } => {
+                let answer = button
+                    .and_then(|b| answers.get(b).copied())
+                    .unwrap_or(ConfirmAnswer::Cancel);
+                let _ = reply.send(answer);
+            }
+            Purpose::AbortOp { op } => {
+                if let Some(op) = self.ops.get(&op) {
+                    if button == Some(0) {
+                        op.control.cancel();
+                    }
+                    op.control.set_paused(false);
+                }
+            }
             Purpose::Select { side, add } => {
                 if button == Some(0) {
                     self.select_from_dialog(side, add, dialog);
@@ -551,7 +585,7 @@ impl App {
     pub(super) fn delete_dialog(
         &mut self,
         targets: Vec<PathBuf>,
-        permanent: bool,
+        mode: DeleteMode,
         actor: Actor,
         reply: Option<oneshot::Sender<Reply>>,
     ) {
@@ -564,10 +598,15 @@ impl App {
             [_] => tr!("MAskDeleteFile"),
             _ => tr!("MAskDeleteObjects"),
         };
-        let (question, button) = if permanent {
-            (tr!("MAskDelete", p0 = what), tr!("MDelete"))
+        let (question, button) = match mode {
+            DeleteMode::Permanent => (tr!("MAskDelete", p0 = what), tr!("MDelete")),
+            DeleteMode::Trash => (tr!("MAskDeleteRecycle", p0 = what), tr!("MDeleteRecycle")),
+            DeleteMode::Wipe => (tr!("MAskWipe", p0 = what), tr!("MDeleteWipe")),
+        };
+        let title = if mode == DeleteMode::Wipe {
+            tr!("MDeleteWipeTitle")
         } else {
-            (tr!("MAskDeleteRecycle", p0 = what), tr!("MDeleteRecycle"))
+            tr!("MDeleteTitle")
         };
         let cancel = tr!("MCancel");
         let max_line = usize::from(cols.saturating_sub(12));
@@ -600,8 +639,8 @@ impl App {
             .max()
             .unwrap_or(0)
             .min(max_line) as u16;
-        let mut d = Dialog::new(tr!("MDeleteTitle"), content);
-        if permanent {
+        let mut d = Dialog::new(title, content);
+        if mode != DeleteMode::Trash {
             d = d.warning();
         }
         let single = targets.len() == 1;
@@ -623,7 +662,7 @@ impl App {
             dialog,
             purpose: Purpose::Delete {
                 targets,
-                permanent,
+                mode,
                 actor,
                 reply,
             },
@@ -633,15 +672,15 @@ impl App {
     fn start_delete(
         &mut self,
         targets: Vec<PathBuf>,
-        permanent: bool,
+        mode: DeleteMode,
         actor: Actor,
         reply: Option<oneshot::Sender<Reply>>,
     ) {
         let id = self.next_op_id();
-        let kind = if permanent {
-            OpKind::Delete
-        } else {
-            OpKind::Trash
+        let kind = match mode {
+            DeleteMode::Trash => OpKind::Trash,
+            DeleteMode::Permanent => OpKind::Delete,
+            DeleteMode::Wipe => OpKind::Wipe,
         };
         self.journal.push(
             actor,
@@ -653,12 +692,12 @@ impl App {
                 dest: None,
             },
         );
-        let cancel = Arc::new(AtomicBool::new(false));
+        let control = OpControl::new();
         let tx = self.tx.clone();
-        let started = ops::spawn_delete(id, targets, permanent, cancel.clone(), move |m| {
+        let started = ops::spawn_delete(id, targets, mode, control.clone(), move |m| {
             let _ = tx.send(AppMsg::Op(m));
         });
-        self.track_op(id, kind, actor, reply, cancel, None, None, started);
+        self.track_op(id, kind, actor, reply, control, None, None, started);
     }
 
     // -------------------------------------------------------- copy / move
@@ -835,12 +874,12 @@ impl App {
             }
             _ => None,
         };
-        let cancel = Arc::new(AtomicBool::new(false));
+        let control = OpControl::new();
         let tx = self.tx.clone();
-        let started = ops::spawn_copy(id, pairs, moving, overwrite, cancel.clone(), move |m| {
+        let started = ops::spawn_copy(id, pairs, moving, overwrite, control.clone(), move |m| {
             let _ = tx.send(AppMsg::Op(m));
         });
-        self.track_op(id, kind, actor, reply, cancel, focus, Some(dest), started);
+        self.track_op(id, kind, actor, reply, control, focus, Some(dest), started);
         Ok(())
     }
 
@@ -852,7 +891,7 @@ impl App {
         kind: OpKind,
         actor: Actor,
         reply: Option<oneshot::Sender<Reply>>,
-        cancel: Arc<AtomicBool>,
+        control: Arc<OpControl>,
         focus: Option<(usize, String)>,
         dest: Option<PathBuf>,
         started: std::io::Result<()>,
@@ -865,7 +904,7 @@ impl App {
                         kind,
                         actor,
                         reply,
-                        cancel,
+                        control,
                         focus,
                         dest,
                     },
@@ -979,6 +1018,14 @@ impl App {
                     ),
                 };
                 self.ask(dialog, Purpose::OpError { reply });
+            }
+            OpMsg::Confirm {
+                question, reply, ..
+            } => {
+                use ConfirmAnswer::{All, Cancel, Skip, SkipAll, Yes};
+                let (dialog, answers) = confirm_dialog(&question);
+                let answers = answers.unwrap_or(vec![Yes, All, Skip, SkipAll, Cancel]);
+                self.ask(dialog, Purpose::OpConfirm { reply, answers });
             }
             OpMsg::Conflict {
                 target,
@@ -1119,14 +1166,14 @@ impl App {
         &mut self,
         side: usize,
         names: &[String],
-        permanent: bool,
+        mode: DeleteMode,
         reply: oneshot::Sender<Reply>,
     ) {
         match self.agent_sources(side, names) {
             Ok(targets) => {
                 let what = tr!("objects", count = targets.len());
                 self.present_agent_request(side, names, format!("{}: {what}", tr!("MDeleteTitle")));
-                self.delete_dialog(targets, permanent, Actor::Agent, Some(reply));
+                self.delete_dialog(targets, mode, Actor::Agent, Some(reply));
             }
             Err(e) => {
                 let _ = reply.send(Err(e));
@@ -1163,6 +1210,62 @@ impl App {
 }
 
 /// Far's progress windows (copy_progress.cpp, delete.cpp).
+/// Far's questions while deleting (delete.cpp): a non-empty folder
+/// (Delete / All / Skip / Cancel) and a read-only file (Delete / All /
+/// Skip / Skip all / Cancel); the answers in button order.
+fn confirm_dialog(question: &Question) -> (Dialog, Option<Vec<ConfirmAnswer>>) {
+    use ConfirmAnswer::{All, Cancel, Skip, Yes};
+    match question {
+        Question::NonEmptyFolder { path, mode } => {
+            let (title, text, button) = match mode {
+                DeleteMode::Trash => (
+                    "MDeleteFolderTitle",
+                    "MRecycleFolderConfirm",
+                    "MDeleteRecycle",
+                ),
+                DeleteMode::Permanent => (
+                    "MDeleteFolderTitle",
+                    "MDeleteFolderConfirm",
+                    "MDeleteFileDelete",
+                ),
+                DeleteMode::Wipe => ("MWipeFolderTitle", "MWipeFolderConfirm", "MDeleteFileWipe"),
+            };
+            let lines = [tr!(text), path.display().to_string()];
+            let buttons = [
+                tr!(button),
+                tr!("MDeleteFileAll"),
+                tr!("MDeleteFileSkip"),
+                tr!("MDeleteFileCancel"),
+            ];
+            let buttons: Vec<&str> = buttons.iter().map(String::as_str).collect();
+            (
+                Dialog::message(&tr!(title), &lines, &buttons, true),
+                Some(vec![Yes, All, Skip, Cancel]),
+            )
+        }
+        Question::ReadOnly { path, mode } => {
+            let (ask, button) = if *mode == DeleteMode::Wipe {
+                ("MAskWipeRO", "MDeleteFileWipe")
+            } else {
+                ("MAskDeleteRO", "MDeleteFileDelete")
+            };
+            let lines = [tr!("MDeleteRO"), path.display().to_string(), tr!(ask)];
+            let buttons = [
+                tr!(button),
+                tr!("MDeleteFileAll"),
+                tr!("MDeleteFileSkip"),
+                tr!("MDeleteFileSkipAll"),
+                tr!("MDeleteFileCancel"),
+            ];
+            let buttons: Vec<&str> = buttons.iter().map(String::as_str).collect();
+            (
+                Dialog::message(&tr!("MWarning"), &lines, &buttons, true),
+                None,
+            )
+        }
+    }
+}
+
 fn progress_dialog(p: &Progress) -> Dialog {
     match p.kind {
         OpKind::Copy | OpKind::Move => {
@@ -1243,8 +1346,13 @@ fn progress_dialog(p: &Progress) -> Dialog {
                 "{label} {count:>w$}",
                 w = 61usize.saturating_sub(chars(&label) + 1)
             );
-            Dialog::far(tr!("MDeleteTitle"), FAR_WIDTH)
-                .row(vec![text_at(5, tr!("MDeleting")).literal()])
+            let (title, doing) = if p.kind == OpKind::Wipe {
+                (tr!("MDeleteWipeTitle"), tr!("MDeletingWiping"))
+            } else {
+                (tr!("MDeleteTitle"), tr!("MDeleting"))
+            };
+            Dialog::far(title, FAR_WIDTH)
+                .row(vec![text_at(5, doing).literal()])
                 .row(vec![
                     text_at(5, truncate_path(&p.current, FAR_TEXT)).literal(),
                 ])

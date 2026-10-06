@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::Serialize;
 
 pub use copy::{CopyJob, plan_targets, spawn_copy, unique_name};
-pub use delete::spawn_delete;
+pub use delete::{DeleteMode, spawn_delete};
 
 pub type OpId = u64;
 
@@ -28,6 +28,8 @@ pub enum OpKind {
     Trash,
     /// Delete permanently.
     Delete,
+    /// Overwrite the contents, then delete (Alt+Del).
+    Wipe,
     Copy,
     /// Move or rename.
     Move,
@@ -39,10 +41,62 @@ impl OpKind {
             OpKind::MkDir => "mkdir",
             OpKind::Trash => "trash",
             OpKind::Delete => "delete",
+            OpKind::Wipe => "wipe",
             OpKind::Copy => "copy",
             OpKind::Move => "move",
         }
     }
+}
+
+/// Stops or pauses a running operation from the UI.
+#[derive(Default, Debug)]
+pub struct OpControl {
+    cancel: AtomicBool,
+    paused: AtomicBool,
+}
+
+impl OpControl {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// While paused the operation waits at its next step (Far asks
+    /// "cancel?" with the operation stopped).
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
+    }
+
+    fn cancelled(&self) -> bool {
+        while self.paused.load(Ordering::SeqCst) && !self.cancel.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.cancel.load(Ordering::SeqCst)
+    }
+}
+
+/// A question an operation asks before touching an item.
+#[derive(Clone, Debug)]
+pub enum Question {
+    /// Deleting a folder that has something in it.
+    NonEmptyFolder { path: PathBuf, mode: DeleteMode },
+    /// Deleting a read-only file.
+    ReadOnly { path: PathBuf, mode: DeleteMode },
+}
+
+/// Answers to a `Question` (Far's buttons).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmAnswer {
+    Yes,
+    /// Yes to this and to the following questions of this kind.
+    All,
+    Skip,
+    /// Skip this and the following items of this kind.
+    SkipAll,
+    Cancel,
 }
 
 /// The user's answer to an error on one item.
@@ -138,6 +192,12 @@ pub enum OpMsg {
         error: String,
         context: ErrorContext,
         reply: Sender<ErrorAnswer>,
+    },
+    /// A question before deleting; the operation waits for `reply`.
+    Confirm {
+        id: OpId,
+        question: Question,
+        reply: Sender<ConfirmAnswer>,
     },
     /// The destination file exists; the operation waits for `reply`.
     Conflict {
@@ -235,9 +295,13 @@ enum Next {
 /// and the channel to the UI.
 struct Worker<'a, F: Fn(OpMsg)> {
     id: OpId,
-    cancel: Arc<AtomicBool>,
+    control: Arc<OpControl>,
     send: &'a F,
     skip_all: bool,
+    /// Standing answers: delete non-empty folders without asking; delete
+    /// (`Some(true)`) or skip (`Some(false)`) read-only files.
+    delete_folders: bool,
+    readonly: Option<bool>,
     total: usize,
     bytes_total: u64,
     bytes_done: u64,
@@ -250,12 +314,14 @@ struct Worker<'a, F: Fn(OpMsg)> {
 }
 
 impl<'a, F: Fn(OpMsg)> Worker<'a, F> {
-    fn new(id: OpId, cancel: Arc<AtomicBool>, send: &'a F) -> Self {
+    fn new(id: OpId, control: Arc<OpControl>, send: &'a F) -> Self {
         Self {
             id,
-            cancel,
+            control,
             send,
             skip_all: false,
+            delete_folders: false,
+            readonly: None,
             total: 0,
             bytes_total: 0,
             bytes_done: 0,
@@ -269,10 +335,21 @@ impl<'a, F: Fn(OpMsg)> Worker<'a, F> {
     }
 
     fn cancelled(&mut self) -> bool {
-        if self.cancel.load(Ordering::SeqCst) {
+        if self.control.cancelled() {
             self.report.cancelled = true;
         }
         self.report.cancelled
+    }
+
+    /// Asks the user and waits for the answer.
+    fn confirm(&mut self, question: Question) -> ConfirmAnswer {
+        let (reply, rx) = mpsc::channel();
+        (self.send)(OpMsg::Confirm {
+            id: self.id,
+            question,
+            reply,
+        });
+        rx.recv().unwrap_or(ConfirmAnswer::Cancel)
     }
 
     fn progress(&mut self, current: &Path) {
@@ -404,6 +481,7 @@ pub(crate) mod test_util {
                     conflicts += 1;
                     reply.send(conflict.clone()).unwrap();
                 }
+                OpMsg::Confirm { reply, .. } => reply.send(ConfirmAnswer::All).unwrap(),
                 OpMsg::Progress { .. } => {}
             }
         }

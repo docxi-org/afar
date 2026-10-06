@@ -19,6 +19,7 @@ use ratatui::style::Style;
 use crate::dev::{DevMsg, DevState, PanelState};
 use crate::journal::{Actor, Event, Journal, format_entries};
 use crate::mcp::{McpMsg, Reply, Request};
+use crate::ops::DeleteMode;
 use crate::ops::{OpId, OpMsg};
 use crate::panel::{FilePanel, SortMode, put};
 use crate::term::{PtySession, SpawnOptions};
@@ -515,7 +516,14 @@ impl App {
                     names,
                     permanent,
                 } => match self.resolve_side(&side) {
-                    Ok(side) => self.agent_delete(side, &names, permanent, reply),
+                    Ok(side) => {
+                        let mode = if permanent {
+                            DeleteMode::Permanent
+                        } else {
+                            DeleteMode::Trash
+                        };
+                        self.agent_delete(side, &names, mode, reply)
+                    }
                     Err(e) => {
                         let _ = reply.send(Err(e));
                     }
@@ -1119,15 +1127,20 @@ impl App {
             KeyCode::F(7) if !alt && !ctrl && !shift => self.mkdir_dialog(),
             KeyCode::F(8) if !alt && !ctrl => {
                 let targets = self.op_sources(shift);
-                self.delete_dialog(targets, false, Actor::User, None);
+                self.delete_dialog(targets, DeleteMode::Trash, Actor::User, None);
             }
-            KeyCode::Delete if shift => {
+            KeyCode::Delete if shift && !alt => {
                 let targets = self.op_sources(false);
-                self.delete_dialog(targets, true, Actor::User, None);
+                self.delete_dialog(targets, DeleteMode::Permanent, Actor::User, None);
+            }
+            // Alt+Del: wipe (contents overwritten before deleting).
+            KeyCode::Delete if alt && !ctrl && !shift => {
+                let targets = self.op_sources(false);
+                self.delete_dialog(targets, DeleteMode::Wipe, Actor::User, None);
             }
             KeyCode::Delete if !alt && !ctrl && self.cmdline.is_empty() => {
                 let targets = self.op_sources(false);
-                self.delete_dialog(targets, false, Actor::User, None);
+                self.delete_dialog(targets, DeleteMode::Trash, Actor::User, None);
             }
             KeyCode::Up if shift => {
                 self.panels[a].toggle_selection();

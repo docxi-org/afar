@@ -212,3 +212,16 @@ MChangeDriveRAM
 MChangeDriveCDROM
 MChangeDriveSUBST
 MSearchFileTitle
+MDeleteFileSkip
+MDeleteFileCancel
+MDeleteRO
+MAskDeleteRO
+MKeyESCWasPressed
+MDoYouWantToCancel
+MAskWipe
+MDeleteWipe
+MDeletingWiping
+MWipeFolderTitle
+MWipeFolderConfirm
+MDeleteFileWipe
+MAskWipeRO
