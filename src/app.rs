@@ -179,6 +179,7 @@ pub struct App {
     /// The agent was started with `--resume` at that time: if it exits
     /// right away (nothing to resume yet), start it afresh.
     agent_resumed_at: Option<Instant>,
+    agent_started: Instant,
     exit: Option<Exit>,
 }
 
@@ -231,6 +232,7 @@ impl App {
             restored: false,
             agent_session: None,
             agent_resumed_at: None,
+            agent_started: Instant::now(),
             exit: None,
         };
         if let Some(state) = restore {
@@ -295,6 +297,8 @@ impl App {
             Some("выполняется команда")
         } else if self.agent_alive() && dev.last_agent_output.elapsed() < Duration::from_secs(3) {
             Some("агент работает")
+        } else if self.agent_alive() && self.agent_started.elapsed() < Duration::from_secs(10) {
+            Some("агент запускается")
         } else {
             None
         }
@@ -398,8 +402,11 @@ impl App {
             );
         }
         self.last_layout = Some(self.layout(Rect::new(0, 0, size.width, size.height)));
-        let (rows, cols) = self.last_agent_size();
-        self.start_agent(cols, rows);
+        // AFAR_NO_AGENT: no agent until Enter in its pane (tests).
+        if std::env::var_os("AFAR_NO_AGENT").is_none() {
+            let (rows, cols) = self.last_agent_size();
+            self.start_agent(cols, rows);
+        }
         loop {
             let stats = terminal.draw(|frame| {
                 let area = frame.area();
@@ -418,6 +425,11 @@ impl App {
                 );
             }
             if self.quit {
+                // Let Claude Code exit cleanly: killed while starting, it
+                // falls back to its classic renderer next time.
+                if let Some(agent) = &mut self.agent {
+                    agent.shutdown(Duration::from_secs(3));
+                }
                 return Ok(self.exit.take().unwrap_or(Exit::Quit));
             }
             match rx.recv_timeout(Duration::from_millis(250)) {
@@ -587,6 +599,7 @@ impl App {
         // Our own session id; after a dev restart: the same conversation.
         let mut args = args;
         self.agent_resumed_at = None;
+        self.agent_started = Instant::now();
         match self.agent_session.clone().filter(|_| self.restored) {
             Some(id) => {
                 args.splice(0..0, ["--resume".to_string(), id]);

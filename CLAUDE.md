@@ -43,6 +43,7 @@ MSYS_NO_PATHCONV=1 PROBE_INPUT='dir /b\r||^O' cargo run -q --example pty_probe -
 - Каждый запуск afar создаёт сессию в `%LOCALAPPDATA%\afar\sessions\<время>\`: `journal.jsonl`, `output\cmd-N.log`, `mcp.json` (порт и токен MCP), `settings.json` (хуки), `keys.log` при `AFAR_DEBUG_KEYS=1`. По `mcp.json` можно проверять MCP-сервер curl'ом.
 - Файловые операции проверять только в песочнице, не в каталоге проекта (на `C:` мало места — большие файлы только на `F:`, например `target/`): `mkdir "$TEMP/afar-sandbox"`, `cd` туда и запускать уже собранные `target/debug/examples/pty_probe.exe` и `afar.exe` по Windows-пути (`'F:\AGI\far\target\debug\afar.exe'`, путь вида `/f/...` CreateProcess не понимает).
 - `tools/mcp_call.sh <каталог сессии> <инструмент> '<json>'` — вызов MCP-инструмента запущенного afar без модели (например, `afar_delete` в паре с `PROBE_INPUT='\r'`, подтверждающим диалог). `curl` здесь — Windows-бинарник: временные файлы только в `%TEMP%`, не `/tmp` и не `/dev/null`.
+- В проверках запускать afar с `AFAR_NO_AGENT=1` (агент не стартует, пока не нажать Enter в его панели), если тест не про агента: короткие запуски, убитые во время старта `claude`, сбивают его полноэкранный режим у пользователя («fullscreen renderer didn't finish starting»).
 - Запуск afar поднимает настоящий `claude`; запросы модели в тестах расходуют лимит пользователя — делать их только при необходимости.
 
 ## Архитектура

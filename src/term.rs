@@ -307,6 +307,25 @@ impl PtySession {
     pub fn kill(&mut self) {
         let _ = self.killer.kill();
     }
+
+    /// Asks the program to exit the way a user would (Ctrl+C twice), so it
+    /// can save its state; kills it if it is still running after `grace`.
+    pub fn shutdown(&mut self, grace: Duration) {
+        if self.has_exited() {
+            return;
+        }
+        let start = Instant::now();
+        let _ = self.write(b"");
+        std::thread::sleep(Duration::from_millis(150));
+        let _ = self.write(b"");
+        while start.elapsed() < grace {
+            if self.exit_code().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.kill();
+    }
 }
 
 impl Drop for PtySession {
