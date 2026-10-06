@@ -120,6 +120,12 @@ pub(super) enum Purpose {
     ViewerGoto {
         id: u32,
     },
+    /// The agent's edit through the IDE protocol (`openDiff`).
+    IdeDiff {
+        tab_name: String,
+        new_contents: String,
+        reply: Option<tokio::sync::oneshot::Sender<crate::ide::DiffAnswer>>,
+    },
     /// A viewer's search reached the end (start): continue from the other
     /// end up to where it began?
     ViewerSearchWrap {
@@ -465,6 +471,20 @@ impl App {
                 }
             }
             Purpose::ViewerSearch { id } => self.viewer_search_dialog_closed(id, button, &dialog),
+            Purpose::IdeDiff {
+                new_contents,
+                reply,
+                ..
+            } => {
+                let answer = if button == Some(0) {
+                    crate::ide::DiffAnswer::Saved(new_contents)
+                } else {
+                    crate::ide::DiffAnswer::Rejected
+                };
+                if let Some(reply) = reply {
+                    let _ = reply.send(answer);
+                }
+            }
             Purpose::ViewerGoto { id } => {
                 if button == Some(0) {
                     self.viewer_goto_closed(id, &dialog);

@@ -75,6 +75,9 @@ pub enum Request {
     HookPreTool(String),
     /// `PostToolUse` hook: the hook's JSON input.
     HookPostTool(String),
+    /// `afar channel` waits for events for the agent (answered when there
+    /// are some, or with none after a while).
+    ChannelWait,
 }
 
 pub type Reply = Result<String, String>;
@@ -432,9 +435,16 @@ async fn hook(
         "session-start" => Request::HookSessionStart,
         "pre-tool" => Request::HookPreTool(body),
         "post-tool" => Request::HookPostTool(body),
+        // `afar channel` waits here for events (long polling).
+        "channel-wait" => Request::ChannelWait,
         _ => return (StatusCode::NOT_FOUND, String::new()),
     };
-    match ask(&s.tx, request).await {
+    let limit = if matches!(request, Request::ChannelWait) {
+        CHANNEL_WAIT + Duration::from_secs(5)
+    } else {
+        Duration::from_secs(30)
+    };
+    match ask_within(&s.tx, request, limit).await {
         Ok(text) => (StatusCode::OK, text),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e),
     }
@@ -481,35 +491,114 @@ pub fn start(tx: Sender<AppMsg>, token: String) -> anyhow::Result<u16> {
     Ok(port)
 }
 
+// ----------------------------------------------------------- channel bridge
+
+/// How long `afar channel` waits for events in one request.
+pub const CHANNEL_WAIT: Duration = Duration::from_secs(25);
+
+/// A POST to afar's server from a helper process (`afar hook`, `afar
+/// channel`): the body of a 200 answer.
+fn post_to_afar(path: &str, body: &str, timeout: Duration) -> Option<String> {
+    use std::io::{Read, Write};
+    let endpoint = std::env::var("AFAR_ENDPOINT").ok()?;
+    let token = std::env::var("AFAR_TOKEN").ok()?;
+    let addr = endpoint.trim_start_matches("http://").trim_end_matches('/');
+    let mut stream = std::net::TcpStream::connect(addr).ok()?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
+    let response = String::from_utf8_lossy(&response).into_owned();
+    let (head, body) = response.split_once("\r\n\r\n")?;
+    head.starts_with("HTTP/1.1 200").then(|| body.to_string())
+}
+
+/// `afar channel`: the agent's channel server (stdio MCP, Claude Code's
+/// Channels). It declares `claude/channel` and turns afar's events into
+/// `notifications/claude/channel`, which start the agent's turn.
+pub fn run_channel() -> anyhow::Result<()> {
+    use std::io::{BufRead, Write};
+    use std::sync::{Arc, Mutex};
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    let send = |out: &Arc<Mutex<std::io::Stdout>>, msg: serde_json::Value| {
+        if let Ok(mut o) = out.lock() {
+            let _ = writeln!(o, "{msg}");
+            let _ = o.flush();
+        }
+    };
+    {
+        let out = out.clone();
+        std::thread::spawn(move || {
+            loop {
+                match post_to_afar(
+                    "/hook/channel-wait",
+                    "",
+                    CHANNEL_WAIT + Duration::from_secs(10),
+                ) {
+                    Some(body) => {
+                        let events: Vec<serde_json::Value> =
+                            serde_json::from_str(&body).unwrap_or_default();
+                        for e in events {
+                            send(
+                                &out,
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "notifications/claude/channel",
+                                    "params": e,
+                                }),
+                            );
+                        }
+                    }
+                    // afar is gone or restarting: try again later.
+                    None => std::thread::sleep(Duration::from_secs(2)),
+                }
+            }
+        });
+    }
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(id) = req.get("id").cloned() else {
+            continue;
+        };
+        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        let result = match method {
+            "initialize" => serde_json::json!({
+                "protocolVersion": req["params"]["protocolVersion"].clone(),
+                "capabilities": {"experimental": {"claude/channel": {}}, "tools": {}},
+                "serverInfo": {"name": "afar-channel", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": "Events from afar, the file manager the user works in, \
+                    arrive as <channel source=\"afar-channel\">. Each is something the user \
+                    asked for in afar (or afar noticed); act on it with afar's tools.",
+            }),
+            "tools/list" => serde_json::json!({"tools": []}),
+            _ => serde_json::json!({}),
+        };
+        send(
+            &out,
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        );
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------------- hook client
 
 /// `afar hook <event>`: called by Claude Code; prints what afar returns.
 /// Never fails loudly — a broken hook must not get in the agent's way.
 pub fn run_hook(event: &str) -> anyhow::Result<()> {
-    use std::io::{Read, Write};
+    use std::io::Read;
     // Claude Code passes the hook input on stdin; drain it.
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
-    let (Ok(endpoint), Ok(token)) = (std::env::var("AFAR_ENDPOINT"), std::env::var("AFAR_TOKEN"))
-    else {
-        return Ok(());
-    };
-    let addr = endpoint.trim_start_matches("http://").trim_end_matches('/');
-    let Ok(mut stream) = std::net::TcpStream::connect(addr) else {
-        return Ok(());
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let request = format!(
-        "POST /hook/{event} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{input}",
-        input.len()
-    );
-    stream.write_all(request.as_bytes())?;
-    let mut response = Vec::new();
-    let _ = stream.read_to_end(&mut response);
-    let response = String::from_utf8_lossy(&response);
-    if let Some((head, body)) = response.split_once("\r\n\r\n")
-        && head.starts_with("HTTP/1.1 200")
+    if let Some(body) = post_to_afar(&format!("/hook/{event}"), &input, Duration::from_secs(10))
         && !body.is_empty()
     {
         // JSON hook output: the text goes into the model's context as

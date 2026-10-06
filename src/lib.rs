@@ -6,6 +6,7 @@ pub mod dev;
 pub mod dialog;
 pub mod drives;
 pub mod i18n;
+pub mod ide;
 pub mod journal;
 pub mod keymap;
 pub mod keys;

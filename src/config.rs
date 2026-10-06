@@ -77,6 +77,12 @@ pub struct Agent {
     pub live: bool,
     /// Where the agent pane is: below the panels or above them.
     pub position: AgentPosition,
+    /// afar is the agent's IDE (Claude Code's IDE protocol): it sees the
+    /// viewer's selection, edits can be reviewed in afar.
+    pub ide: bool,
+    /// afar wakes the agent with events (Claude Code's Channels, research
+    /// preview): `afar channel` is its channel server.
+    pub channels: bool,
     pub permissions: Permissions,
 }
 
@@ -95,6 +101,8 @@ impl Default for Agent {
             args: Vec::new(),
             live: false,
             position: AgentPosition::Bottom,
+            ide: false,
+            channels: false,
             permissions: Permissions::default(),
         }
     }

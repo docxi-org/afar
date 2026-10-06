@@ -100,12 +100,16 @@ impl App {
         let command_label = tr!("agent-settings-command");
         let args_label = tr!("agent-settings-args");
         let live = tr!("agent-settings-live");
+        let ide = tr!("agent-settings-ide");
+        let channels = tr!("agent-settings-channels");
         let note = tr!("agent-settings-note");
         let position_label = tr!("agent-settings-position");
         let positions = [tr!("agent-position-bottom"), tr!("agent-position-top")];
         let position_w = positions.iter().map(|p| chars(p)).max().unwrap_or(10) + 3;
         let content = (label_w + 1 + COMBO)
             .max(chars(&live) + 4)
+            .max(chars(&ide) + 4)
+            .max(chars(&channels) + 4)
             .max(chars(&note))
             .max(56);
         let field_x = 5 + chars(&command_label).max(chars(&args_label)) + 1;
@@ -120,6 +124,8 @@ impl App {
                 input_at(field_x, field_w, a.args.join(" "), false),
             ])
             .row(vec![check_at(5, live, a.live)])
+            .row(vec![check_at(5, ide, a.ide)])
+            .row(vec![check_at(5, channels, a.channels)])
             .row(vec![
                 text_at(5, position_label.clone()),
                 combo_at(
@@ -163,6 +169,8 @@ impl App {
         let old_command = (
             self.config.agent.command.clone(),
             self.config.agent.args.clone(),
+            self.config.agent.ide,
+            self.config.agent.channels,
         );
         let a = &mut self.config.agent;
         let command = dialog.input_value(0).trim().to_string();
@@ -175,6 +183,8 @@ impl App {
             .map(str::to_string)
             .collect();
         a.live = dialog.checked(0);
+        a.ide = dialog.checked(1);
+        a.channels = dialog.checked(2);
         a.position = if dialog.combo(0) == 1 {
             AgentPosition::Top
         } else {
@@ -195,8 +205,10 @@ impl App {
         p.delete = level(4, true);
         p.delete_permanent = level(5, true);
         p.run_command = level(6, true);
-        let changed_command = old_command != (a.command.clone(), a.args.clone());
+        let changed_command = old_command != (a.command.clone(), a.args.clone(), a.ide, a.channels);
+        let ide = a.ide;
         self.wm.set_agent_on_top(top);
+        self.set_ide(ide);
         self.save_config();
         if changed_command && self.agent_alive() {
             self.say(tr!("agent-settings-restart"));

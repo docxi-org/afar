@@ -36,6 +36,9 @@ fn main() -> anyhow::Result<()> {
     if args.get(1).map(String::as_str) == Some("hook") {
         return afar::mcp::run_hook(args.get(2).map_or("", String::as_str));
     }
+    if args.get(1).map(String::as_str) == Some("channel") {
+        return afar::mcp::run_channel();
+    }
     // `afar --dev`: this process supervises the app and restarts it after
     // rebuilds (see dev.rs).
     if afar::dev::requested(&args) && !afar::dev::is_child() {

@@ -197,6 +197,7 @@ impl App {
                     self.say(e);
                 }
             }
+            AskAgent => self.ide_mention(i),
             Edit => self.say(tr!("viewer-not-yet")),
             _ => {}
         }

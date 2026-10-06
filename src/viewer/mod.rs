@@ -409,6 +409,56 @@ impl Viewer {
         }
     }
 
+    /// Line and column (both from 0) of a byte offset; lines end with LF.
+    /// Scans from the start of the file (the line index comes in stage 2).
+    pub fn line_col(&mut self, pos: u64) -> (u64, u64) {
+        let lf = self.codec.encode("\n");
+        let u = lf.len().max(1) as u64;
+        let pos = pos.min(self.src.size());
+        let (mut line, mut line_start, mut p) = (0u64, 0u64, 0u64);
+        while p < pos {
+            let len = (pos - p).min(1 << 20) as usize;
+            let chunk = self.src.read_vec(p, len);
+            if chunk.is_empty() {
+                break;
+            }
+            let mut i = 0;
+            while i + lf.len() <= chunk.len() {
+                if chunk[i..i + lf.len()] == lf[..] {
+                    line += 1;
+                    line_start = p + i as u64 + u;
+                }
+                i += u as usize;
+            }
+            p += chunk.len() as u64;
+        }
+        let bytes = self
+            .src
+            .read_vec(line_start, (pos - line_start).min(1 << 20) as usize);
+        let (mut col, mut i) = (0u64, 0usize);
+        while i < bytes.len() {
+            let (_, n) = self.codec.decode(&bytes[i..]);
+            col += 1;
+            i += n.max(1);
+        }
+        (line, col)
+    }
+
+    /// The text from `from` to `to` (bytes), decoded.
+    pub fn text_between(&mut self, from: u64, to: u64) -> String {
+        let bytes = self
+            .src
+            .read_vec(from, to.saturating_sub(from).min(1 << 20) as usize);
+        let mut out = String::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let (ch, n) = self.codec.decode(&bytes[i..]);
+            out.push(ch);
+            i += n.max(1);
+        }
+        out
+    }
+
     /// Size of a code unit (2 in UTF-16).
     pub fn unit(&self) -> u64 {
         self.codec.unit() as u64

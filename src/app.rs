@@ -30,6 +30,7 @@ mod cmdline;
 mod commands;
 mod fileops;
 mod fswatch;
+mod ide;
 mod mainmenu;
 mod panelcmds;
 mod policy;
@@ -50,6 +51,8 @@ pub enum AppMsg {
     Fs(crate::watch::FsEvent),
     /// A viewer's search finished.
     ViewerFound(viewers::SearchDone),
+    /// The agent through the IDE protocol.
+    Ide(crate::ide::IdeMsg),
 }
 
 /// The state to start from.
@@ -102,6 +105,8 @@ const CLAUDE_SESSION_VARS: &[&str] = &[
     "CLAUDE_CODE_EXECPATH",
     "CLAUDE_PID",
     "CLAUDE_EFFORT",
+    // An IDE of the outer terminal (VS Code): afar is the agent's IDE.
+    "CLAUDE_CODE_SSE_PORT",
 ];
 
 const HISTORY_MAX: usize = 10_000;
@@ -221,6 +226,14 @@ pub struct App {
     viewer_keybar: bool,
     /// The shown viewer last checked its file for changes.
     viewer_checked: Instant,
+    /// afar as the agent's IDE (`[agent] ide`).
+    ide: Option<crate::ide::IdeServer>,
+    ide_connected: bool,
+    /// Events for the agent's channel, and the waiting `afar channel`.
+    channel_events: Vec<serde_json::Value>,
+    channel_waiter: Option<tokio::sync::oneshot::Sender<Reply>>,
+    /// What `selection_changed` last told the agent.
+    ide_sent: Option<ide::SentSelection>,
     /// Modifier keys held now (the key bar shows their labels).
     held: KeyModifiers,
     /// The last Ctrl+O (quick presses go round the hiding states).
@@ -328,6 +341,11 @@ impl App {
             viewer_peek: false,
             viewer_keybar: true,
             viewer_checked: Instant::now(),
+            ide: None,
+            ide_connected: false,
+            ide_sent: None,
+            channel_events: Vec::new(),
+            channel_waiter: None,
             held: KeyModifiers::NONE,
             hiding_pressed: None,
             hiding_mode: 1,
@@ -364,6 +382,7 @@ impl App {
         if let Some(problem) = config_problem {
             app.say(tr!("config-problem", problem = problem));
         }
+        app.set_ide(app.config.agent.ide);
         let (left, right) = (app.panels[0].path.clone(), app.panels[1].path.clone());
         app.journal
             .push(Actor::System, Event::AppStarted { left, right });
@@ -660,7 +679,12 @@ impl App {
             AppMsg::Input(_) => {}
             AppMsg::Dev(msg) => self.on_dev(msg),
             AppMsg::ViewerFound(done) => self.viewer_found(done),
+            AppMsg::Ide(msg) => self.on_ide(msg),
             AppMsg::CommandOutput => self.on_command_output(),
+            AppMsg::Mcp(McpMsg {
+                request: Request::ChannelWait,
+                reply,
+            }) => self.channel_wait(reply),
             AppMsg::Mcp(McpMsg { request, reply }) => match request {
                 // Answered later: after the user's confirmation.
                 Request::Delete {
@@ -736,6 +760,7 @@ impl App {
             self.message = None;
         }
         self.viewer_tick();
+        self.ide_sync_selection();
         self.maybe_restart();
     }
 
@@ -750,16 +775,24 @@ impl App {
     /// the command-line arguments for `claude`.
     fn agent_args(&self) -> Result<Vec<String>> {
         let dir = self.journal.dir();
-        let mcp = serde_json::json!({
+        let exe = std::env::current_exe()?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut mcp = serde_json::json!({
             "mcpServers": { "afar": {
                 "type": "http",
                 "url": format!("http://127.0.0.1:{}/mcp", self.link.port),
                 "headers": { "Authorization": format!("Bearer {}", self.link.token) },
             }}
         });
-        let exe = std::env::current_exe()?
-            .to_string_lossy()
-            .replace('\\', "/");
+        // The channel server; it reaches afar by AFAR_ENDPOINT/AFAR_TOKEN.
+        if self.config.agent.channels {
+            mcp["mcpServers"]["afar-channel"] = serde_json::json!({
+                "type": "stdio",
+                "command": exe,
+                "args": ["channel"],
+            });
+        }
         let hook = |event: &str| {
             serde_json::json!([{ "hooks": [
                 { "type": "command", "command": format!("\"{exe}\" hook {event}") }
@@ -781,15 +814,24 @@ impl App {
         let settings_path = dir.join("settings.json");
         std::fs::write(&mcp_path, serde_json::to_string_pretty(&mcp)?)?;
         std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        Ok(vec![
+        let mut args: Vec<String> = vec![
             "--settings".into(),
             settings_path.to_string_lossy().into_owned(),
             "--append-system-prompt".into(),
             SYSTEM_PROMPT.into(),
-            // Variadic option: keep it last.
+        ];
+        if self.config.agent.channels {
+            args.extend([
+                "--dangerously-load-development-channels".into(),
+                "server:afar-channel".into(),
+            ]);
+        }
+        // Variadic option: keep it last.
+        args.extend([
             "--mcp-config".into(),
             mcp_path.to_string_lossy().into_owned(),
-        ])
+        ]);
+        Ok(args)
     }
 
     fn start_agent(&mut self, cols: u16, rows: u16) {
@@ -803,13 +845,17 @@ impl App {
                 vec![]
             }
         };
-        let env = [
+        let mut env = vec![
             (
                 "AFAR_ENDPOINT".to_string(),
                 format!("http://127.0.0.1:{}", self.link.port),
             ),
             ("AFAR_TOKEN".to_string(), self.link.token.clone()),
         ];
+        // The agent connects to afar's IDE server by this port.
+        if let Some(ide) = &self.ide {
+            env.push(("CLAUDE_CODE_SSE_PORT".to_string(), ide.port.to_string()));
+        }
         // A new agent session has not seen anything yet.
         self.agent_seen_seq = 0;
         // Our own session id; after a dev restart: the same conversation.
@@ -884,6 +930,13 @@ impl App {
         }
         if lower == "afar:restart" {
             self.request_restart();
+            self.clear_cmdline();
+            return;
+        }
+        // afar:channel <text>: an event for the agent (Channels test).
+        if lower.starts_with("afar:channel ") {
+            let event = text["afar:channel ".len()..].trim().to_string();
+            self.channel_send(event, &[("kind", "command_line")]);
             self.clear_cmdline();
             return;
         }
@@ -1470,6 +1523,7 @@ impl App {
             }
             Request::HookPreTool(input) => Ok(self.on_pre_tool(&input)),
             Request::HookPostTool(input) => Ok(self.on_post_tool(&input)),
+            Request::ChannelWait => unreachable!("answered in handle"),
             Request::HookSessionStart => Ok(format!(
                 "[afar] left panel: {} | right panel: {} | active: {} | journal at #{} | mode: {}",
                 self.panels[0].path.display(),

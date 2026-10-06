@@ -151,6 +151,9 @@ pub enum ViewerCmd {
     StatusLine,
     KeyBar,
     UserScreen,
+    /// Ctrl+Enter: a reference to the selected (or shown) lines into the
+    /// agent's input (IDE protocol `at_mentioned`).
+    AskAgent,
 }
 
 /// A command's name, its default (Far) keys, and whether it works with the
@@ -347,6 +350,7 @@ pub const COMMANDS: &[Def] = &[
     vdef("viewer.status_line", V::StatusLine, &["Ctrl+Shift+B"]),
     vdef("viewer.keybar", V::KeyBar, &["Ctrl+B"]),
     vdef("viewer.user_screen", V::UserScreen, &["Ctrl+O"]),
+    vdef("viewer.ask_agent", V::AskAgent, &["Ctrl+Enter"]),
 ];
 
 impl Command {

@@ -28,6 +28,15 @@ args = []
 live = false
 # Where the agent pane is: "bottom" — below the panels, "top" — above them.
 position = "bottom"
+# afar as the agent's "IDE" (Claude Code's IDE protocol, experimental): the
+# agent sees the viewer's selection, Ctrl+Enter in the viewer sends it a
+# reference to the lines, edits Claude Code asks about can be accepted in an
+# afar dialog. Applies when afar starts next time.
+ide = false
+# afar wakes the agent with events (Claude Code's Channels, experimental): an
+# event starts the agent's turn without typing in its pane. Needs a claude.ai
+# login or a Console key. Applies when the agent starts next time.
+channels = false
 
 [agent.permissions]
 # What the agent may do through afar (its afar_* tools):
