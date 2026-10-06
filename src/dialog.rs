@@ -265,6 +265,8 @@ pub struct Dialog {
     drag: Option<(u16, u16)>,
     /// Where the dialog was last drawn.
     outer: Rect,
+    /// Where the open drop-down list was last drawn.
+    list_rect: Rect,
 }
 
 impl Dialog {
@@ -282,6 +284,7 @@ impl Dialog {
             offset: (0, 0),
             drag: None,
             outer: Rect::default(),
+            list_rect: Rect::default(),
         }
     }
 
@@ -937,6 +940,22 @@ impl Dialog {
     /// Returns `None` when the event is outside the dialog.
     pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Option<Outcome> {
         let pos = Position::new(ev.column, ev.row);
+        // An open list closes on a click anywhere outside it, and that
+        // click does nothing else.
+        if self.list.is_some()
+            && matches!(ev.kind, MouseEventKind::Down(_))
+            && !self.list_rect.contains(pos)
+        {
+            self.list = None;
+            return Some(Outcome::Pending);
+        }
+        // On the list's frame: nothing (the list covers what is below it).
+        if self.list.is_some()
+            && self.list_rect.contains(pos)
+            && !self.hits.first().is_some_and(|(r, _)| r.contains(pos))
+        {
+            return Some(Outcome::Pending);
+        }
         // Moving the dialog: grabbed anywhere but on its items.
         if let Some((lx, ly)) = self.drag {
             match ev.kind {
@@ -1319,10 +1338,11 @@ impl Dialog {
             (*width + 1).min(area.right().saturating_sub(lx)),
             (items.len() as u16 + 2).min(area.bottom().saturating_sub(ly)),
         );
+        self.list_rect = rect;
         if rect.width < 3 || rect.height < 3 {
             return true;
         }
-        buf.set_style(rect, theme::DIALOG_LIST_TEXT);
+        buf.set_style(rect, theme::COMBO_TEXT);
         for yy in rect.top()..rect.bottom() {
             for xx in rect.left()..rect.right() {
                 buf[(xx, yy)].set_symbol(" ");
@@ -1356,12 +1376,9 @@ impl Dialog {
                 }
                 Some(text) => {
                     let (style, hot) = if i == current {
-                        (
-                            theme::DIALOG_LIST_SELECTED,
-                            theme::DIALOG_LIST_SELECTED_HIGHLIGHT,
-                        )
+                        (theme::COMBO_SELECTED, theme::COMBO_SELECTED_HIGHLIGHT)
                     } else {
-                        (theme::DIALOG_LIST_TEXT, theme::DIALOG_LIST_HIGHLIGHT)
+                        (theme::COMBO_TEXT, theme::COMBO_HIGHLIGHT)
                     };
                     for xx in rect.left() + 1..rect.right() - 1 {
                         buf[(xx, y)].set_symbol(" ").set_style(style);
@@ -1636,6 +1653,48 @@ mod tests {
         d.handle_key(&key(KeyCode::Enter));
         assert_eq!(d.combo(0), 3);
         assert_eq!(d.handle_key(&key(KeyCode::Enter)), Outcome::Closed(Some(0)));
+    }
+
+    #[test]
+    fn click_outside_closes_the_list() {
+        let items = vec![Some("a".to_string()), Some("b".into())];
+        let mut d = Dialog::far("t", 76)
+            .row(vec![combo_at(29, 42, items, 0)])
+            .buttons(&["OK"], 0);
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        d.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        d.draw(area, &mut buf);
+        assert!(d.list.is_some());
+        // The list is white on cyan, like Far's combo boxes.
+        let r = d.list_rect;
+        assert_eq!(buf[(r.x + 3, r.y + 2)].style().bg, theme::COMBO_TEXT.bg);
+        let click = |x, y| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Outside the dialog altogether.
+        assert_eq!(d.handle_mouse(&click(0, 0)), Some(Outcome::Pending));
+        assert!(d.list.is_none());
+        // Inside the dialog but outside the list (the title row): closes.
+        d.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        d.draw(area, &mut buf);
+        assert_eq!(
+            d.handle_mouse(&click(d.outer.x + 10, d.outer.y + 1)),
+            Some(Outcome::Pending)
+        );
+        assert!(d.list.is_none());
+        // The list covers the OK button: a click on its frame there does
+        // not press OK.
+        d.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        d.draw(area, &mut buf);
+        let r = d.list_rect;
+        assert_eq!(
+            d.handle_mouse(&click(r.x + 5, r.bottom() - 1)),
+            Some(Outcome::Pending)
+        );
     }
 
     #[test]

@@ -65,6 +65,12 @@ pub const DIALOG_LIST_SELECTED: Style = c(con::WHITE, con::BLACK);
 pub const DIALOG_LIST_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
 pub const DIALOG_LIST_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
 pub const DIALOG_LIST_DISABLED: Style = c(con::DARKGRAY, con::LIGHTGRAY);
+/// The drop-down list of a combo box (Dialog.Combo.*), also in warnings.
+pub const COMBO_TEXT: Style = c(con::WHITE, con::CYAN);
+pub const COMBO_SELECTED: Style = c(con::WHITE, con::BLACK);
+pub const COMBO_HIGHLIGHT: Style = c(con::YELLOW, con::CYAN);
+pub const COMBO_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
+pub const COMBO_BOX: Style = c(con::WHITE, con::CYAN);
 pub const WARN_HIGHLIGHT: Style = c(con::YELLOW, con::RED);
 pub const WARN_BUTTON_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
 pub const WARN_DISABLED: Style = c(con::DARKGRAY, con::RED);
