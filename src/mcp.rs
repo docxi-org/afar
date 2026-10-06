@@ -71,6 +71,10 @@ pub enum Request {
     HookPrompt,
     /// `SessionStart` hook: short description of the environment.
     HookSessionStart,
+    /// `PreToolUse` hook (Bash): the hook's JSON input.
+    HookPreTool(String),
+    /// `PostToolUse` hook: the hook's JSON input.
+    HookPostTool(String),
 }
 
 pub type Reply = Result<String, String>;
@@ -418,10 +422,16 @@ async fn auth(
     }
 }
 
-async fn hook(State(s): State<Shared>, Path(event): Path<String>) -> (StatusCode, String) {
+async fn hook(
+    State(s): State<Shared>,
+    Path(event): Path<String>,
+    body: String,
+) -> (StatusCode, String) {
     let request = match event.as_str() {
         "user-prompt" => Request::HookPrompt,
         "session-start" => Request::HookSessionStart,
+        "pre-tool" => Request::HookPreTool(body),
+        "post-tool" => Request::HookPostTool(body),
         _ => return (StatusCode::NOT_FOUND, String::new()),
     };
     match ask(&s.tx, request).await {

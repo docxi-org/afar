@@ -65,6 +65,17 @@ pub const DIALOG_LIST_SELECTED: Style = c(con::WHITE, con::BLACK);
 pub const DIALOG_LIST_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
 pub const DIALOG_LIST_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
 pub const DIALOG_LIST_DISABLED: Style = c(con::DARKGRAY, con::LIGHTGRAY);
+/// Menus (Menu.*): sort, drives, later F9 and F2.
+pub const MENU_BOX: Style = c(con::WHITE, con::CYAN);
+pub const MENU_TITLE: Style = c(con::WHITE, con::CYAN);
+pub const MENU_TEXT: Style = c(con::WHITE, con::CYAN);
+pub const MENU_HIGHLIGHT: Style = c(con::YELLOW, con::CYAN);
+pub const MENU_SELECTED: Style = c(con::WHITE, con::BLACK);
+pub const MENU_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
+pub const MENU_DISABLED: Style = c(con::DARKGRAY, con::CYAN);
+pub const MENU_SCROLLBAR: Style = c(con::WHITE, con::CYAN);
+/// The search box of Alt+letter.
+pub const DIALOG_BOX_TITLE: Style = c(con::BLACK, con::LIGHTGRAY);
 /// The drop-down list of a combo box (Dialog.Combo.*), also in warnings.
 pub const COMBO_TEXT: Style = c(con::WHITE, con::CYAN);
 pub const COMBO_SELECTED: Style = c(con::WHITE, con::BLACK);
@@ -91,11 +102,16 @@ pub struct FileAttrs<'a> {
     pub is_dir: bool,
     pub hidden: bool,
     pub system: bool,
+    /// Changed by the agent recently (afar's own group, not Far's).
+    pub agent: bool,
 }
 
 /// Far's default highlighting groups, first match wins: (normal, under
 /// the cursor) foregrounds.
 fn highlight(f: &FileAttrs) -> Option<(Color, Color)> {
+    if f.agent {
+        return Some((con::LIGHTRED, con::LIGHTRED));
+    }
     if f.hidden || f.system {
         return Some((con::CYAN, con::DARKGRAY));
     }
@@ -201,6 +217,7 @@ mod tests {
             is_dir: false,
             hidden: false,
             system: false,
+            agent: false,
         }
     }
 
@@ -228,6 +245,7 @@ mod tests {
             is_dir: true,
             hidden: false,
             system: false,
+            agent: false,
         };
         assert_eq!(file_style(&dir, false, true), PANEL_CURSOR.fg(Color::White));
         let hidden = FileAttrs {
@@ -235,6 +253,7 @@ mod tests {
             is_dir: true,
             hidden: true,
             system: false,
+            agent: false,
         };
         assert_eq!(file_style(&hidden, false, false).fg, Some(Color::Cyan));
         assert_eq!(file_style(&hidden, false, true).fg, Some(Color::DarkGray));

@@ -13,6 +13,9 @@ use ratatui::style::Style;
 
 use crate::{theme, tr};
 
+mod sort;
+pub use sort::{MODES as SORT_MODES, Sort, SortMode};
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub name: String,
@@ -21,7 +24,13 @@ pub struct Entry {
     pub link: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    pub accessed: Option<SystemTime>,
+    /// Order in which the directory listing returned it ("unsorted").
+    pub position: usize,
     pub selected: bool,
+    /// The selection before the last selecting command (Ctrl+M).
+    pub prev_selected: bool,
     pub hidden: bool,
     pub system: bool,
 }
@@ -30,6 +39,19 @@ impl Entry {
     fn is_up(&self) -> bool {
         self.name == ".."
     }
+}
+
+/// What Far's SelectFiles does with the matching items.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SelectMode {
+    Add,
+    Remove,
+    /// Gray *: files; folders are only unselected.
+    Invert,
+    /// Ctrl+Gray *: folders too.
+    InvertAll,
+    /// Alt+Gray *: files only.
+    InvertFiles,
 }
 
 /// Far's view modes (Ctrl+1 … Ctrl+4 so far).
@@ -99,6 +121,9 @@ pub struct FilePanel {
     top: usize,
     pub error: Option<String>,
     pub view: ViewMode,
+    pub sort: Sort,
+    /// Names changed by the agent (lowercase on Windows), highlighted.
+    pub agent_marked: std::collections::HashSet<String>,
     /// Cells at the right of the top border taken by the clock: the title
     /// moves left of it.
     pub clock_cells: u16,
@@ -118,6 +143,8 @@ impl FilePanel {
             top: 0,
             error: None,
             view: ViewMode::default(),
+            sort: Sort::default(),
+            agent_marked: Default::default(),
             clock_cells: 0,
             columns: Vec::new(),
             list_top: 0,
@@ -162,18 +189,17 @@ impl FilePanel {
                         is_dir: meta.as_ref().is_some_and(|m| m.is_dir()),
                         size: meta.as_ref().map_or(0, |m| m.len()),
                         modified: meta.as_ref().and_then(|m| m.modified().ok()),
+                        created: meta.as_ref().and_then(|m| m.created().ok()),
+                        accessed: meta.as_ref().and_then(|m| m.accessed().ok()),
+                        position: entries.len(),
                         selected: selected.contains(&name),
+                        prev_selected: false,
                         name,
                     });
                 }
             }
             Err(e) => self.error = Some(e.to_string()),
         }
-        entries.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
         if self.path.parent().is_some() {
             entries.insert(
                 0,
@@ -183,18 +209,40 @@ impl FilePanel {
                     link: false,
                     size: 0,
                     modified: None,
+                    created: None,
+                    accessed: None,
+                    position: 0,
                     selected: false,
+                    prev_selected: false,
                     hidden: false,
                     system: false,
                 },
             );
         }
+        let sort = self.sort;
+        entries.sort_by(|a, b| sort.compare(a, b));
         self.entries = entries;
         // When the item is gone (deleted), stay at the same position.
         self.cursor = keep
             .and_then(|k| self.entries.iter().position(|e| e.name == k))
             .unwrap_or(self.cursor)
             .min(self.entries.len().saturating_sub(1));
+    }
+
+    /// Re-sorts the listing, keeping the cursor on the same item.
+    pub fn resort(&mut self) {
+        let keep = self.current().map(|e| e.name.clone());
+        let sort = self.sort;
+        self.entries.sort_by(|a, b| sort.compare(a, b));
+        if let Some(name) = keep {
+            self.set_cursor_by_name(&name);
+        }
+    }
+
+    /// Far's Ctrl+F3…F11: the same mode again flips the order.
+    pub fn set_sort_mode(&mut self, mode: SortMode) {
+        self.sort.set_mode(mode);
+        self.resort();
     }
 
     pub fn current(&self) -> Option<&Entry> {
@@ -245,6 +293,16 @@ impl FilePanel {
         self.cursor = (self.cursor as isize + delta).clamp(0, max) as usize;
     }
 
+    /// Puts the cursor on item `i` with it near the middle of the panel
+    /// (Far's quick search: top = cursor - (panel height - 1) / 2).
+    pub fn set_cursor_centered(&mut self, i: usize) {
+        self.cursor = i.min(self.entries.len().saturating_sub(1));
+        let height = self.rows + 5;
+        let page = self.rows * self.stripes;
+        let max_top = self.entries.len().saturating_sub(page);
+        self.top = self.cursor.saturating_sub((height - 1) / 2).min(max_top);
+    }
+
     /// Left/Right in a mode with several stripes: one column over.
     pub fn move_column(&mut self, delta: isize) -> bool {
         if self.stripes < 2 {
@@ -283,6 +341,70 @@ impl FilePanel {
 
     pub fn selected(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().filter(|e| e.selected)
+    }
+
+    /// Remembers the selection for Ctrl+M (Far's SaveSelection).
+    pub fn save_selection(&mut self) {
+        for e in &mut self.entries {
+            e.prev_selected = e.selected;
+        }
+    }
+
+    /// Ctrl+M: back to the remembered selection; the current one is
+    /// remembered instead (Far's RestoreSelection).
+    pub fn restore_selection(&mut self) {
+        for e in &mut self.entries {
+            if !e.is_up() {
+                std::mem::swap(&mut e.selected, &mut e.prev_selected);
+            }
+        }
+    }
+
+    /// Far's SelectFiles: (un)selects the items matching `masks` (all
+    /// items when inverting); folders are selected only when
+    /// `select_folders` (Far's option, off by default), except by
+    /// Ctrl+Gray *. Returns how many items were touched.
+    pub fn select_masked(
+        &mut self,
+        masks: Option<&crate::masks::FileMasks>,
+        mode: SelectMode,
+        select_folders: bool,
+    ) -> usize {
+        self.save_selection();
+        let inverting = matches!(
+            mode,
+            SelectMode::Invert | SelectMode::InvertAll | SelectMode::InvertFiles
+        );
+        let mut count = 0;
+        for e in &mut self.entries {
+            if e.is_up() || (!inverting && !masks.is_some_and(|m| m.matches(&e.name))) {
+                continue;
+            }
+            let selection = match mode {
+                SelectMode::Add => true,
+                SelectMode::Remove => false,
+                _ => !e.selected,
+            };
+            if !e.is_dir
+                || (select_folders && mode != SelectMode::InvertFiles)
+                || !selection
+                || mode == SelectMode::InvertAll
+            {
+                e.selected = selection;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Shift+Gray + / Shift+Gray -: everything (folders by the option).
+    pub fn select_all(&mut self, select: bool, select_folders: bool) {
+        self.save_selection();
+        for e in &mut self.entries {
+            if !e.is_up() && (!select || !e.is_dir || select_folders) {
+                e.selected = select;
+            }
+        }
     }
 
     /// Sets the selection to the given names; returns how many were found.
@@ -396,11 +518,22 @@ impl FilePanel {
             put_centered(buf, c.x, y0 + 1, c.width, &title, theme::PANEL_COLUMN_TITLE);
         }
         // The sort mode letter over the first title cell: the hotkey of
-        // "&Name" ("и" in Russian), lowercase for ascending.
-        let sort = hotkey_letter(&tr!("MMenuSortByName"));
+        // the mode's label ("и" for "&Имя"), uppercase when reversed; "^"
+        // after it when selected files go first.
+        let letter = hotkey_letter(&tr!(self.sort.mode.info().label));
+        let letter = if self.sort.reverse {
+            letter.to_uppercase()
+        } else {
+            letter
+        };
         buf[(x0 + 1, y0 + 1)]
-            .set_symbol(&sort)
+            .set_symbol(&letter)
             .set_style(theme::PANEL_COLUMN_TITLE);
+        if self.sort.selected_first {
+            buf[(x0 + 2, y0 + 1)]
+                .set_symbol("^")
+                .set_style(theme::PANEL_COLUMN_TITLE);
+        }
 
         // Keep the cursor on the page.
         let page = rows * stripes;
@@ -423,6 +556,8 @@ impl FilePanel {
                     is_dir: e.is_dir,
                     hidden: e.hidden,
                     system: e.system,
+                    agent: !self.agent_marked.is_empty()
+                        && self.agent_marked.contains(&name_key(&e.name)),
                 };
                 let style = theme::file_style(&attrs, e.selected, is_cursor);
                 let stripe_cols: Vec<&Placed> = columns.iter().filter(|c| c.stripe == s).collect();
@@ -684,6 +819,15 @@ pub fn truncate_path(p: &str, max: usize) -> String {
     format!("{root}…{tail}")
 }
 
+/// A name as compared on this system (Windows ignores case).
+fn name_key(name: &str) -> String {
+    if cfg!(windows) {
+        name.to_lowercase()
+    } else {
+        name.to_string()
+    }
+}
+
 /// Hidden and system attributes (on Unix: hidden = dot file).
 fn hidden_system(name: &str, meta: Option<&std::fs::Metadata>) -> (bool, bool) {
     #[cfg(windows)]
@@ -792,7 +936,11 @@ mod tests {
             link: false,
             size,
             modified: None,
+            created: None,
+            accessed: None,
+            position: 0,
             selected: false,
+            prev_selected: false,
             hidden: false,
             system: false,
         }

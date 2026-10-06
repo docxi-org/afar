@@ -202,6 +202,9 @@ pub struct Wm {
     root: Node,
     screens: Vec<Screen>,
     current: usize,
+    /// Windows hidden in place (Far's Ctrl+F1, Ctrl+F2, Ctrl+P): their
+    /// area stays theirs, what is below shows through.
+    hidden: Vec<WinId>,
 }
 
 impl Default for Wm {
@@ -243,6 +246,18 @@ impl Wm {
                 },
             ],
             current: 0,
+            hidden: Vec::new(),
+        }
+    }
+
+    pub fn is_hidden(&self, win: WinId) -> bool {
+        self.hidden.contains(&win)
+    }
+
+    pub fn set_hidden(&mut self, win: WinId, hidden: bool) {
+        self.hidden.retain(|w| *w != win);
+        if hidden {
+            self.hidden.push(win);
         }
     }
 
@@ -264,6 +279,7 @@ impl Wm {
 
     fn arrange_node(&self, node: &Node, area: Rect, out: &mut Arrangement) {
         match node {
+            Node::Leaf(w) if self.is_hidden(*w) => {}
             Node::Leaf(w) => out.windows.push((*w, area)),
             Node::ScreenSlot => {
                 out.screen_area = area;
@@ -290,15 +306,19 @@ impl Wm {
                         Rect::new(area.x, area.y + first, area.width, total - first),
                     ),
                 };
-                out.splitters.push(Splitter {
-                    id: s.id,
-                    dir: s.dir,
-                    area,
-                    boundary: match s.dir {
-                        Dir::Row => b.x,
-                        Dir::Column => b.y,
-                    },
-                });
+                // Nothing to move next to a hidden window.
+                let hidden = |n: &Node| matches!(n, Node::Leaf(w) if self.is_hidden(*w));
+                if !hidden(&s.first) && !hidden(&s.second) {
+                    out.splitters.push(Splitter {
+                        id: s.id,
+                        dir: s.dir,
+                        area,
+                        boundary: match s.dir {
+                            Dir::Row => b.x,
+                            Dir::Column => b.y,
+                        },
+                    });
+                }
                 self.arrange_node(&s.first, a, out);
                 self.arrange_node(&s.second, b, out);
             }
@@ -405,6 +425,16 @@ mod tests {
         wm.set_first(MAIN_SPLIT, i32::from(s.first()) - 4, s.total());
         let tall = wm.arrange(Rect::new(0, 0, 100, 50));
         assert_eq!(tall.rect(WinId::Agent).unwrap().height, 16);
+    }
+
+    #[test]
+    fn hidden_window_keeps_its_place() {
+        let mut wm = Wm::new();
+        wm.set_hidden(WinId::Panel(0), true);
+        let a = wm.arrange(Rect::new(0, 0, 100, 30));
+        assert_eq!(a.rect(WinId::Panel(0)), None);
+        assert_eq!(a.rect(WinId::Panel(1)), Some(Rect::new(50, 0, 50, 18)));
+        assert!(a.splitter(PANELS_SPLIT).is_none());
     }
 
     #[test]

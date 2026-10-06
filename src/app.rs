@@ -20,11 +20,14 @@ use crate::dev::{DevMsg, DevState, PanelState};
 use crate::journal::{Actor, Event, Journal, format_entries};
 use crate::mcp::{McpMsg, Reply, Request};
 use crate::ops::{OpId, OpMsg};
-use crate::panel::{FilePanel, put};
+use crate::panel::{FilePanel, SortMode, put};
 use crate::term::{PtySession, SpawnOptions};
 use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
 mod fileops;
+mod fswatch;
+mod panelcmds;
+mod quicksearch;
 use crate::{keys, termview, theme, tr};
 use fileops::{Overlay, RunningOp};
 
@@ -35,6 +38,8 @@ pub enum AppMsg {
     Mcp(McpMsg),
     Op(OpMsg),
     Dev(DevMsg),
+    /// A change in a folder shown in a panel.
+    Fs(crate::watch::FsEvent),
 }
 
 /// How the main loop ended.
@@ -87,7 +92,7 @@ Far Manager; the user sees its two file panels above your pane and works in them
 The afar_* MCP tools show you what the user did (afar_state, afar_journal, afar_commands, \
 afar_command_output) and let you show things in the panels (afar_navigate, afar_select): when you \
 refer to a file or directory, show it with afar_navigate. Blocks starting with [afar journal] in a \
-user message are recent user actions added automatically.";
+user message are recent user actions added automatically. In the journal, `ext` entries are file changes made outside afar, `fs` entries by `agent` are changes made by your own commands, and `tool` entries are your own edits; files you change are highlighted in the panels.";
 
 /// Record of a command run from the command line.
 struct CmdRecord {
@@ -159,6 +164,8 @@ pub struct App {
     quit_armed: Option<Instant>,
     quit: bool,
     tx: Sender<AppMsg>,
+    /// Folder watching, the agent's tools, highlighting of its changes.
+    fs: fswatch::FsState,
     /// Geometry of the last frame, for mouse hit tests.
     last_layout: Option<Layout>,
     /// Where the running command's live screen was drawn.
@@ -167,6 +174,12 @@ pub struct App {
     last_click: Option<(Instant, usize, usize)>,
     /// F-key pressed with the mouse on the key bar (acts on release).
     keybar_pressed: Option<u8>,
+    /// The last mask of Gray + / Gray - (Far's strPrevMask).
+    select_mask: String,
+    /// Alt+letter search in a panel.
+    quick_search: Option<quicksearch::QuickSearch>,
+    /// The last folder on each drive, for the drive menu.
+    drive_paths: std::collections::HashMap<char, PathBuf>,
     /// Dialogs and progress windows over the layout, topmost last.
     overlays: Vec<Overlay>,
     ops: std::collections::HashMap<OpId, RunningOp>,
@@ -218,11 +231,15 @@ impl App {
             message: None,
             quit_armed: None,
             quit: false,
+            fs: fswatch::FsState::new(tx.clone()),
             tx,
             last_layout: None,
             last_live: Rect::default(),
             last_click: None,
             keybar_pressed: None,
+            select_mask: "*.*".into(),
+            quick_search: None,
+            drive_paths: Default::default(),
             overlays: Vec::new(),
             ops: std::collections::HashMap::new(),
             next_op_id: 0,
@@ -252,6 +269,9 @@ impl App {
             if p.path.is_dir() {
                 self.panels[side] = FilePanel::new(p.path);
             }
+            self.panels[side].view = p.view;
+            self.panels[side].sort = p.sort;
+            self.panels[side].resort();
             if let Some(name) = p.cursor {
                 self.panels[side].set_cursor_by_name(&name);
             }
@@ -274,6 +294,8 @@ impl App {
                 .map(|p| PanelState {
                     path: p.path.clone(),
                     cursor: p.current().map(|e| e.name.clone()),
+                    view: p.view,
+                    sort: p.sort,
                 })
                 .collect(),
             active: self.active,
@@ -405,8 +427,11 @@ impl App {
             );
         }
         self.last_layout = Some(self.layout(Rect::new(0, 0, size.width, size.height)));
-        // AFAR_NO_AGENT: no agent until Enter in its pane (tests).
-        if std::env::var_os("AFAR_NO_AGENT").is_none() {
+        // AFAR_NO_AGENT: no agent until Enter in its pane (tests); its
+        // MCP config and hook settings are written anyway.
+        if std::env::var_os("AFAR_NO_AGENT").is_some() {
+            let _ = self.agent_args();
+        } else {
             let (rows, cols) = self.last_agent_size();
             self.start_agent(cols, rows);
         }
@@ -502,11 +527,13 @@ impl App {
                 }
             },
             AppMsg::Op(msg) => self.on_op(msg),
+            AppMsg::Fs(ev) => self.on_fs(ev),
         }
     }
 
     /// Periodic work: debounced journal entries, message expiry.
     fn tick(&mut self) {
+        self.fs_tick();
         for side in 0..2 {
             if self.selection_changed[side]
                 .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
@@ -542,8 +569,9 @@ impl App {
 
     // ---------------------------------------------------------------- agent
 
-    /// Writes the MCP config and hook settings for the agent; returns the
-    /// command-line arguments for `claude`.
+    /// Writes the MCP config and hook settings for the agent (also without
+    /// an agent: tests call the MCP server and hooks with them); returns
+    /// the command-line arguments for `claude`.
     fn agent_args(&self) -> Result<Vec<String>> {
         let dir = self.journal.dir();
         let mcp = serde_json::json!({
@@ -561,9 +589,17 @@ impl App {
                 { "type": "command", "command": format!("\"{exe}\" hook {event}") }
             ]}])
         };
+        let tool_hook = |event: &str, matcher: &str| {
+            serde_json::json!([{ "matcher": matcher, "hooks": [
+                { "type": "command", "command": format!("\"{exe}\" hook {event}") }
+            ]}])
+        };
         let settings = serde_json::json!({ "hooks": {
             "SessionStart": hook("session-start"),
             "UserPromptSubmit": hook("user-prompt"),
+            // The agent's own edits and commands (docs/04-agent.md).
+            "PreToolUse": tool_hook("pre-tool", "Bash"),
+            "PostToolUse": tool_hook("post-tool", "Edit|MultiEdit|Write|NotebookEdit|Bash"),
         }});
         let mcp_path = dir.join("mcp.json");
         let settings_path = dir.join("settings.json");
@@ -822,6 +858,9 @@ impl App {
 
     fn change_dir_as(&mut self, actor: Actor, side: usize, path: &Path) -> Result<(), String> {
         let from = self.panels[side].change_dir(path)?;
+        if let Some(letter) = crate::drives::letter_of(&from) {
+            self.drive_paths.insert(letter, from.clone());
+        }
         let to = self.panels[side].path.clone();
         self.journal.push(
             actor,
@@ -853,6 +892,9 @@ impl App {
 
     fn mark_selection_changed(&mut self) {
         self.selection_changed[self.active] = Some(Instant::now());
+        if self.panels[self.active].sort.selected_first {
+            self.panels[self.active].resort();
+        }
     }
 
     // ------------------------------------------------------------ cmdline
@@ -912,6 +954,14 @@ impl App {
             {
                 let _ = writeln!(f, "{key:?}");
             }
+        }
+        // Quick search sees the key as typed (Alt+ф searches for "ф").
+        if self.focus == Focus::Panels
+            && !self.has_overlay()
+            && self.panels_visible()
+            && self.quick_search_key(&key)
+        {
+            return;
         }
         let key = keys::normalize(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1029,11 +1079,35 @@ impl App {
                     self.execute(text);
                 }
             }
+            // Both panels hidden (the user screen): Ctrl+F1 / Ctrl+F2 bring
+            // back just that one, as in Far.
+            KeyCode::F(n @ (1 | 2)) if ctrl && !alt && !shift && !self.panels_visible() => {
+                let side = usize::from(n - 1);
+                self.set_panels_visible(true);
+                self.wm.set_hidden(WinId::Panel(1 - side), true);
+                self.active = side;
+            }
             _ if !self.panels_visible() => {
                 self.cmdline_key(&key);
             }
             KeyCode::Char('r' | 'R') if ctrl && shift => self.request_restart(),
-            KeyCode::Tab => self.active = 1 - a,
+            _ if self.selection_key(&key) => {}
+            KeyCode::Char('m') if ctrl => {
+                self.panels[a].restore_selection();
+                self.mark_selection_changed();
+            }
+            KeyCode::Tab if !self.panel_hidden(1 - a) => self.active = 1 - a,
+            KeyCode::Tab => {}
+            KeyCode::Char('u') if ctrl => self.swap_panels(),
+            KeyCode::F(12) if ctrl && !alt && !shift => self.sort_menu(),
+            KeyCode::F(n @ (1 | 2)) if alt && !ctrl && !shift => {
+                self.drive_menu(usize::from(n - 1))
+            }
+            // Ctrl+P: hide or show the passive panel.
+            KeyCode::Char('p') if ctrl => self.toggle_panel(1 - a),
+            KeyCode::F(n @ (1 | 2)) if ctrl && !alt && !shift => {
+                self.toggle_panel(usize::from(n - 1))
+            }
             // Ctrl+1…4: Far's view modes.
             KeyCode::Char(c @ '1'..='4') if ctrl => {
                 if let Some(mode) = crate::panel::ViewMode::from_key(c as u8 - b'0') {
@@ -1097,6 +1171,18 @@ impl App {
                 }
             }
             KeyCode::Char('r') if ctrl => self.panels[a].reload(None),
+            // Ctrl+F3…F11: sort modes; the same key again reverses.
+            KeyCode::F(n) if ctrl && !alt && !shift && SortMode::from_key(n).is_some() => {
+                if let Some(mode) = SortMode::from_key(n) {
+                    self.panels[a].set_sort_mode(mode);
+                }
+            }
+            // Shift+F12: selected files first.
+            KeyCode::F(12) if shift && !ctrl && !alt => {
+                let p = &mut self.panels[a];
+                p.sort.selected_first = !p.sort.selected_first;
+                p.resort();
+            }
             KeyCode::F(n @ (1..=9 | 11 | 12)) if !alt && !ctrl => {
                 self.say(tr!("not-implemented", n = n));
             }
@@ -1128,6 +1214,43 @@ impl App {
             }
             None => self.say(tr!("dev-only")),
         }
+    }
+
+    fn panel_hidden(&self, side: usize) -> bool {
+        self.wm.is_hidden(WinId::Panel(side))
+    }
+
+    /// Far's Ctrl+F1 / Ctrl+F2 / Ctrl+P: hides a panel in place or shows
+    /// it again. A hidden active panel passes the focus to the other one;
+    /// with both hidden the panels give way to the user screen (Ctrl+O
+    /// brings both back).
+    fn toggle_panel(&mut self, side: usize) {
+        let hide = !self.panel_hidden(side);
+        self.wm.set_hidden(WinId::Panel(side), hide);
+        if !hide {
+            if self.panel_hidden(self.active) {
+                self.active = side;
+            }
+            return;
+        }
+        if self.panel_hidden(1 - side) {
+            for side in 0..2 {
+                self.wm.set_hidden(WinId::Panel(side), false);
+            }
+            self.set_panels_visible(false);
+        } else if self.active == side {
+            self.active = 1 - side;
+        }
+    }
+
+    /// Far's Ctrl+U: the panels change places; the active one stays active.
+    fn swap_panels(&mut self) {
+        self.panels.swap(0, 1);
+        self.selection_changed.swap(0, 1);
+        let (left, right) = (self.panel_hidden(0), self.panel_hidden(1));
+        self.wm.set_hidden(WinId::Panel(0), right);
+        self.wm.set_hidden(WinId::Panel(1), left);
+        self.active = 1 - self.active;
     }
 
     fn panels_visible(&self) -> bool {
@@ -1285,7 +1408,12 @@ impl App {
                 self.agent_mkdir(side, &names)
             }
             Request::Delete { .. } | Request::Copy { .. } => Err("handled asynchronously".into()),
-            Request::HookPrompt => Ok(self.prompt_context()),
+            Request::HookPrompt => {
+                self.fs_new_prompt();
+                Ok(self.prompt_context())
+            }
+            Request::HookPreTool(input) => Ok(self.on_pre_tool(&input)),
+            Request::HookPostTool(input) => Ok(self.on_post_tool(&input)),
             Request::HookSessionStart => Ok(format!(
                 "[afar] left panel: {} | right panel: {} | active: {} | journal at #{} | mode: {}",
                 self.panels[0].path.display(),
@@ -1419,6 +1547,11 @@ impl App {
         };
         let pos = Position::new(ev.column, ev.row);
         let pressed = matches!(ev.kind, MouseEventKind::Down(_));
+        // A click closes the quick search and does nothing else.
+        if pressed && self.quick_search.is_some() {
+            self.quick_search = None;
+            return;
+        }
 
         // Dialogs take the mouse, except over the agent pane.
         if self.has_overlay() && (!l.agent_frame.contains(pos) || self.overlay_dragging()) {
@@ -1629,6 +1762,7 @@ impl App {
 
         // Top area: panels or the user screen.
         if self.panels_visible() && l.top.height >= 5 {
+            self.apply_agent_marks();
             let panels_active = self.focus == Focus::Panels;
             // The clock overlays the top border at the right edge, as in Far.
             let clock = chrono::Local::now().format("%H:%M").to_string();
@@ -1636,8 +1770,19 @@ impl App {
                 let touches = l.panels[side].right() == area.right();
                 self.panels[side].clock_cells = if touches { clock.len() as u16 } else { 0 };
             }
-            self.panels[0].draw(l.panels[0], buf, panels_active && self.active == 0);
-            self.panels[1].draw(l.panels[1], buf, panels_active && self.active == 1);
+            // A hidden panel shows the user screen below it, as in Far.
+            if (0..2).any(|side| self.panel_hidden(side)) {
+                self.draw_user_screen(l.top, buf);
+            }
+            for side in 0..2 {
+                if !self.panel_hidden(side) {
+                    self.panels[side].draw(
+                        l.panels[side],
+                        buf,
+                        panels_active && self.active == side,
+                    );
+                }
+            }
             if l.top.y == area.y {
                 let x = area.right().saturating_sub(clock.len() as u16);
                 buf.set_stringn(x, area.y, &clock, clock.len(), theme::MESSAGE);
@@ -1751,6 +1896,11 @@ impl App {
         }
 
         self.draw_keybar(l.keybar, buf);
+        if let Some(side) = self.quick_search_side()
+            && let Some(c) = self.draw_quick_search(area, l.panels[side], buf)
+        {
+            cursor = Some(c);
+        }
 
         // Overlay: dialogs and progress windows over everything but the
         // bottom bars.

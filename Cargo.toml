@@ -19,4 +19,13 @@ sys-locale = "0.3.2"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "net"] }
 trash = "5.2.9"
 unic-langid = "0.9.6"
+regex = "1.13"
 vt100 = { path = "vendor/vt100" }
+notify = "8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_Storage_FileSystem"] }
+
+# Vendored with afar patches (AFAR-PATCH markers); ratatui uses it too.
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }

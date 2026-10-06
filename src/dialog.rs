@@ -157,9 +157,26 @@ fn width_of(s: &str) -> u16 {
     s.chars().count() as u16
 }
 
+/// Far's window shadow: the row below (from x+2) and two columns to the
+/// right keep their characters in dim colours.
+pub fn draw_shadow(buf: &mut Buffer, outer: Rect, area: Rect) {
+    for sy in outer.y + 1..=outer.bottom() {
+        for sx in outer.right()..outer.right() + 2 {
+            if sx < area.right() && sy < area.bottom() {
+                buf[(sx, sy)].set_style(theme::SHADOW);
+            }
+        }
+    }
+    if outer.bottom() < area.bottom() {
+        for sx in outer.x + 2..(outer.right() + 2).min(area.right()) {
+            buf[(sx, outer.bottom())].set_style(theme::SHADOW);
+        }
+    }
+}
+
 /// The hotkey of a label, as the Latin key at its position (so Alt+К and
 /// Alt+R both find "&Копировать").
-fn hotkey(label: &str) -> Option<char> {
+pub(crate) fn hotkey(label: &str) -> Option<char> {
     let mut chars = label.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '&' {
@@ -1113,19 +1130,7 @@ impl Dialog {
         let outer = Rect::new(x0, y0, w, h);
         self.outer = outer;
 
-        // Shadow: the row below (from x+2) and two columns to the right.
-        for sy in outer.y + 1..=outer.bottom() {
-            for sx in outer.right()..outer.right() + 2 {
-                if sx < area.right() && sy < area.bottom() {
-                    buf[(sx, sy)].set_style(theme::SHADOW);
-                }
-            }
-        }
-        if outer.bottom() < area.bottom() {
-            for sx in outer.x + 2..(outer.right() + 2).min(area.right()) {
-                buf[(sx, outer.bottom())].set_style(theme::SHADOW);
-            }
-        }
+        draw_shadow(buf, outer, area);
         buf.set_style(outer, c.body);
         for yy in outer.top()..outer.bottom() {
             for xx in outer.left()..outer.right() {

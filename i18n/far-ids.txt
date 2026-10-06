@@ -182,3 +182,33 @@ MCopyTimeInfoSpeed
 
 # Panel sort indicator
 MMenuSortByName
+MMenuSortTitle
+MMenuUnsorted
+MMenuSortByExt
+MMenuSortByWrite
+MMenuSortBySize
+MMenuSortByCreation
+MMenuSortByAccess
+MMenuSortByChange
+MMenuSortByDiz
+MMenuSortByOwner
+MMenuSortByAllocatedSize
+MMenuSortByNumLinks
+MMenuSortByNumStreams
+MMenuSortByStreamsSize
+MMenuSortByNameOnly
+MMenuSortUseGroups
+MMenuSortSelectedFirst
+MMenuSortDirectoriesFirst
+MSelectTitle
+MUnselectTitle
+MSelectFilter
+MIncorrectMask
+MChangeDriveTitle
+MChangeDriveFixed
+MChangeDriveRemovable
+MChangeDriveNetwork
+MChangeDriveRAM
+MChangeDriveCDROM
+MChangeDriveSUBST
+MSearchFileTitle

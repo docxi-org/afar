@@ -104,6 +104,10 @@ pub struct DevState {
 pub struct PanelState {
     pub path: PathBuf,
     pub cursor: Option<String>,
+    #[serde(default)]
+    pub view: crate::panel::ViewMode,
+    #[serde(default)]
+    pub sort: crate::panel::Sort,
 }
 
 pub fn save_state(state: &DevState) -> anyhow::Result<()> {

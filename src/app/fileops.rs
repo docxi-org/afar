@@ -46,8 +46,15 @@ const OVERWRITE_CHOICES: [(&str, Overwrite); 6] = [
 ];
 
 pub(super) enum Overlay {
-    Dialog { dialog: Dialog, purpose: Purpose },
+    Dialog {
+        dialog: Dialog,
+        purpose: Purpose,
+    },
     Progress(Progress),
+    Menu {
+        menu: crate::menu::Menu,
+        purpose: super::panelcmds::MenuPurpose,
+    },
 }
 
 /// What a dialog was opened for, i.e. what to do when it closes.
@@ -81,6 +88,11 @@ pub(super) enum Purpose {
         reply: mpsc::Sender<ConflictAnswer>,
     },
     Message,
+    /// Gray + / Gray -: select or unselect by the mask.
+    Select {
+        side: usize,
+        add: bool,
+    },
 }
 
 pub(super) struct Progress {
@@ -268,6 +280,7 @@ impl App {
                     self.close_dialog(button);
                 }
             }
+            Some(Overlay::Menu { .. }) => self.menu_key(key),
             None => {}
         }
     }
@@ -279,6 +292,10 @@ impl App {
 
     /// Mouse over the overlay; clicks outside the top dialog are ignored.
     pub(super) fn overlay_mouse(&mut self, ev: &MouseEvent) {
+        if let Some(Overlay::Menu { .. }) = self.overlays.last() {
+            self.menu_mouse(ev);
+            return;
+        }
         if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut()
             && let Some(Outcome::Closed(button)) = dialog.handle_mouse(ev)
         {
@@ -366,6 +383,11 @@ impl App {
                 let _ = reply.send(ConflictAnswer { action, all: false });
             }
             Purpose::Message => {}
+            Purpose::Select { side, add } => {
+                if button == Some(0) {
+                    self.select_from_dialog(side, add, dialog);
+                }
+            }
         }
     }
 
@@ -376,6 +398,10 @@ impl App {
                 Overlay::Dialog { dialog, .. } => dialog.draw(area, buf),
                 Overlay::Progress(p) => {
                     progress_dialog(p).draw(area, buf);
+                    None
+                }
+                Overlay::Menu { menu, .. } => {
+                    menu.draw(area, buf);
                     None
                 }
             };
@@ -467,6 +493,7 @@ impl App {
     ) -> Result<Vec<PathBuf>, String> {
         let base = self.panels[side].path.clone();
         let (created, report) = ops::make_dirs(&base, names);
+        self.note_own_change();
         if created.is_empty() && report.failed.is_empty() {
             return Err(tr!("MIncorrectDirList"));
         }
@@ -996,6 +1023,7 @@ impl App {
                 let Some(op) = self.ops.remove(&id) else {
                     return;
                 };
+                self.note_own_change();
                 self.journal_finished(id, op.kind, op.actor, &report);
                 for p in &mut self.panels {
                     p.reload(None);

@@ -16,6 +16,8 @@ pub enum Actor {
     User,
     Agent,
     System,
+    /// Something outside afar changed files (seen by the folder watcher).
+    External,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -64,6 +66,21 @@ pub enum Event {
         /// Up to 20 failures.
         failed: Vec<(PathBuf, String)>,
         cancelled: bool,
+    },
+    /// Files in a panel's folder changed, not by afar's own operations.
+    FsChanged {
+        dir: PathBuf,
+        /// Up to 10 names each; `count` is the total.
+        created: Vec<String>,
+        modified: Vec<String>,
+        removed: Vec<String>,
+        count: usize,
+    },
+    /// The agent used one of its own tools (PostToolUse hook).
+    AgentToolUsed {
+        tool: String,
+        summary: String,
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -142,6 +159,7 @@ pub fn format_entries(entries: &[Entry]) -> String {
             Actor::User => "user ",
             Actor::Agent => "agent",
             Actor::System => "sys  ",
+            Actor::External => "ext  ",
         };
         let what = match &e.event {
             Event::AppStarted { left, right } => {
@@ -227,6 +245,24 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 }
                 s
             }
+            Event::FsChanged {
+                dir,
+                created,
+                modified,
+                removed,
+                count,
+            } => {
+                let shown = created.len() + modified.len() + removed.len();
+                let mut parts = Vec::new();
+                for (label, names) in [("+", created), ("~", modified), ("-", removed)] {
+                    if !names.is_empty() {
+                        parts.push(format!("{label}{}", names.join(&format!(", {label}"))));
+                    }
+                }
+                let more = if *count > shown { ", …" } else { "" };
+                format!("fs     {}: {}{more}", dir.display(), parts.join(", "))
+            }
+            Event::AgentToolUsed { tool, summary, .. } => format!("tool   {tool}: {summary}"),
         };
         out.push_str(&format!(
             "#{} {} {actor} {what}\n",
