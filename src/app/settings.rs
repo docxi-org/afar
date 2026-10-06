@@ -5,7 +5,7 @@
 
 use super::App;
 use super::fileops::{Overlay, Purpose};
-use crate::config::Level;
+use crate::config::{AgentPosition, Level};
 use crate::dialog::{Dialog, check_at, combo_at, input_at, text_at};
 use crate::tr;
 
@@ -101,6 +101,9 @@ impl App {
         let args_label = tr!("agent-settings-args");
         let live = tr!("agent-settings-live");
         let note = tr!("agent-settings-note");
+        let position_label = tr!("agent-settings-position");
+        let positions = [tr!("agent-position-bottom"), tr!("agent-position-top")];
+        let position_w = positions.iter().map(|p| chars(p)).max().unwrap_or(10) + 3;
         let content = (label_w + 1 + COMBO)
             .max(chars(&live) + 4)
             .max(chars(&note))
@@ -117,6 +120,15 @@ impl App {
                 input_at(field_x, field_w, a.args.join(" "), false),
             ])
             .row(vec![check_at(5, live, a.live)])
+            .row(vec![
+                text_at(5, position_label.clone()),
+                combo_at(
+                    5 + chars(&position_label) + 1,
+                    position_w,
+                    positions.iter().cloned().map(Some).collect(),
+                    usize::from(a.position == AgentPosition::Top),
+                ),
+            ])
             .caption(tr!("agent-settings-permissions"));
         for (((_, ask), label), level) in PERMISSIONS.iter().zip(&labels).zip(levels) {
             let mut items = vec![Some(tr!("perm-allow"))];
@@ -163,7 +175,14 @@ impl App {
             .map(str::to_string)
             .collect();
         a.live = dialog.checked(0);
-        let level = |i: usize, ask: bool| match (dialog.combo(i), ask) {
+        a.position = if dialog.combo(0) == 1 {
+            AgentPosition::Top
+        } else {
+            AgentPosition::Bottom
+        };
+        let top = a.position == AgentPosition::Top;
+        // Combo 0 is the position; the permissions follow.
+        let level = |i: usize, ask: bool| match (dialog.combo(i + 1), ask) {
             (0, _) => Level::Allow,
             (1, true) => Level::Confirm,
             _ => Level::Deny,
@@ -177,6 +196,7 @@ impl App {
         p.delete_permanent = level(5, true);
         p.run_command = level(6, true);
         let changed_command = old_command != (a.command.clone(), a.args.clone());
+        self.wm.set_agent_on_top(top);
         self.save_config();
         if changed_command && self.agent_alive() {
             self.say(tr!("agent-settings-restart"));

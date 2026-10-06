@@ -98,6 +98,26 @@ pub struct DevState {
     /// The agent's Claude Code session, resumed by the next instance.
     #[serde(default)]
     pub agent_session: Option<String>,
+    /// Open viewers (restored only by a restart in development mode).
+    #[serde(default)]
+    pub viewers: Vec<ViewerState>,
+    /// The agent pane hidden by Ctrl+O.
+    #[serde(default)]
+    pub agent_hidden: bool,
+    /// The viewer shown, if a viewer screen was current.
+    #[serde(default)]
+    pub viewer_shown: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ViewerState {
+    pub path: PathBuf,
+    pub remembered: crate::viewer::Remembered,
+    pub mode: crate::viewer::Mode,
+    pub wrap: bool,
+    pub word_wrap: bool,
+    #[serde(default)]
+    pub list: Vec<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]

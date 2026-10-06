@@ -29,6 +29,7 @@ command-busy = A command is already running — wait for it to finish
 command-start-failed = Could not start: { $error }
 quit-confirm = The agent or a command is still running. F10 again — exit
 not-implemented = F{ $n } — not implemented yet
+viewer-not-yet = Not implemented in the viewer yet
 not-a-folder = { $path } is not a folder
 op-waits-answer = A file operation waits for your answer — Ctrl+Space
 
@@ -59,6 +60,9 @@ agent-settings-title = Agent and permissions
 agent-settings-command = Agent command:
 agent-settings-args = Arguments:
 agent-settings-live = Start in &live mode (actions go with each prompt)
+agent-settings-position = Agent pane:
+agent-position-bottom = at the bottom, below the panels
+agent-position-top = at the top, above the panels
 agent-settings-permissions = What the agent may do through afar
 perm-navigate = Show and select in panels:
 perm-mkdir = Create folders:

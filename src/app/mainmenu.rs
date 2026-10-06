@@ -255,6 +255,26 @@ impl App {
             .push(Overlay::MenuBar(MenuBar::new(titles, start)));
     }
 
+    /// A click on the top row of the screen (Far's FilePanels::ProcessMouse):
+    /// in the left corner it is Ctrl+O, elsewhere it opens the menu bar —
+    /// with the title under the mouse open.
+    pub(super) fn top_row_click(&mut self, ev: &MouseEvent) {
+        if ev.column == 0 {
+            self.run_command(Command::TogglePanels);
+            return;
+        }
+        self.main_menu();
+        let pos = ratatui::layout::Position::new(ev.column, ev.row);
+        if let Some(Overlay::MenuBar(bar)) = self.overlays.last_mut()
+            && bar.has_title_at(pos)
+        {
+            let mut press = *ev;
+            press.kind =
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left);
+            bar.handle_mouse(&press);
+        }
+    }
+
     pub(super) fn menubar_key(&mut self, key: KeyEvent) {
         if let Some(Overlay::MenuBar(bar)) = self.overlays.last_mut() {
             let outcome = bar.handle_key(&key);

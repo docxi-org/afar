@@ -121,6 +121,15 @@ pub(super) enum MenuPurpose {
     Sort { side: usize },
     /// Alt+F1 / Alt+F2: the drives in menu order.
     Drives { side: usize, drives: Vec<Drive> },
+    /// F12: the screens in menu order.
+    Screens { screens: Vec<crate::wm::ScreenId> },
+    /// Shift+F8 in a viewer; `None` for separators.
+    Codepage {
+        id: u32,
+        choices: Vec<Option<super::viewers::CpChoice>>,
+    },
+    /// Shift+F4 in a viewer.
+    ViewMode { id: u32 },
 }
 
 /// Items of the sort menu after the modes: separator, then these.
@@ -307,6 +316,17 @@ impl App {
                 self.active = side;
                 self.change_dir(side, &path);
             }
+            MenuPurpose::Screens { screens } => {
+                if let Some(screen) = screens.get(i) {
+                    self.switch_screen(*screen);
+                }
+            }
+            MenuPurpose::Codepage { id, choices } => {
+                if let Some(Some(choice)) = choices.get(i) {
+                    self.codepage_chosen(id, *choice);
+                }
+            }
+            MenuPurpose::ViewMode { id } => self.view_mode_chosen(id, i),
         }
     }
 }

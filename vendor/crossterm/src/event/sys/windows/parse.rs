@@ -13,8 +13,8 @@ use winapi::um::{
 };
 
 use crate::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, ModifierKeyCode,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 
 #[derive(Default)]
@@ -241,7 +241,11 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
     }
 
     let parse_result = match virtual_key_code {
-        VK_SHIFT | VK_CONTROL | VK_MENU => None,
+        // AFAR-PATCH: report the modifier keys themselves (pressed and
+        // released), so that Far's key bar can follow Shift, Ctrl and Alt.
+        VK_SHIFT => Some(KeyCode::Modifier(ModifierKeyCode::LeftShift)),
+        VK_CONTROL => Some(KeyCode::Modifier(ModifierKeyCode::LeftControl)),
+        VK_MENU => Some(KeyCode::Modifier(ModifierKeyCode::LeftAlt)),
         VK_BACK => Some(KeyCode::Backspace),
         VK_ESCAPE => Some(KeyCode::Esc),
         VK_RETURN => Some(KeyCode::Enter),

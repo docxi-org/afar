@@ -6,6 +6,9 @@
 //! [panels]
 //! "Ctrl+F3" = "sort.by_size"   # rebind
 //! "Ctrl+M" = ""                # unbind
+//!
+//! [viewer]
+//! "Ctrl+Shift+F2" = "viewer.word_wrap"
 //! ```
 
 use std::collections::HashMap;
@@ -13,7 +16,7 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventState, KeyModifiers};
 
-use crate::command::{COMMANDS, Command};
+use crate::command::{COMMANDS, Command, Ctx};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Key {
@@ -226,22 +229,24 @@ impl Chord {
     }
 }
 
-/// Chords of the panels (and the command line under them) → commands.
+/// Chords → commands, per context.
 pub struct Keymap {
-    panels: HashMap<Chord, Command>,
+    map: HashMap<(Ctx, Chord), Command>,
 }
 
 impl Keymap {
     /// Far's keys.
     pub fn far() -> Self {
-        let mut panels = HashMap::new();
+        let mut map = HashMap::new();
         for d in COMMANDS {
             for k in d.keys {
                 let chord = Chord::parse(k).unwrap_or_else(|| panic!("bad key {k:?}"));
-                panels.insert(chord, d.command);
+                for ctx in d.ctx {
+                    map.insert((*ctx, chord), d.command);
+                }
             }
         }
-        Self { panels }
+        Self { map }
     }
 
     /// Far's keys changed by `file` (if it exists); returns the problems
@@ -259,19 +264,22 @@ impl Keymap {
                 return (map, problems);
             }
         };
-        if let Some(panels) = table.get("panels").and_then(toml::Value::as_table) {
-            for (key, value) in panels {
+        for ctx in [Ctx::Panels, Ctx::Viewer] {
+            let Some(section) = table.get(ctx.section()).and_then(toml::Value::as_table) else {
+                continue;
+            };
+            for (key, value) in section {
                 let Some(chord) = Chord::parse(key) else {
                     problems.push(format!("{}: unknown key {key:?}", file.display()));
                     continue;
                 };
                 match value.as_str() {
                     Some("") => {
-                        map.panels.remove(&chord);
+                        map.map.remove(&(ctx, chord));
                     }
                     Some(name) => match Command::from_name(name) {
                         Some(c) => {
-                            map.panels.insert(chord, c);
+                            map.map.insert((ctx, chord), c);
                         }
                         None => {
                             problems.push(format!("{}: unknown command {name:?}", file.display()))
@@ -287,17 +295,21 @@ impl Keymap {
         (map, problems)
     }
 
+    pub fn get(&self, ctx: Ctx, chord: &Chord) -> Option<Command> {
+        self.map.get(&(ctx, *chord)).copied()
+    }
+
     pub fn panels(&self, chord: &Chord) -> Option<Command> {
-        self.panels.get(chord).copied()
+        self.get(Ctx::Panels, chord)
     }
 
     /// The first key of a command (for menus).
-    pub fn key_of(&self, command: Command) -> Option<Chord> {
+    pub fn key_of(&self, ctx: Ctx, command: Command) -> Option<Chord> {
         let mut keys: Vec<Chord> = self
-            .panels
+            .map
             .iter()
-            .filter(|(_, c)| **c == command)
-            .map(|(k, _)| *k)
+            .filter(|((x, _), c)| *x == ctx && **c == command)
+            .map(|((_, k), _)| *k)
             .collect();
         // The documented (first default) key first, then a stable order.
         let default = command.def().keys.first().and_then(|k| Chord::parse(k));
@@ -376,7 +388,7 @@ mod tests {
         );
         assert_eq!(map.panels(&chord("Ctrl+M")), None);
         assert_eq!(
-            map.key_of(Command::Copy).map(|c| c.label()),
+            map.key_of(Ctx::Panels, Command::Copy).map(|c| c.label()),
             Some("F5".into())
         );
         std::fs::remove_dir_all(&dir).unwrap();

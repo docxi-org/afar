@@ -93,6 +93,13 @@ pub const WARN_DISABLED: Style = c(con::DARKGRAY, con::RED);
 /// Far dims what is under a shadow to dark gray on black.
 pub const SHADOW: Style = c(con::DARKGRAY, con::BLACK);
 
+// Viewer.
+pub const VIEWER_TEXT: Style = c(con::LIGHTCYAN, con::BLUE);
+pub const VIEWER_SELECTED: Style = c(con::BLACK, con::CYAN);
+pub const VIEWER_STATUS: Style = c(con::BLACK, con::CYAN);
+pub const VIEWER_ARROWS: Style = c(con::YELLOW, con::BLUE);
+pub const VIEWER_SCROLLBAR: Style = c(con::LIGHTCYAN, con::BLUE);
+
 // Bottom bars.
 pub const KEYBAR_NUM: Style = c(con::LIGHTGRAY, con::BLACK);
 pub const KEYBAR_TEXT: Style = c(con::BLACK, con::CYAN);

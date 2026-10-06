@@ -30,6 +30,7 @@ command-busy = Команда уже выполняется — дождитес
 command-start-failed = Ошибка запуска: { $error }
 quit-confirm = Агент или команда ещё работают. F10 ещё раз — выход
 not-implemented = F{ $n } — ещё не реализовано
+viewer-not-yet = В просмотрщике ещё не реализовано
 not-a-folder = { $path } — не папка
 op-waits-answer = Файловая операция ждёт ответа — Ctrl+Space
 
@@ -60,6 +61,9 @@ agent-settings-title = Агент и разрешения
 agent-settings-command = Команда агента:
 agent-settings-args = Аргументы:
 agent-settings-live = Режим &live при запуске (действия уходят с каждым запросом)
+agent-settings-position = Панель агента:
+agent-position-bottom = внизу, под панелями
+agent-position-top = вверху, над панелями
 agent-settings-permissions = Что агенту можно делать через afar
 perm-navigate = Показывать и выделять в панелях:
 perm-mkdir = Создавать папки:

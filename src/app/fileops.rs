@@ -112,6 +112,21 @@ pub(super) enum Purpose {
         side: usize,
         add: bool,
     },
+    /// F7 in a viewer.
+    ViewerSearch {
+        id: u32,
+    },
+    /// Alt+F8 in a viewer.
+    ViewerGoto {
+        id: u32,
+    },
+    /// A viewer's search reached the end (start): continue from the other
+    /// end up to where it began?
+    ViewerSearchWrap {
+        id: u32,
+        backward: bool,
+        origin: u64,
+    },
 }
 
 pub(super) struct Progress {
@@ -321,11 +336,6 @@ impl App {
         }
     }
 
-    /// A dialog is being moved with the mouse (it gets all mouse events).
-    pub(super) fn overlay_dragging(&self) -> bool {
-        matches!(self.overlays.last(), Some(Overlay::Dialog { dialog, .. }) if dialog.dragging())
-    }
-
     /// Mouse over the overlay; clicks outside the top dialog are ignored.
     pub(super) fn overlay_mouse(&mut self, ev: &MouseEvent) {
         if let Some(Overlay::Menu { .. }) = self.overlays.last() {
@@ -452,6 +462,21 @@ impl App {
             Purpose::Select { side, add } => {
                 if button == Some(0) {
                     self.select_from_dialog(side, add, dialog);
+                }
+            }
+            Purpose::ViewerSearch { id } => self.viewer_search_dialog_closed(id, button, &dialog),
+            Purpose::ViewerGoto { id } => {
+                if button == Some(0) {
+                    self.viewer_goto_closed(id, &dialog);
+                }
+            }
+            Purpose::ViewerSearchWrap {
+                id,
+                backward,
+                origin,
+            } => {
+                if button == Some(0) {
+                    self.viewer_search_wrap(id, backward, origin);
                 }
             }
         }

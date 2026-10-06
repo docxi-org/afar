@@ -32,7 +32,10 @@ impl<CB: crate::callbacks::Callbacks> WrappedScreen<CB> {
 
 impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
     fn print(&mut self, c: char) {
-        if c == '\u{fffd}' || ('\u{80}'..'\u{a0}').contains(&c) {
+        // AFAR-PATCH: U+FFFD is printed (one cell), as terminals do;
+        // dropping it shifts the rest of the line against the program's
+        // idea of the screen.
+        if ('\u{80}'..'\u{a0}').contains(&c) {
             self.callbacks.unhandled_char(&mut self.screen, c);
         } else {
             self.screen.text(c);

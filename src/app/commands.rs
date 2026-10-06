@@ -35,19 +35,23 @@ impl App {
             }
             MainMenu => self.main_menu(),
             TogglePanels => {
-                if self.running.is_some() && !self.panels_visible() {
+                if self.running.is_none() {
+                    self.cycle_hiding();
+                } else if !self.panels_visible() {
+                    // A running command: Ctrl+O goes to it.
                     self.focus = Focus::Command;
                 } else {
-                    self.set_panels_visible(!self.panels_visible());
-                    if !self.panels_visible() && self.running.is_some() {
-                        self.focus = Focus::Command;
-                    }
+                    self.set_panels_visible(false);
+                    self.focus = Focus::Command;
                 }
             }
             // Like Far: Ctrl+arrows move the boundaries between windows;
             // left and right only with an empty command line.
-            AgentTaller => self.move_splitter(wm::MAIN_SPLIT, -1),
-            AgentShorter => self.move_splitter(wm::MAIN_SPLIT, 1),
+            AgentTaller | AgentShorter => {
+                // The boundary moves away from the agent pane's side.
+                let up = (command == AgentTaller) != self.wm.agent_on_top();
+                self.move_splitter(wm::MAIN_SPLIT, if up { -1 } else { 1 });
+            }
             SplitterLeft if cmdline_empty => self.move_splitter(wm::PANELS_SPLIT, -1),
             SplitterRight if cmdline_empty => self.move_splitter(wm::PANELS_SPLIT, 1),
             SplitterLeft | SplitterRight => return false,
@@ -193,6 +197,11 @@ impl App {
             | InsertPassivePath => self.insert_for(command),
             HistoryPrev => self.history_step(true),
             HistoryNext => self.history_step(false),
+            Screens => self.screens_menu(),
+            NextScreen => self.cycle_screens(true),
+            PrevScreen => self.cycle_screens(false),
+            ViewFile => return self.view_current(),
+            Viewer(_) => return false,
         }
         true
     }

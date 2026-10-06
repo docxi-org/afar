@@ -35,6 +35,7 @@ mod panelcmds;
 mod policy;
 mod quicksearch;
 mod settings;
+mod viewers;
 use crate::{keys, termview, theme, tr};
 use fileops::{Overlay, RunningOp};
 
@@ -47,6 +48,8 @@ pub enum AppMsg {
     Dev(DevMsg),
     /// A change in a folder shown in a panel.
     Fs(crate::watch::FsEvent),
+    /// A viewer's search finished.
+    ViewerFound(viewers::SearchDone),
 }
 
 /// The state to start from.
@@ -81,6 +84,9 @@ pub enum Focus {
     /// Keys go to the running command.
     Command,
 }
+
+/// Ctrl+O presses closer than this go round the hiding states.
+const HIDING_CYCLE: Duration = Duration::from_secs(1);
 
 /// Environment variables of an enclosing Claude Code session that must not
 /// leak into the agent we start.
@@ -142,6 +148,9 @@ struct RunningCommand {
 struct Layout {
     /// The screen slot: panels or the user screen.
     top: Rect,
+    /// Where the user screen is shown: the screen slot, and the agent
+    /// pane's place too when Ctrl+O has hidden it.
+    user: Rect,
     /// File panels; empty rectangles when another screen is shown.
     panels: [Rect; 2],
     /// The agent pane with its frame, and the program area inside it.
@@ -198,6 +207,32 @@ pub struct App {
     quick_search: Option<quicksearch::QuickSearch>,
     /// The last folder on each drive, for the drive menu.
     drive_paths: std::collections::HashMap<char, PathBuf>,
+    /// Open viewers (F3), each on its own screen.
+    viewers: Vec<crate::viewer::Viewer>,
+    next_viewer_id: u32,
+    /// Wrapping and bars carried to the next viewer (Far's
+    /// `KeepInitParameters`).
+    viewer_defaults: crate::viewer::Defaults,
+    /// Where files were left in the viewer.
+    viewer_positions: crate::viewer::positions::Positions,
+    /// Ctrl+O in a viewer: the user screen until a key.
+    viewer_peek: bool,
+    /// Ctrl+B in a viewer: its key bar.
+    viewer_keybar: bool,
+    /// The shown viewer last checked its file for changes.
+    viewer_checked: Instant,
+    /// Modifier keys held now (the key bar shows their labels).
+    held: KeyModifiers,
+    /// The last Ctrl+O (quick presses go round the hiding states).
+    hiding_pressed: Option<Instant>,
+    /// The hiding a slow Ctrl+O returns to (see `cycle_hiding`).
+    hiding_mode: u8,
+    /// The last search of the viewers (Far shares it).
+    viewer_query: crate::viewer::search::Query,
+    /// A search running in the background.
+    viewer_search: Option<viewers::RunningSearch>,
+    /// The last input of Alt+F8 and its Hex box (Far keeps them).
+    viewer_goto: (String, Option<bool>),
     /// Dialogs and progress windows over the layout, topmost last.
     overlays: Vec<Overlay>,
     ops: std::collections::HashMap<OpId, RunningOp>,
@@ -245,6 +280,9 @@ impl App {
             .unwrap_or_default();
         let history_file = Some(data_dir.join("history").join("commands.txt"));
         let journal = Journal::open(session_dir);
+        let viewer_positions = crate::viewer::positions::Positions::load(
+            &data_dir.join("history").join("viewer.json"),
+        );
         let (keymap, keymap_problems) = crate::keymap::Keymap::load(
             &crate::config::config_dir().join("keymaps").join("far.toml"),
         );
@@ -252,7 +290,11 @@ impl App {
             panels: [FilePanel::new(cwd.clone()), FilePanel::new(cwd)],
             active: 0,
             focus: Focus::Panels,
-            wm: Wm::new(),
+            wm: {
+                let mut wm = Wm::new();
+                wm.set_agent_on_top(config.agent.position == crate::config::AgentPosition::Top);
+                wm
+            },
             drag: None,
             cmdline: String::new(),
             cmd_cursor: 0,
@@ -279,6 +321,19 @@ impl App {
             cmd_history: cmdline::History::load(history_file),
             quick_search: None,
             drive_paths: Default::default(),
+            viewers: Vec::new(),
+            next_viewer_id: 1,
+            viewer_defaults: Default::default(),
+            viewer_positions,
+            viewer_peek: false,
+            viewer_keybar: true,
+            viewer_checked: Instant::now(),
+            held: KeyModifiers::NONE,
+            hiding_pressed: None,
+            hiding_mode: 1,
+            viewer_query: Default::default(),
+            viewer_search: None,
+            viewer_goto: (String::new(), None),
             overlays: Vec::new(),
             ops: std::collections::HashMap::new(),
             next_op_id: 0,
@@ -333,6 +388,8 @@ impl App {
             self.wm.set_extent(SplitId(id), extent);
         }
         self.set_panels_visible(state.panels_visible);
+        self.restore_viewers(state.viewers, state.viewer_shown);
+        self.wm.set_hidden(WinId::Agent, state.agent_hidden);
         self.agent_session = state.agent_session;
         self.restored = true;
         self.layout_restored = true;
@@ -377,6 +434,7 @@ impl App {
     }
 
     fn state(&self) -> DevState {
+        let (viewers, viewer_shown) = self.viewer_states();
         DevState {
             panels: self
                 .panels
@@ -398,6 +456,9 @@ impl App {
                 .map(|(id, e)| (id.0, e))
                 .collect(),
             agent_session: self.agent_session.clone(),
+            viewers,
+            viewer_shown,
+            agent_hidden: self.wm.is_hidden(WinId::Agent),
         }
     }
 
@@ -550,6 +611,7 @@ impl App {
                 }
                 let exit = self.exit.take().unwrap_or(Exit::Quit);
                 if matches!(exit, Exit::Quit) {
+                    self.remember_viewers();
                     self.save_state();
                 }
                 return Ok(exit);
@@ -571,7 +633,12 @@ impl App {
 
     fn handle(&mut self, msg: AppMsg) {
         match msg {
+            // Shift, Ctrl, Alt alone: only the key bar follows them.
+            AppMsg::Input(TermEvent::Key(key)) if matches!(key.code, KeyCode::Modifier(_)) => {
+                self.held = key.modifiers;
+            }
             AppMsg::Input(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
+                self.held = key.modifiers;
                 self.on_key(key)
             }
             AppMsg::Input(TermEvent::Mouse(mouse)) => self.on_mouse(mouse),
@@ -592,6 +659,7 @@ impl App {
             }
             AppMsg::Input(_) => {}
             AppMsg::Dev(msg) => self.on_dev(msg),
+            AppMsg::ViewerFound(done) => self.viewer_found(done),
             AppMsg::CommandOutput => self.on_command_output(),
             AppMsg::Mcp(McpMsg { request, reply }) => match request {
                 // Answered later: after the user's confirmation.
@@ -667,6 +735,7 @@ impl App {
         {
             self.message = None;
         }
+        self.viewer_tick();
         self.maybe_restart();
     }
 
@@ -1047,6 +1116,16 @@ impl App {
         let is_focus_key =
             key.code == KeyCode::Null || ctrl && matches!(key.code, KeyCode::Char(' ' | '@' | '2'));
         if is_focus_key {
+            // While a menu or dialog is open, the agent pane is out of reach.
+            if self.has_overlay() {
+                return;
+            }
+            // Hidden by Ctrl+O: it comes back to take the input.
+            if self.wm.is_hidden(WinId::Agent) {
+                self.wm.set_hidden(WinId::Agent, false);
+                self.focus = Focus::Agent;
+                return;
+            }
             self.focus = match self.focus {
                 Focus::Agent => Focus::Panels,
                 Focus::Panels | Focus::Command => Focus::Agent,
@@ -1060,8 +1139,8 @@ impl App {
         if self.focus != Focus::Panels {
             self.quit_armed = None;
         }
-        // Dialogs take the keyboard, except while talking to the agent.
-        if self.focus != Focus::Agent && self.has_overlay() {
+        // Menus and dialogs take the keyboard (the agent pane too waits).
+        if self.has_overlay() {
             self.overlay_key(key);
             return;
         }
@@ -1075,7 +1154,15 @@ impl App {
                     }
                 }
             }
-            Focus::Panels => self.panels_key(key),
+            Focus::Panels => self.screen_key(key),
+        }
+    }
+
+    /// Keys of the current screen: a viewer or the panels.
+    fn screen_key(&mut self, key: KeyEvent) {
+        match self.shown_viewer() {
+            Some(i) => self.viewer_key(i, key),
+            None => self.panels_key(key),
         }
     }
 
@@ -1177,6 +1264,46 @@ impl App {
         self.wm.set_hidden(WinId::Panel(0), right);
         self.wm.set_hidden(WinId::Panel(1), left);
         self.active = 1 - self.active;
+    }
+
+    /// What Ctrl+O has hidden: 0 nothing, 1 the panels, 2 the panels and
+    /// the agent pane, 3 the agent pane.
+    fn hiding(&self) -> u8 {
+        match (self.panels_visible(), self.wm.is_hidden(WinId::Agent)) {
+            (true, false) => 0,
+            (false, false) => 1,
+            (false, true) => 2,
+            (true, true) => 3,
+        }
+    }
+
+    fn set_hiding(&mut self, state: u8) {
+        self.set_panels_visible(matches!(state, 0 | 3));
+        self.wm.set_hidden(WinId::Agent, matches!(state, 2 | 3));
+        if matches!(state, 2 | 3) && self.focus == Focus::Agent {
+            self.focus = Focus::Panels;
+        }
+    }
+
+    /// Ctrl+O. Quick presses go round: the panels hide, then the agent
+    /// pane too, then the panels return, then the agent pane. A press
+    /// after a pause toggles between showing everything and the hiding
+    /// it was left in last (at first: the panels).
+    fn cycle_hiding(&mut self) {
+        let quick = self
+            .hiding_pressed
+            .is_some_and(|t| t.elapsed() < HIDING_CYCLE);
+        self.hiding_pressed = Some(Instant::now());
+        let state = self.hiding();
+        let next = if quick {
+            (state + 1) % 4
+        } else if state != 0 {
+            self.hiding_mode = state;
+            0
+        } else {
+            self.hiding_mode
+        };
+        self.set_hiding(next);
     }
 
     fn panels_visible(&self) -> bool {
@@ -1482,8 +1609,9 @@ impl App {
             return;
         }
 
-        // Dialogs take the mouse, except over the agent pane.
-        if self.has_overlay() && (!l.agent_frame.contains(pos) || self.overlay_dragging()) {
+        // Menus and dialogs take the mouse everywhere, the agent pane
+        // included: a click over it must not move the focus there.
+        if self.has_overlay() {
             self.overlay_mouse(&ev);
             return;
         }
@@ -1504,6 +1632,17 @@ impl App {
                 }
                 _ => self.drag = None,
             }
+        }
+        // The top row of the screen opens Far's menu bar (not over a
+        // viewer, which has no menu).
+        if matches!(
+            ev.kind,
+            MouseEventKind::Down(MouseButton::Left | MouseButton::Right)
+        ) && ev.row == area_top(&l)
+            && self.shown_viewer().is_none()
+        {
+            self.top_row_click(&ev);
+            return;
         }
         if ev.kind == MouseEventKind::Down(MouseButton::Left)
             && let Some(grab) = l.arrangement.grab(pos)
@@ -1556,7 +1695,8 @@ impl App {
                     if let Some(n) = key.filter(|k| self.keybar_pressed.take() == Some(*k))
                         && self.focus == Focus::Panels
                     {
-                        self.panels_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
+                        // With modifiers held, the label shown is that key.
+                        self.screen_key(KeyEvent::new(KeyCode::F(n), ev.modifiers));
                     }
                 }
                 _ => {}
@@ -1571,10 +1711,19 @@ impl App {
             return;
         }
 
-        if !l.top.contains(pos) {
+        if !l.user.contains(pos) {
             return;
         }
-        if !self.panels_visible() || l.top.height < 5 {
+        if let Some(i) = self.shown_viewer().filter(|_| !self.viewer_peek) {
+            match ev.kind {
+                MouseEventKind::ScrollUp => self.viewer_wheel(i, -3),
+                MouseEventKind::ScrollDown => self.viewer_wheel(i, 3),
+                MouseEventKind::Down(_) => self.focus = Focus::Panels,
+                _ => {}
+            }
+            return;
+        }
+        if !self.panels_visible() || l.top.height < 5 || !l.top.contains(pos) {
             // User screen: the running command gets the mouse if it wants it.
             let Some(run) = &self.running else { return };
             if pressed {
@@ -1634,8 +1783,23 @@ impl App {
     // ------------------------------------------------------------- layout
 
     fn layout(&self, area: Rect) -> Layout {
-        let keybar = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-        let cmdline = Rect::new(area.x, keybar.y.saturating_sub(1), area.width, 1);
+        // A viewer hides the command line (unless set to keep it) and,
+        // with Ctrl+B, its key bar.
+        let viewer = self.shown_viewer().is_some() && !self.viewer_peek;
+        let keybar_h = u16::from(!viewer || self.viewer_keybar);
+        let keybar = Rect::new(
+            area.x,
+            area.bottom().saturating_sub(keybar_h),
+            area.width,
+            keybar_h,
+        );
+        let cmdline_h = u16::from(!viewer || self.config.viewer.command_line);
+        let cmdline = Rect::new(
+            area.x,
+            keybar.y.saturating_sub(cmdline_h),
+            area.width,
+            cmdline_h,
+        );
         let desktop = Rect::new(area.x, area.y, area.width, cmdline.y.saturating_sub(area.y));
         let arrangement = self.wm.arrange(desktop);
         let rect = |w| arrangement.rect(w).unwrap_or_default();
@@ -1646,7 +1810,13 @@ impl App {
             agent_frame.width.saturating_sub(2),
             agent_frame.height.saturating_sub(2),
         );
+        let user = if self.wm.is_hidden(WinId::Agent) {
+            desktop
+        } else {
+            arrangement.screen_area
+        };
         Layout {
+            user,
             top: arrangement.screen_area,
             panels: [rect(WinId::Panel(0)), rect(WinId::Panel(1))],
             agent_frame,
@@ -1658,7 +1828,11 @@ impl App {
     }
 
     fn last_top_size(&self) -> (u16, u16) {
-        let top = self.last_layout.as_ref().map(|l| l.top).unwrap_or_default();
+        let top = self
+            .last_layout
+            .as_ref()
+            .map(|l| l.user)
+            .unwrap_or_default();
         (top.height.max(2), top.width.max(20))
     }
 
@@ -1682,15 +1856,36 @@ impl App {
         self.last_layout = Some(l.clone());
         let mut cursor = None;
 
-        if let Some(agent) = &self.agent {
+        if let Some(agent) = &self.agent
+            && l.agent.height > 0
+            && l.agent.width > 0
+        {
             let _ = agent.resize(l.agent.height, l.agent.width);
         }
         if let Some(run) = &self.running {
-            let _ = run.pty.resize(l.top.height, l.top.width);
+            let _ = run.pty.resize(l.user.height, l.user.width);
         }
 
-        // Top area: panels or the user screen.
-        if self.panels_visible() && l.top.height >= 5 {
+        // Top area: a viewer, the panels or the user screen.
+        if let Some(i) = self.shown_viewer().filter(|_| !self.viewer_peek) {
+            // The agent pane hidden by Ctrl+O shows the output there.
+            if l.user != l.top {
+                self.draw_user_screen(l.user, buf);
+            }
+            // Far's clock at the right of the viewer's status line.
+            let clock = chrono::Local::now().format("%H:%M").to_string();
+            let v = &mut self.viewers[i];
+            let clock_w = if l.top.y == area.y && l.top.right() == area.right() && v.status_line {
+                clock.len() as u16
+            } else {
+                0
+            };
+            v.draw(l.top, buf, clock_w);
+            if clock_w > 0 {
+                let x = area.right() - clock_w;
+                buf.set_stringn(x, area.y, &clock, clock.len(), theme::VIEWER_STATUS);
+            }
+        } else if self.panels_visible() && l.top.height >= 5 {
             self.apply_agent_marks();
             let panels_active = self.focus == Focus::Panels;
             // The clock overlays the top border at the right edge, as in Far.
@@ -1699,9 +1894,10 @@ impl App {
                 let touches = l.panels[side].right() == area.right();
                 self.panels[side].clock_cells = if touches { clock.len() as u16 } else { 0 };
             }
-            // A hidden panel shows the user screen below it, as in Far.
-            if (0..2).any(|side| self.panel_hidden(side)) {
-                self.draw_user_screen(l.top, buf);
+            // A hidden panel (or agent pane) shows the user screen below
+            // it, as in Far.
+            if (0..2).any(|side| self.panel_hidden(side)) || l.user != l.top {
+                self.draw_user_screen(l.user, buf);
             }
             for side in 0..2 {
                 if !self.panel_hidden(side) {
@@ -1717,14 +1913,14 @@ impl App {
                 buf.set_stringn(x, area.y, &clock, clock.len(), theme::MESSAGE);
             }
         } else {
-            let c = self.draw_user_screen(l.top, buf);
+            let c = self.draw_user_screen(l.user, buf);
             if self.focus == Focus::Command {
                 cursor = c;
             }
         }
 
         // Agent pane: a Far-style frame on the panel's blue background.
-        let agent_focused = self.focus == Focus::Agent;
+        let agent_focused = self.focus == Focus::Agent && !self.has_overlay();
         let status = match &self.agent {
             None => tr!("agent-not-started"),
             Some(a) if a.has_exited() => tr!(
@@ -1795,36 +1991,40 @@ impl App {
         }
 
         // Command line.
-        let prompt = format!("{}>", self.panels[self.active].path.display());
-        let line = format!("{prompt}{}", self.cmdline);
-        put(
-            buf,
-            l.cmdline.x,
-            l.cmdline.y,
-            l.cmdline.width,
-            &line,
-            theme::COMMAND_LINE,
-        );
-        if self.focus == Focus::Panels {
-            let x = (prompt.chars().count() + self.cmd_cursor) as u16;
-            if x < l.cmdline.width {
-                cursor = Some(Position::new(l.cmdline.x + x, l.cmdline.y));
-            }
-        }
-        if let Some((msg, _)) = &self.message {
-            let text = format!(" {msg} ");
-            let w = (text.chars().count() as u16).min(l.cmdline.width);
+        if l.cmdline.height > 0 {
+            let prompt = format!("{}>", self.panels[self.active].path.display());
+            let line = format!("{prompt}{}", self.cmdline);
             put(
                 buf,
-                l.cmdline.right() - w,
+                l.cmdline.x,
                 l.cmdline.y,
-                w,
-                &text,
-                theme::MESSAGE,
+                l.cmdline.width,
+                &line,
+                theme::COMMAND_LINE,
             );
+            if self.focus == Focus::Panels && self.shown_viewer().is_none() {
+                let x = (prompt.chars().count() + self.cmd_cursor) as u16;
+                if x < l.cmdline.width {
+                    cursor = Some(Position::new(l.cmdline.x + x, l.cmdline.y));
+                }
+            }
         }
 
         self.draw_keybar(l.keybar, buf);
+        // Messages: at the right of the command line, or of the key bar
+        // (or the last row) when a viewer hides the command line.
+        if let Some((msg, _)) = &self.message {
+            let row = if l.cmdline.height > 0 {
+                l.cmdline
+            } else if l.keybar.height > 0 {
+                l.keybar
+            } else {
+                Rect::new(l.top.x, l.top.bottom().saturating_sub(1), l.top.width, 1)
+            };
+            let text = format!(" {msg} ");
+            let w = (text.chars().count() as u16).min(row.width);
+            put(buf, row.right() - w, row.y, w, &text, theme::MESSAGE);
+        }
         if let Some(side) = self.quick_search_side()
             && let Some(c) = self.draw_quick_search(area, l.panels[side], buf)
         {
@@ -1840,10 +2040,7 @@ impl App {
                 area.width,
                 l.cmdline.y.saturating_sub(area.y),
             );
-            let c = self.draw_overlays(over, buf);
-            if self.focus != Focus::Agent {
-                cursor = c;
-            }
+            cursor = self.draw_overlays(over, buf);
         }
         cursor
     }
@@ -1896,6 +2093,9 @@ impl App {
     /// space; at 98 columns and more the labels widen, below that the bar
     /// is cut off at the right edge.
     fn draw_keybar(&self, area: Rect, buf: &mut Buffer) {
+        if area.height == 0 {
+            return;
+        }
         buf.set_style(area, theme::KEYBAR_TEXT);
         for x in area.left()..area.right() {
             buf[(x, area.y)].set_symbol(" ");
@@ -1916,6 +2116,13 @@ impl App {
             return;
         }
         let width = area.width;
+        let group = modifier_group(self.held);
+        let labels: Vec<String> = match self.shown_viewer() {
+            Some(v) => self.viewer_keybar_labels(v, group),
+            None => (1..=12)
+                .map(|n| crate::i18n::plain(&tr!(&format!("M{group}F{n}"))))
+                .collect(),
+        };
         for (i, (pos, end)) in keybar_keys(width).into_iter().enumerate() {
             let i = i as u16;
             let num = (i + 1).to_string();
@@ -1933,7 +2140,7 @@ impl App {
             let label_x = pos + num_w;
             if label_x < end {
                 let label_w = end.saturating_sub(label_x + gap).min(width - label_x);
-                let label = crate::i18n::plain(&tr!(&format!("MF{}", i + 1)));
+                let label = labels.get(usize::from(i)).cloned().unwrap_or_default();
                 put(
                     buf,
                     area.x + label_x,
@@ -1976,6 +2183,31 @@ fn keybar_keys(width: u16) -> Vec<(u16, u16)> {
         pos = end;
     }
     keys
+}
+
+/// Far's key bar groups by the modifiers held (keybar.hpp), as they are
+/// named in its message ids: `MCtrlShiftF3`.
+fn modifier_group(m: KeyModifiers) -> &'static str {
+    let (ctrl, alt, shift) = (
+        m.contains(KeyModifiers::CONTROL),
+        m.contains(KeyModifiers::ALT),
+        m.contains(KeyModifiers::SHIFT),
+    );
+    match (ctrl, alt, shift) {
+        (false, false, false) => "",
+        (false, false, true) => "Shift",
+        (false, true, false) => "Alt",
+        (true, false, false) => "Ctrl",
+        (false, true, true) => "AltShift",
+        (true, false, true) => "CtrlShift",
+        (true, true, false) => "CtrlAlt",
+        (true, true, true) => "CtrlAltShift",
+    }
+}
+
+/// The top row of the screen in a layout.
+fn area_top(l: &Layout) -> u16 {
+    l.top.y.min(l.agent_frame.y)
 }
 
 /// A random UUID (version 4) for a Claude Code session id.

@@ -41,6 +41,14 @@ impl Item {
         }
     }
 
+    /// A separator with a title in its middle (Far's code page menu).
+    pub fn titled_separator(title: impl Into<String>) -> Self {
+        Self {
+            separator: true,
+            ..Self::new(title)
+        }
+    }
+
     pub fn checked(mut self, mark: Option<char>) -> Self {
         self.check = mark;
         self
@@ -439,6 +447,14 @@ impl Menu {
                         _ => "─",
                     };
                     put(buf, cx, cy, s, theme::MENU_BOX);
+                }
+                if !item.text.is_empty() {
+                    let title = format!(" {} ", item.text);
+                    let w = (title.chars().count() as u16).min(rx - lx - 1);
+                    let x = lx + 1 + (rx - lx - 1 - w) / 2;
+                    for (k, ch) in title.chars().take(usize::from(w)).enumerate() {
+                        put(buf, x + k as u16, cy, &ch.to_string(), theme::MENU_TITLE);
+                    }
                 }
                 continue;
             }

@@ -24,9 +24,12 @@ vt100 = { path = "vendor/vt100" }
 notify = "8"
 toml = "1.1.6"
 toml_edit = "0.25.15"
+chardetng = "1.0.0"
+encoding_rs = "0.8.42"
+unicode-width = "0.2.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory"] }
 
 # Vendored with afar patches (AFAR-PATCH markers); ratatui uses it too.
 [patch.crates-io]

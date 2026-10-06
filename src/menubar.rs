@@ -38,13 +38,26 @@ pub struct MenuBar<T> {
 impl<T: Clone> MenuBar<T> {
     pub fn new(titles: Vec<Title<T>>, selected: usize) -> Self {
         let selected = selected.min(titles.len().saturating_sub(1));
+        // Where the titles will be on the top row (`draw` keeps this up to
+        // date), so a click can be handled before the first frame.
+        let mut xpos = Vec::new();
+        let mut x = 2;
+        for t in &titles {
+            xpos.push(x);
+            x += t.text.chars().filter(|c| *c != '&').count() as u16 + 4;
+        }
         Self {
             titles,
             selected,
             open: None,
-            xpos: Vec::new(),
+            xpos,
             row: 0,
         }
+    }
+
+    /// Whether a title is at `pos` (on the bar's row).
+    pub fn has_title_at(&self, pos: Position) -> bool {
+        self.title_at(pos).is_some()
     }
 
     fn open_submenu(&mut self) {

@@ -216,11 +216,22 @@ impl PtySession {
                 .name("pty-reader".into())
                 .spawn(move || {
                     let mut buf = [0u8; CHUNK];
+                    // AFAR_PTY_RAW=<file>: the raw output, for debugging.
+                    let mut raw = std::env::var_os("AFAR_PTY_RAW").and_then(|f| {
+                        std::fs::File::options()
+                            .create(true)
+                            .append(true)
+                            .open(f)
+                            .ok()
+                    });
                     loop {
                         let n = match reader.read(&mut buf) {
                             Ok(0) | Err(_) => break,
                             Ok(n) => n,
                         };
+                        if let Some(f) = &mut raw {
+                            let _ = f.write_all(&buf[..n]);
+                        }
                         let (replies, mid_frame) = {
                             let mut p = parser.lock().unwrap();
                             p.process(&buf[..n]);

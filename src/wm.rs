@@ -21,6 +21,8 @@ pub enum WinId {
     Agent,
     /// Output of commands (Far's user screen, Ctrl+O).
     UserScreen,
+    /// A viewer (F3) by its id.
+    Viewer(u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -101,6 +103,7 @@ impl Node {
 pub enum ScreenId {
     Panels,
     UserScreen,
+    Viewer(u32),
 }
 
 pub struct Screen {
@@ -250,6 +253,37 @@ impl Wm {
         }
     }
 
+    /// The agent pane is above the screens (otherwise below them).
+    pub fn agent_on_top(&self) -> bool {
+        matches!(&self.root, Node::Split(s) if matches!(s.first, Node::Leaf(WinId::Agent)))
+    }
+
+    /// Moves the agent pane above or below the screens, keeping its size.
+    pub fn set_agent_on_top(&mut self, top: bool) {
+        if self.agent_on_top() == top {
+            return;
+        }
+        let Node::Split(s) = &mut self.root else {
+            return;
+        };
+        std::mem::swap(&mut s.first, &mut s.second);
+        s.min = (s.min.1, s.min.0);
+        s.extent = match s.extent {
+            Extent::FirstFixed(n) => Extent::SecondFixed(n),
+            Extent::SecondFixed(n) => Extent::FirstFixed(n),
+            Extent::Ratio(r) => Extent::Ratio(1.0 - r),
+        };
+    }
+
+    /// The agent pane's height as an extent of the main split.
+    pub fn agent_extent(&self, height: u16) -> Extent {
+        if self.agent_on_top() {
+            Extent::FirstFixed(height)
+        } else {
+            Extent::SecondFixed(height)
+        }
+    }
+
     pub fn is_hidden(&self, win: WinId) -> bool {
         self.hidden.contains(&win)
     }
@@ -268,6 +302,33 @@ impl Wm {
     pub fn switch_to(&mut self, id: ScreenId) {
         if let Some(i) = self.screens.iter().position(|s| s.id == id) {
             self.current = i;
+        }
+    }
+
+    /// All screens in the order they were opened.
+    pub fn screens(&self) -> Vec<ScreenId> {
+        self.screens.iter().map(|s| s.id).collect()
+    }
+
+    /// A new screen showing one window; it becomes current.
+    pub fn add_screen(&mut self, id: ScreenId, win: WinId) {
+        self.screens.push(Screen {
+            id,
+            tree: Node::Leaf(win),
+        });
+        self.current = self.screens.len() - 1;
+    }
+
+    /// Removes a screen; when it was current, the panels are shown.
+    pub fn remove_screen(&mut self, id: ScreenId) {
+        let Some(i) = self.screens.iter().position(|s| s.id == id) else {
+            return;
+        };
+        self.screens.remove(i);
+        if self.current == i {
+            self.current = 0;
+        } else if self.current > i {
+            self.current -= 1;
         }
     }
 
@@ -306,8 +367,10 @@ impl Wm {
                         Rect::new(area.x, area.y + first, area.width, total - first),
                     ),
                 };
-                // Nothing to move next to a hidden window.
-                let hidden = |n: &Node| matches!(n, Node::Leaf(w) if self.is_hidden(*w));
+                // Nothing to move next to a hidden panel. The hidden agent
+                // pane keeps its boundary: the panels keep their height and
+                // it can still be dragged (Ctrl+O shows the output there).
+                let hidden = |n: &Node| matches!(n, Node::Leaf(w) if self.is_hidden(*w) && *w != WinId::Agent);
                 if !hidden(&s.first) && !hidden(&s.second) {
                     out.splitters.push(Splitter {
                         id: s.id,
@@ -362,6 +425,11 @@ impl Wm {
     }
 
     pub fn set_extent(&mut self, id: SplitId, extent: Extent) {
+        // The agent pane's height was saved with it on either side.
+        let extent = match (id == MAIN_SPLIT, extent) {
+            (true, Extent::FirstFixed(n) | Extent::SecondFixed(n)) => self.agent_extent(n),
+            _ => extent,
+        };
         if let Some(s) = self.find_split(id) {
             s.extent = extent;
         }
@@ -425,6 +493,46 @@ mod tests {
         wm.set_first(MAIN_SPLIT, i32::from(s.first()) - 4, s.total());
         let tall = wm.arrange(Rect::new(0, 0, 100, 50));
         assert_eq!(tall.rect(WinId::Agent).unwrap().height, 16);
+    }
+
+    #[test]
+    fn adds_and_removes_screens() {
+        let mut wm = Wm::new();
+        wm.add_screen(ScreenId::Viewer(1), WinId::Viewer(1));
+        wm.add_screen(ScreenId::Viewer(2), WinId::Viewer(2));
+        assert_eq!(wm.current_screen(), ScreenId::Viewer(2));
+        let a = wm.arrange(Rect::new(0, 0, 100, 30));
+        assert_eq!(a.rect(WinId::Viewer(2)), Some(Rect::new(0, 0, 100, 18)));
+        wm.remove_screen(ScreenId::Viewer(1));
+        assert_eq!(wm.current_screen(), ScreenId::Viewer(2));
+        wm.remove_screen(ScreenId::Viewer(2));
+        assert_eq!(wm.current_screen(), ScreenId::Panels);
+    }
+
+    #[test]
+    fn agent_on_top_keeps_its_height() {
+        let mut wm = Wm::new();
+        wm.set_agent_on_top(true);
+        let a = wm.arrange(Rect::new(0, 0, 100, 30));
+        assert_eq!(a.rect(WinId::Agent), Some(Rect::new(0, 0, 100, 12)));
+        assert_eq!(a.screen_area, Rect::new(0, 12, 100, 18));
+        // A height saved with the agent below.
+        wm.set_extent(MAIN_SPLIT, Extent::SecondFixed(8));
+        let a = wm.arrange(Rect::new(0, 0, 100, 30));
+        assert_eq!(a.rect(WinId::Agent), Some(Rect::new(0, 0, 100, 8)));
+        wm.set_agent_on_top(false);
+        let a = wm.arrange(Rect::new(0, 0, 100, 30));
+        assert_eq!(a.rect(WinId::Agent), Some(Rect::new(0, 22, 100, 8)));
+    }
+
+    #[test]
+    fn hidden_agent_keeps_its_boundary() {
+        let mut wm = Wm::new();
+        wm.set_hidden(WinId::Agent, true);
+        let a = wm.arrange(Rect::new(0, 0, 100, 30));
+        assert_eq!(a.rect(WinId::Agent), None);
+        assert_eq!(a.screen_area, Rect::new(0, 0, 100, 18));
+        assert_eq!(a.splitter(MAIN_SPLIT).map(|s| s.boundary), Some(18));
     }
 
     #[test]

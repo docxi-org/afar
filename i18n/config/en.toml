@@ -26,6 +26,8 @@ args = []
 # Start in live mode: your actions go with each prompt to the agent.
 # Otherwise the agent reads the journal when it needs it.
 live = false
+# Where the agent pane is: "bottom" — below the panels, "top" — above them.
+position = "bottom"
 
 [agent.permissions]
 # What the agent may do through afar (its afar_* tools):
@@ -40,3 +42,8 @@ move = "confirm"            # move and rename
 delete = "confirm"          # to the recycle bin
 delete_permanent = "deny"   # bypassing the recycle bin
 run_command = "confirm"     # run a command in the command line
+
+[viewer]
+# The command line stays visible in the viewer (F3); Far hides it.
+# The agent pane then keeps its place when a viewer opens.
+command_line = true

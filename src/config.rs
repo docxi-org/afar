@@ -15,6 +15,22 @@ pub struct Config {
     pub panels: Panels,
     pub confirm: Confirm,
     pub agent: Agent,
+    pub viewer: Viewer,
+}
+
+/// The viewer (F3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Viewer {
+    /// The command line stays under the viewer (Far hides it); the agent
+    /// pane then keeps its place when a viewer opens.
+    pub command_line: bool,
+}
+
+impl Default for Viewer {
+    fn default() -> Self {
+        Self { command_line: true }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -59,7 +75,17 @@ pub struct Agent {
     pub args: Vec<String>,
     /// Start in live observation mode (journal entries go with prompts).
     pub live: bool,
+    /// Where the agent pane is: below the panels or above them.
+    pub position: AgentPosition,
     pub permissions: Permissions,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentPosition {
+    #[default]
+    Bottom,
+    Top,
 }
 
 impl Default for Agent {
@@ -68,6 +94,7 @@ impl Default for Agent {
             command: "claude".into(),
             args: Vec::new(),
             live: false,
+            position: AgentPosition::Bottom,
             permissions: Permissions::default(),
         }
     }

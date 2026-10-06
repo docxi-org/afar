@@ -1,9 +1,27 @@
 //! Commands: every action of the panels has a stable name (`panel.swap`,
 //! `fileop.copy`) that the key map (`keymap.rs`) binds keys to; later the
 //! F9 menu, macros and the agent use the same names (docs/02-architecture.md,
-//! "Слой команд").
+//! "Слой команд"). Keys are bound per context: the panels (with the
+//! command line under them) and the viewer.
 
 use crate::panel::{SortMode, ViewMode};
+
+/// Where a key binding works.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Ctx {
+    Panels,
+    Viewer,
+}
+
+impl Ctx {
+    /// The section of `keymaps/far.toml`.
+    pub fn section(self) -> &'static str {
+        match self {
+            Ctx::Panels => "panels",
+            Ctx::Viewer => "viewer",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -79,6 +97,60 @@ pub enum Command {
     InsertPassivePath,
     HistoryPrev,
     HistoryNext,
+    // Screens (F12): panels, viewers.
+    Screens,
+    NextScreen,
+    PrevScreen,
+    ViewFile,
+    Viewer(ViewerCmd),
+}
+
+/// Commands of the viewer (Far's viewer.cpp / fileview.cpp keys).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewerCmd {
+    Close,
+    Wrap,
+    WordWrap,
+    Hex,
+    ModeMenu,
+    Edit,
+    Search,
+    SearchNext,
+    SearchPrev,
+    NextCodepage,
+    CodepageMenu,
+    Goto,
+    GoFile,
+    NextFile,
+    PrevFile,
+    Copy,
+    Unselect,
+    Undo,
+    GotoBookmark(u8),
+    SetBookmark(u8),
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Left,
+    Right,
+    /// Ctrl+Left/Right: 20 columns in text, one byte in hex and dump.
+    LeftMore,
+    RightMore,
+    LeftStart,
+    RightEnd,
+    Home,
+    End,
+    StartKeepLeft,
+    EndKeepLeft,
+    BytesLess,
+    BytesMore,
+    BytesLess16,
+    BytesMore16,
+    Scrollbar,
+    StatusLine,
+    KeyBar,
+    UserScreen,
 }
 
 /// A command's name, its default (Far) keys, and whether it works with the
@@ -88,8 +160,10 @@ pub struct Def {
     pub command: Command,
     pub keys: &'static [&'static str],
     pub with_panels_hidden: bool,
+    pub ctx: &'static [Ctx],
 }
 
+/// A command of the panels.
 const fn def(
     name: &'static str,
     command: Command,
@@ -101,10 +175,34 @@ const fn def(
         command,
         keys,
         with_panels_hidden,
+        ctx: &[Ctx::Panels],
+    }
+}
+
+/// A command of every screen.
+const fn global(name: &'static str, command: Command, keys: &'static [&'static str]) -> Def {
+    Def {
+        name,
+        command,
+        keys,
+        with_panels_hidden: true,
+        ctx: &[Ctx::Panels, Ctx::Viewer],
+    }
+}
+
+/// A command of the viewer.
+const fn vdef(name: &'static str, command: ViewerCmd, keys: &'static [&'static str]) -> Def {
+    Def {
+        name,
+        command: Command::Viewer(command),
+        keys,
+        with_panels_hidden: true,
+        ctx: &[Ctx::Viewer],
     }
 }
 
 use Command::*;
+use ViewerCmd as V;
 
 /// All commands with Far's keys.
 #[rustfmt::skip]
@@ -185,6 +283,70 @@ pub const COMMANDS: &[Def] = &[
     def("cmdline.insert_passive_path", InsertPassivePath, &["Ctrl+Shift+]"], true),
     def("cmdline.history_prev", HistoryPrev, &["Ctrl+E"], true),
     def("cmdline.history_next", HistoryNext, &["Ctrl+X"], true),
+    def("fileop.view", ViewFile, &["F3", "Alt+F3", "Ctrl+Shift+F3"], false),
+    global("screens.list", Screens, &["F12"]),
+    global("screens.next", NextScreen, &["Ctrl+Tab"]),
+    global("screens.prev", PrevScreen, &["Ctrl+Shift+Tab"]),
+    vdef("viewer.close", V::Close, &["F3", "F10", "Esc"]),
+    vdef("viewer.wrap", V::Wrap, &["F2"]),
+    vdef("viewer.word_wrap", V::WordWrap, &["Shift+F2"]),
+    vdef("viewer.hex", V::Hex, &["F4"]),
+    vdef("viewer.mode_menu", V::ModeMenu, &["Shift+F4"]),
+    vdef("viewer.edit", V::Edit, &["F6"]),
+    vdef("viewer.search", V::Search, &["F7"]),
+    vdef("viewer.search_next", V::SearchNext, &["Shift+F7", "Space"]),
+    vdef("viewer.search_prev", V::SearchPrev, &["Alt+F7"]),
+    vdef("viewer.next_codepage", V::NextCodepage, &["F8"]),
+    vdef("viewer.codepage_menu", V::CodepageMenu, &["Shift+F8"]),
+    vdef("viewer.goto", V::Goto, &["Alt+F8"]),
+    vdef("viewer.go_file", V::GoFile, &["Ctrl+F10"]),
+    vdef("viewer.next_file", V::NextFile, &["Gray+"]),
+    vdef("viewer.prev_file", V::PrevFile, &["Gray-"]),
+    vdef("viewer.copy", V::Copy, &["Ctrl+C", "Ctrl+Ins"]),
+    vdef("viewer.unselect", V::Unselect, &["Ctrl+U"]),
+    vdef("viewer.undo", V::Undo, &["Alt+BS", "Ctrl+Z"]),
+    vdef("viewer.bookmark_0", V::GotoBookmark(0), &["Ctrl+0"]),
+    vdef("viewer.bookmark_1", V::GotoBookmark(1), &["Ctrl+1"]),
+    vdef("viewer.bookmark_2", V::GotoBookmark(2), &["Ctrl+2"]),
+    vdef("viewer.bookmark_3", V::GotoBookmark(3), &["Ctrl+3"]),
+    vdef("viewer.bookmark_4", V::GotoBookmark(4), &["Ctrl+4"]),
+    vdef("viewer.bookmark_5", V::GotoBookmark(5), &["Ctrl+5"]),
+    vdef("viewer.bookmark_6", V::GotoBookmark(6), &["Ctrl+6"]),
+    vdef("viewer.bookmark_7", V::GotoBookmark(7), &["Ctrl+7"]),
+    vdef("viewer.bookmark_8", V::GotoBookmark(8), &["Ctrl+8"]),
+    vdef("viewer.bookmark_9", V::GotoBookmark(9), &["Ctrl+9"]),
+    vdef("viewer.set_bookmark_0", V::SetBookmark(0), &["Ctrl+Shift+0"]),
+    vdef("viewer.set_bookmark_1", V::SetBookmark(1), &["Ctrl+Shift+1"]),
+    vdef("viewer.set_bookmark_2", V::SetBookmark(2), &["Ctrl+Shift+2"]),
+    vdef("viewer.set_bookmark_3", V::SetBookmark(3), &["Ctrl+Shift+3"]),
+    vdef("viewer.set_bookmark_4", V::SetBookmark(4), &["Ctrl+Shift+4"]),
+    vdef("viewer.set_bookmark_5", V::SetBookmark(5), &["Ctrl+Shift+5"]),
+    vdef("viewer.set_bookmark_6", V::SetBookmark(6), &["Ctrl+Shift+6"]),
+    vdef("viewer.set_bookmark_7", V::SetBookmark(7), &["Ctrl+Shift+7"]),
+    vdef("viewer.set_bookmark_8", V::SetBookmark(8), &["Ctrl+Shift+8"]),
+    vdef("viewer.set_bookmark_9", V::SetBookmark(9), &["Ctrl+Shift+9"]),
+    vdef("viewer.up", V::Up, &["Up"]),
+    vdef("viewer.down", V::Down, &["Down"]),
+    vdef("viewer.page_up", V::PageUp, &["PgUp", "Ctrl+Up"]),
+    vdef("viewer.page_down", V::PageDown, &["PgDn", "Ctrl+Down"]),
+    vdef("viewer.left", V::Left, &["Left"]),
+    vdef("viewer.right", V::Right, &["Right"]),
+    vdef("viewer.left_more", V::LeftMore, &["Ctrl+Left"]),
+    vdef("viewer.right_more", V::RightMore, &["Ctrl+Right"]),
+    vdef("viewer.left_start", V::LeftStart, &["Ctrl+Shift+Left"]),
+    vdef("viewer.right_end", V::RightEnd, &["Ctrl+Shift+Right"]),
+    vdef("viewer.home", V::Home, &["Home", "Ctrl+Home"]),
+    vdef("viewer.end", V::End, &["End", "Ctrl+End"]),
+    vdef("viewer.start_keep_left", V::StartKeepLeft, &["Ctrl+PgUp"]),
+    vdef("viewer.end_keep_left", V::EndKeepLeft, &["Ctrl+PgDn"]),
+    vdef("viewer.bytes_less", V::BytesLess, &["Alt+Left"]),
+    vdef("viewer.bytes_more", V::BytesMore, &["Alt+Right"]),
+    vdef("viewer.bytes_less_16", V::BytesLess16, &["Ctrl+Alt+Left"]),
+    vdef("viewer.bytes_more_16", V::BytesMore16, &["Ctrl+Alt+Right"]),
+    vdef("viewer.scrollbar", V::Scrollbar, &["Ctrl+S"]),
+    vdef("viewer.status_line", V::StatusLine, &["Ctrl+Shift+B"]),
+    vdef("viewer.keybar", V::KeyBar, &["Ctrl+B"]),
+    vdef("viewer.user_screen", V::UserScreen, &["Ctrl+O"]),
 ];
 
 impl Command {

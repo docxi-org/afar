@@ -1,4 +1,5 @@
 pub mod app;
+pub mod clipboard;
 pub mod command;
 pub mod config;
 pub mod dev;
@@ -18,5 +19,6 @@ pub mod term;
 pub mod termview;
 pub mod theme;
 pub mod tui;
+pub mod viewer;
 pub mod watch;
 pub mod wm;
