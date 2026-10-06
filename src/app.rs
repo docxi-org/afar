@@ -987,7 +987,8 @@ impl App {
         self.agent_seen_seq = last;
         if !self.live {
             return format!(
-                "[afar: {count} new journal entries #{first}–#{last}; call afar_journal(since={since}) if relevant]"
+                "[afar: {count} new journal {} #{first}–#{last}; call afar_journal(since={since}) if relevant]",
+                if count == 1 { "entry" } else { "entries" }
             );
         }
         let new = self.journal.since(since);

@@ -141,16 +141,21 @@ impl AfarMcp {
     }
 
     #[tool(
-        description = "State of the afar file manager: both panels (path, item under cursor, \
-        selection), focus, running command, journal position. Call first to see what the user sees."
+        description = "State of the afar file manager as JSON: left/right panels {path, cursor \
+        (item under cursor), items, selected_count, selected (up to 20 names)}, active_panel, focus \
+        (panels/agent/command), panels_visible, running_command {cmd_id, text} or null, \
+        journal_last_seq, observe_mode (live/on-demand). Call first to see what the user sees."
     )]
     async fn afar_state(&self) -> Result<CallToolResult, McpError> {
         result(ask(&self.tx, Request::State).await)
     }
 
     #[tool(
-        description = "Journal of user actions in afar (directory changes, selections, \
-        commands run from the command line with exit codes), oldest first."
+        description = "Journal of actions in afar, oldest first, one per line: \
+        `#seq HH:MM:SS actor kind details`. actor: user, agent (done via afar_* tools) or sys. \
+        kinds: cd (panel, from → to), select (panel, size of the selection after the change and \
+        sample names, or `selection cleared`), cmd (command line text, cwd, [cmd-N]), done (exit \
+        code, duration, output lines — read them with afar_command_output)."
     )]
     async fn afar_journal(
         &self,
@@ -369,7 +374,19 @@ pub fn run_hook(event: &str) -> anyhow::Result<()> {
     let response = String::from_utf8_lossy(&response);
     if let Some((head, body)) = response.split_once("\r\n\r\n") {
         if head.starts_with("HTTP/1.1 200") && !body.is_empty() {
-            print!("{body}");
+            // JSON hook output: the text goes into the model's context as
+            // additional context rather than as plain hook output.
+            let event_name = match event {
+                "session-start" => "SessionStart",
+                _ => "UserPromptSubmit",
+            };
+            let out = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": event_name,
+                    "additionalContext": body,
+                }
+            });
+            print!("{out}");
         }
     }
     Ok(())

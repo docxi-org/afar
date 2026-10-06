@@ -138,8 +138,15 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 count,
                 sample,
             } => {
-                let more = if *count > sample.len() { ", …" } else { "" };
-                format!("select {panel:<5} {count}: {}{more}", sample.join(", "))
+                if *count == 0 {
+                    format!("select {panel:<5} selection cleared")
+                } else {
+                    let more = if *count > sample.len() { ", …" } else { "" };
+                    format!(
+                        "select {panel:<5} {count} selected: {}{more}",
+                        sample.join(", ")
+                    )
+                }
             }
             Event::CommandStarted { cmd_id, text, cwd } => {
                 format!("cmd    {text}  (cwd {})  [cmd-{cmd_id}]", cwd.display())
