@@ -130,3 +130,4 @@ MListGb = G
 MListTb = T
 MListPb = P
 MListEb = E
+MMenuSortByName = &Vardą

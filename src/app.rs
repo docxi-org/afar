@@ -1031,6 +1031,17 @@ impl App {
             }
             KeyCode::Char('r' | 'R') if ctrl && shift => self.request_restart(),
             KeyCode::Tab => self.active = 1 - a,
+            // Ctrl+1…4: Far's view modes.
+            KeyCode::Char(c @ '1'..='4') if ctrl => {
+                if let Some(mode) = crate::panel::ViewMode::from_key(c as u8 - b'0') {
+                    self.panels[a].view = mode;
+                }
+            }
+            // Left/Right: one column over in modes with several.
+            KeyCode::Left
+                if !ctrl && !alt && self.cmdline.is_empty() && self.panels[a].move_column(-1) => {}
+            KeyCode::Right
+                if !ctrl && !alt && self.cmdline.is_empty() && self.panels[a].move_column(1) => {}
             KeyCode::F(5) if !alt && !ctrl => self.copy_dialog(false, shift),
             KeyCode::F(6) if !alt && !ctrl => self.copy_dialog(true, shift),
             KeyCode::F(7) if !alt && !ctrl && !shift => self.mkdir_dialog(),
@@ -1407,7 +1418,7 @@ impl App {
         let pressed = matches!(ev.kind, MouseEventKind::Down(_));
 
         // Dialogs take the mouse, except over the agent pane.
-        if self.has_overlay() && !l.agent_frame.contains(pos) {
+        if self.has_overlay() && (!l.agent_frame.contains(pos) || self.overlay_dragging()) {
             self.overlay_mouse(&ev);
             return;
         }
@@ -1585,11 +1596,7 @@ impl App {
     }
 
     fn last_page(&self) -> usize {
-        let h = self
-            .last_layout
-            .as_ref()
-            .map_or(0, |l| l.panels[self.active].height);
-        h.saturating_sub(6).max(1) as usize
+        self.panels[self.active].page()
     }
 
     // --------------------------------------------------------------- draw
@@ -1609,8 +1616,18 @@ impl App {
         // Top area: panels or the user screen.
         if self.panels_visible() && l.top.height >= 5 {
             let panels_active = self.focus == Focus::Panels;
+            // The clock overlays the top border at the right edge, as in Far.
+            let clock = chrono::Local::now().format("%H:%M").to_string();
+            for side in 0..2 {
+                let touches = l.panels[side].right() == area.right();
+                self.panels[side].clock_cells = if touches { clock.len() as u16 } else { 0 };
+            }
             self.panels[0].draw(l.panels[0], buf, panels_active && self.active == 0);
             self.panels[1].draw(l.panels[1], buf, panels_active && self.active == 1);
+            if l.top.y == area.y {
+                let x = area.right().saturating_sub(clock.len() as u16);
+                buf.set_stringn(x, area.y, &clock, clock.len(), theme::MESSAGE);
+            }
         } else {
             let c = self.draw_user_screen(l.top, buf);
             if self.focus == Focus::Command {

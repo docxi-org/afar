@@ -162,3 +162,4 @@ MListTb = Т
 MListPb = П
 MListEb = Е
 MCopyTimeInfoSpeed = Б/с
+MMenuSortByName = &Ім'я

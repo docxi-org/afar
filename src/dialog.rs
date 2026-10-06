@@ -259,6 +259,12 @@ pub struct Dialog {
     hits: Vec<(Rect, Target)>,
     list: Option<OpenList>,
     next_group: u16,
+    /// Moved by the user from the centred position.
+    offset: (i32, i32),
+    /// Being dragged with the mouse: the last mouse position.
+    drag: Option<(u16, u16)>,
+    /// Where the dialog was last drawn.
+    outer: Rect,
 }
 
 impl Dialog {
@@ -273,7 +279,15 @@ impl Dialog {
             hits: Vec::new(),
             list: None,
             next_group: 0,
+            offset: (0, 0),
+            drag: None,
+            outer: Rect::default(),
         }
+    }
+
+    /// The dialog is being moved with the mouse.
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
     }
 
     /// A dialog with `content` columns for text (W = content + 10).
@@ -923,7 +937,27 @@ impl Dialog {
     /// Returns `None` when the event is outside the dialog.
     pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Option<Outcome> {
         let pos = Position::new(ev.column, ev.row);
-        let (rect, target) = self.hits.iter().copied().find(|(r, _)| r.contains(pos))?;
+        // Moving the dialog: grabbed anywhere but on its items.
+        if let Some((lx, ly)) = self.drag {
+            match ev.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.offset.0 += i32::from(ev.column) - i32::from(lx);
+                    self.offset.1 += i32::from(ev.row) - i32::from(ly);
+                    self.drag = Some((ev.column, ev.row));
+                }
+                _ => self.drag = None,
+            }
+            return Some(Outcome::Pending);
+        }
+        let Some((rect, target)) = self.hits.iter().copied().find(|(r, _)| r.contains(pos)) else {
+            if !self.outer.contains(pos) {
+                return None;
+            }
+            if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.list.is_none() {
+                self.drag = Some((ev.column, ev.row));
+            }
+            return Some(Outcome::Pending);
+        };
         if ev.kind != MouseEventKind::Down(MouseButton::Left) {
             return Some(Outcome::Pending);
         }
@@ -979,9 +1013,30 @@ impl Dialog {
         let c = if self.warning { &WARNING } else { &NORMAL };
         let w = self.width.min(area.width);
         let h = (self.rows.len() as u16 + 4).min(area.height);
-        let x0 = area.x + area.width.saturating_sub(w) / 2;
-        let y0 = area.y + area.height.saturating_sub(h) / 2;
+        // Centred, moved by the user, kept on the screen.
+        let clamp = |centre: u16, delta: i32, start: u16, room: u16| {
+            (i32::from(centre) + delta).clamp(i32::from(start), i32::from(start + room)) as u16
+        };
+        let x0 = clamp(
+            area.x + area.width.saturating_sub(w) / 2,
+            self.offset.0,
+            area.x,
+            area.width.saturating_sub(w),
+        );
+        let y0 = clamp(
+            area.y + area.height.saturating_sub(h) / 2,
+            self.offset.1,
+            area.y,
+            area.height.saturating_sub(h),
+        );
+        // Remember the clamped offset so dragging past the edge does not
+        // accumulate.
+        self.offset = (
+            i32::from(x0) - i32::from(area.x + area.width.saturating_sub(w) / 2),
+            i32::from(y0) - i32::from(area.y + area.height.saturating_sub(h) / 2),
+        );
         let outer = Rect::new(x0, y0, w, h);
+        self.outer = outer;
 
         // Shadow: the row below (from x+2) and two columns to the right.
         for sy in outer.y + 1..=outer.bottom() {
@@ -1624,6 +1679,42 @@ mod tests {
         assert_eq!(wrap("один два три", 8), vec!["один два", "три"]);
         assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
         assert_eq!(wrap("", 5), vec![""]);
+    }
+
+    #[test]
+    fn drags_by_the_frame() {
+        let mut d = Dialog::far("t", 40).text("x").buttons(&["OK"], 0);
+        let area = Rect::new(0, 0, 80, 25);
+        let mut buf = Buffer::empty(area);
+        d.draw(area, &mut buf);
+        let start = d.outer;
+        let ev = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Grab the top border, move 5 right and 3 down, release.
+        let (gx, gy) = (start.x + 10, start.y + 1);
+        assert_eq!(
+            d.handle_mouse(&ev(MouseEventKind::Down(MouseButton::Left), gx, gy)),
+            Some(Outcome::Pending)
+        );
+        assert!(d.dragging());
+        d.handle_mouse(&ev(MouseEventKind::Drag(MouseButton::Left), gx + 5, gy + 3));
+        d.handle_mouse(&ev(MouseEventKind::Up(MouseButton::Left), gx + 5, gy + 3));
+        assert!(!d.dragging());
+        d.draw(area, &mut buf);
+        assert_eq!((d.outer.x, d.outer.y), (start.x + 5, start.y + 3));
+        // Not past the screen edge.
+        d.handle_mouse(&ev(
+            MouseEventKind::Down(MouseButton::Left),
+            d.outer.x + 10,
+            d.outer.y + 1,
+        ));
+        d.handle_mouse(&ev(MouseEventKind::Drag(MouseButton::Left), 0, 0));
+        d.draw(area, &mut buf);
+        assert_eq!((d.outer.x, d.outer.y), (0, 0));
     }
 
     #[test]

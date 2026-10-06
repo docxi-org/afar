@@ -162,3 +162,4 @@ MListTb = T
 MListPb = P
 MListEb = E
 MCopyTimeInfoSpeed = b/s
+MMenuSortByName = &Nombre

@@ -25,7 +25,7 @@ use crate::ops::{
     self, ConflictAction, ConflictAnswer, CopyJob, ErrorAnswer, ErrorContext, FileInfo, OpId,
     OpKind, OpMsg, OpReport, Overwrite,
 };
-use crate::panel::group_thousands;
+use crate::panel::{group_thousands, size_float};
 use crate::tr;
 
 /// Longest path lists kept in journal entries.
@@ -174,37 +174,6 @@ fn hms(d: Duration) -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
-/// Far's float size: "512 Б", "1,23 К", "12,3 М", "123 Г".
-fn size_float(bytes: u64) -> String {
-    const UNITS: [&str; 7] = [
-        "MListBytes",
-        "MListKb",
-        "MListMb",
-        "MListGb",
-        "MListTb",
-        "MListPb",
-        "MListEb",
-    ];
-    if bytes < 1024 {
-        return format!("{bytes} {}", tr!(UNITS[0]));
-    }
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    let decimals = if value < 10.0 {
-        2
-    } else if value < 100.0 {
-        1
-    } else {
-        0
-    };
-    let number = format!("{value:.decimals$}").replace('.', crate::i18n::decimal_separator());
-    format!("{number} {}", tr!(UNITS[unit]))
-}
-
 /// Far's progress bar: 61 cells and the percentage.
 fn bar(done: u64, total: u64) -> String {
     const CELLS: u64 = 61;
@@ -301,6 +270,11 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// A dialog is being moved with the mouse (it gets all mouse events).
+    pub(super) fn overlay_dragging(&self) -> bool {
+        matches!(self.overlays.last(), Some(Overlay::Dialog { dialog, .. }) if dialog.dragging())
     }
 
     /// Mouse over the overlay; clicks outside the top dialog are ignored.
