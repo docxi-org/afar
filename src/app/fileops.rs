@@ -1,7 +1,7 @@
-//! File operations in the UI: Far-style dialogs (F7, F8), operations running
-//! in the background, their progress window and questions on errors.
-//! Dialogs live in the overlay: modal for input, while the agent pane and
-//! background work keep going.
+//! File operations in the UI: Far-style dialogs (F5–F8), operations running
+//! in the background, their progress window and questions on errors and
+//! existing files. Dialogs live in the overlay: modal for input, while the
+//! agent pane and background work keep going.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,10 +17,24 @@ use super::{App, AppMsg, Focus};
 use crate::dialog::{Dialog, Outcome};
 use crate::journal::{Actor, Event};
 use crate::mcp::Reply;
-use crate::ops::{self, ErrorAnswer, OpId, OpKind, OpMsg, OpReport};
+use crate::ops::{
+    self, ConflictAction, ConflictAnswer, CopyJob, ErrorAnswer, FileInfo, OpId, OpKind, OpMsg,
+    OpReport, Overwrite,
+};
+use crate::panel::group_thousands;
 
 /// Longest path lists kept in journal entries.
 const LIST_LIMIT: usize = 20;
+
+/// Choices of "existing files" in the copy dialog, in order.
+const OVERWRITE_CHOICES: [(&str, Overwrite); 6] = [
+    ("Спрашивать", Overwrite::Ask),
+    ("Заменять", Overwrite::Replace),
+    ("Пропускать", Overwrite::Skip),
+    ("Заменять, если новее", Overwrite::ReplaceIfNewer),
+    ("Переименовывать", Overwrite::Rename),
+    ("Дописывать", Overwrite::Append),
+];
 
 pub(super) enum Overlay {
     Dialog { dialog: Dialog, purpose: Purpose },
@@ -38,8 +52,19 @@ pub(super) enum Purpose {
         actor: Actor,
         reply: Option<oneshot::Sender<Reply>>,
     },
+    Copy {
+        sources: Vec<PathBuf>,
+        moving: bool,
+        /// Panel the sources are in; relative destinations start there.
+        side: usize,
+        actor: Actor,
+        reply: Option<oneshot::Sender<Reply>>,
+    },
     OpError {
         reply: mpsc::Sender<ErrorAnswer>,
+    },
+    Conflict {
+        reply: mpsc::Sender<ConflictAnswer>,
     },
     Message,
 }
@@ -49,6 +74,8 @@ pub(super) struct Progress {
     title: String,
     done: usize,
     total: usize,
+    bytes_done: u64,
+    bytes_total: u64,
     current: String,
 }
 
@@ -57,6 +84,10 @@ pub(super) struct RunningOp {
     actor: Actor,
     reply: Option<oneshot::Sender<Reply>>,
     cancel: Arc<AtomicBool>,
+    /// Item to put the cursor on when done: panel and name.
+    focus: Option<(usize, String)>,
+    /// Where things go (copy/move), for the agent's answer.
+    dest: Option<PathBuf>,
 }
 
 /// "1 объект", "3 объекта", "5 объектов".
@@ -79,6 +110,28 @@ fn limited(paths: &[PathBuf]) -> Vec<PathBuf> {
     paths.iter().take(LIST_LIMIT).cloned().collect()
 }
 
+fn describe_file(info: &FileInfo) -> String {
+    let time = info
+        .modified
+        .map(|t| {
+            let t: chrono::DateTime<chrono::Local> = t.into();
+            t.format("%d.%m.%Y %H:%M:%S").to_string()
+        })
+        .unwrap_or_default();
+    format!("{:>16} байт   {time}", group_thousands(info.size))
+}
+
+/// A progress bar of `width` cells.
+fn bar(done: u64, total: u64, width: u16) -> String {
+    let width = u64::from(width);
+    let filled = (width * done).checked_div(total).unwrap_or(0).min(width) as usize;
+    format!(
+        "{}{}",
+        "█".repeat(filled),
+        "░".repeat(width as usize - filled)
+    )
+}
+
 impl App {
     pub(super) fn has_overlay(&self) -> bool {
         !self.overlays.is_empty()
@@ -96,7 +149,9 @@ impl App {
             d = d.warning();
         }
         for l in lines {
-            d = d.text(l.clone());
+            for part in l.lines() {
+                d = d.wrapped(part);
+            }
         }
         let dialog = d.separator().buttons(&["OK"], 0);
         self.overlays.push(Overlay::Dialog {
@@ -165,6 +220,27 @@ impl App {
                     let _ = reply.send(Err("the user declined the deletion".into()));
                 }
             }
+            Purpose::Copy {
+                sources,
+                moving,
+                side,
+                actor,
+                reply,
+            } => {
+                if button != Some(0) {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err("the user declined the operation".into()));
+                    }
+                    return;
+                }
+                let dest = dialog.input_value(0).trim().trim_matches('"').to_string();
+                let overwrite = OVERWRITE_CHOICES[dialog.radio(0)].1;
+                if let Err(e) =
+                    self.start_copy(sources, &dest, moving, overwrite, side, actor, reply)
+                {
+                    self.message("Ошибка", &[e], true);
+                }
+            }
             Purpose::OpError { reply } => {
                 let answer = match button {
                     Some(0) => ErrorAnswer::Retry,
@@ -173,6 +249,19 @@ impl App {
                     _ => ErrorAnswer::Cancel,
                 };
                 let _ = reply.send(answer);
+            }
+            Purpose::Conflict { reply } => {
+                let action = match button {
+                    Some(0) => ConflictAction::Replace,
+                    Some(1) => ConflictAction::Skip,
+                    Some(2) => ConflictAction::Rename,
+                    Some(3) => ConflictAction::Append,
+                    _ => ConflictAction::Cancel,
+                };
+                let _ = reply.send(ConflictAnswer {
+                    action,
+                    all: dialog.checked(0),
+                });
             }
             Purpose::Message => {}
         }
@@ -185,22 +274,22 @@ impl App {
                 Overlay::Dialog { dialog, .. } => dialog.draw(area, buf),
                 Overlay::Progress(p) => {
                     let width = 50u16;
-                    let filled = (usize::from(width) * p.done)
-                        .checked_div(p.total)
-                        .unwrap_or(0)
-                        .min(usize::from(width));
-                    let bar = format!(
-                        "{}{}",
-                        "█".repeat(filled),
-                        "░".repeat(usize::from(width) - filled)
-                    );
-                    let mut d = Dialog::new(&p.title, width)
-                        .text(p.current.clone())
-                        .text(bar)
-                        .center(format!("{} из {}", p.done, p.total))
-                        .separator()
-                        .center("Esc — отменить");
-                    d.draw(area, buf);
+                    let mut d = Dialog::new(&p.title, width).text(p.current.clone());
+                    if p.bytes_total > 0 {
+                        d = d
+                            .text(bar(p.bytes_done, p.bytes_total, width))
+                            .center(format!(
+                                "{} из {} байт",
+                                group_thousands(p.bytes_done),
+                                group_thousands(p.bytes_total)
+                            ))
+                            .center(format!("объектов: {} из {}", p.done, p.total));
+                    } else {
+                        d = d
+                            .text(bar(p.done as u64, p.total as u64, width))
+                            .center(format!("{} из {}", p.done, p.total));
+                    }
+                    d.separator().center("Esc — отменить").draw(area, buf);
                     None
                 }
             };
@@ -266,8 +355,9 @@ impl App {
 
     // ------------------------------------------------------------ delete
 
-    /// Items to delete: the selection, or the item under the cursor.
-    pub(super) fn delete_targets(&self, current_only: bool) -> Vec<PathBuf> {
+    /// Items an operation applies to: the selection, or the item under the
+    /// cursor.
+    pub(super) fn op_sources(&self, current_only: bool) -> Vec<PathBuf> {
         let panel = &self.panels[self.active];
         let selected: Vec<PathBuf> = panel.selected().map(|e| panel.path.join(&e.name)).collect();
         if !current_only && !selected.is_empty() {
@@ -344,10 +434,178 @@ impl App {
         );
         let cancel = Arc::new(AtomicBool::new(false));
         let tx = self.tx.clone();
-        let total = targets.len();
-        match ops::spawn_delete(id, targets, permanent, cancel.clone(), move |m| {
+        let started = ops::spawn_delete(id, targets, permanent, cancel.clone(), move |m| {
             let _ = tx.send(AppMsg::Op(m));
-        }) {
+        });
+        let title = if permanent {
+            "Удаление"
+        } else {
+            "Удаление в Корзину"
+        };
+        self.track_op(id, kind, actor, reply, cancel, None, None, title, started);
+    }
+
+    // -------------------------------------------------------- copy / move
+
+    /// F5 / F6 (with `current_only`: Shift+F5 / Shift+F6).
+    pub(super) fn copy_dialog(&mut self, moving: bool, current_only: bool) {
+        let sources = self.op_sources(current_only);
+        if sources.is_empty() {
+            return;
+        }
+        // Like Far: the other panel's directory, or the name itself for
+        // Shift+F5 / Shift+F6 (copy or rename in place).
+        let dest = if current_only {
+            name_of(&sources[0])
+        } else {
+            let other = &self.panels[1 - self.active].path;
+            let mut s = other.display().to_string();
+            if !s.ends_with(std::path::MAIN_SEPARATOR) {
+                s.push(std::path::MAIN_SEPARATOR);
+            }
+            s
+        };
+        self.open_copy_dialog(sources, dest, moving, self.active, Actor::User, None);
+    }
+
+    fn open_copy_dialog(
+        &mut self,
+        sources: Vec<PathBuf>,
+        dest: String,
+        moving: bool,
+        side: usize,
+        actor: Actor,
+        reply: Option<oneshot::Sender<Reply>>,
+    ) {
+        let what = if sources.len() == 1 {
+            format!("«{}»", name_of(&sources[0]))
+        } else {
+            objects(sources.len())
+        };
+        let (title, prompt, button) = if moving {
+            (
+                "Переименование/перенос",
+                format!("Переименовать или перенести {what} в:"),
+                "Перенести",
+            )
+        } else {
+            ("Копирование", format!("Копировать {what} в:"), "Копировать")
+        };
+        let labels: Vec<&str> = OVERWRITE_CHOICES.iter().map(|(l, _)| *l).collect();
+        let mut d = Dialog::new(title, 64)
+            .wrapped(&prompt)
+            .input(dest)
+            .separator()
+            .text("Уже существующие файлы:")
+            .radios(&labels, 0);
+        if actor == Actor::Agent {
+            d = d.center("— запрошено агентом —");
+        }
+        let dialog = d.separator().buttons(&[button, "Отмена"], 0);
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::Copy {
+                sources,
+                moving,
+                side,
+                actor,
+                reply,
+            },
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_copy(
+        &mut self,
+        sources: Vec<PathBuf>,
+        dest: &str,
+        moving: bool,
+        overwrite: Overwrite,
+        side: usize,
+        actor: Actor,
+        reply: Option<oneshot::Sender<Reply>>,
+    ) -> Result<(), String> {
+        let fail = |reply: Option<oneshot::Sender<Reply>>, e: String| {
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(e.clone()));
+            }
+            Err(e)
+        };
+        if dest.is_empty() {
+            return fail(reply, "не задано, куда".into());
+        }
+        let dest = self.panels[side].path.join(dest);
+        let job = CopyJob {
+            sources,
+            dest: dest.clone(),
+            moving,
+            overwrite,
+        };
+        let pairs = match ops::plan_targets(&job) {
+            Ok(p) => p,
+            Err(e) => return fail(reply, e),
+        };
+        let id = self.next_op_id();
+        let kind = if moving { OpKind::Move } else { OpKind::Copy };
+        self.journal.push(
+            actor,
+            Event::FileOpStarted {
+                op_id: id,
+                op: kind,
+                count: job.sources.len(),
+                sources: limited(&job.sources),
+                dest: Some(dest.clone()),
+            },
+        );
+        // A single item landing in one of the panels: show it there.
+        let focus = match pairs.as_slice() {
+            [(_, target)] => {
+                let parent = target.parent().map(Path::to_path_buf);
+                (0..2)
+                    .find(|&s| parent.as_ref() == Some(&self.panels[s].path))
+                    .map(|s| (s, name_of(target)))
+            }
+            _ => None,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tx = self.tx.clone();
+        let started = ops::spawn_copy(id, pairs, moving, overwrite, cancel.clone(), move |m| {
+            let _ = tx.send(AppMsg::Op(m));
+        });
+        let title = if moving {
+            "Перенос"
+        } else {
+            "Копирование"
+        };
+        self.track_op(
+            id,
+            kind,
+            actor,
+            reply,
+            cancel,
+            focus,
+            Some(dest),
+            title,
+            started,
+        );
+        Ok(())
+    }
+
+    /// Registers a started operation and shows its progress window.
+    #[allow(clippy::too_many_arguments)]
+    fn track_op(
+        &mut self,
+        id: OpId,
+        kind: OpKind,
+        actor: Actor,
+        reply: Option<oneshot::Sender<Reply>>,
+        cancel: Arc<AtomicBool>,
+        focus: Option<(usize, String)>,
+        dest: Option<PathBuf>,
+        title: &str,
+        started: std::io::Result<()>,
+    ) {
+        match started {
             Ok(()) => {
                 self.ops.insert(
                     id,
@@ -356,17 +614,17 @@ impl App {
                         actor,
                         reply,
                         cancel,
+                        focus,
+                        dest,
                     },
                 );
                 self.overlays.push(Overlay::Progress(Progress {
                     op: id,
-                    title: if permanent {
-                        "Удаление".into()
-                    } else {
-                        "Удаление в Корзину".into()
-                    },
+                    title: title.into(),
                     done: 0,
-                    total,
+                    total: 0,
+                    bytes_done: 0,
+                    bytes_total: 0,
                     current: String::new(),
                 }));
             }
@@ -391,6 +649,8 @@ impl App {
                 id,
                 done,
                 total,
+                bytes_done,
+                bytes_total,
                 current,
             } => {
                 for o in &mut self.overlays {
@@ -399,6 +659,8 @@ impl App {
                     {
                         p.done = done;
                         p.total = total;
+                        p.bytes_done = bytes_done;
+                        p.bytes_total = bytes_total;
                         p.current = current.display().to_string();
                     }
                 }
@@ -413,14 +675,35 @@ impl App {
                     .wrapped(&error)
                     .separator()
                     .buttons(&["Повторить", "Пропустить", "Пропустить все", "Отмена"], 0);
-                self.overlays.push(Overlay::Dialog {
-                    dialog,
-                    purpose: Purpose::OpError { reply },
-                });
-                // An error needs the user even if they were talking to the agent.
-                if self.focus == Focus::Agent {
-                    self.say("Ошибка файловой операции ждёт ответа — Ctrl+Space");
-                }
+                self.ask(dialog, Purpose::OpError { reply });
+            }
+            OpMsg::Conflict {
+                target,
+                new,
+                existing,
+                reply,
+                ..
+            } => {
+                let dialog = Dialog::new("Предупреждение", 64)
+                    .warning()
+                    .center("Файл уже существует")
+                    .text(target.display().to_string())
+                    .separator()
+                    .text(format!("Новый:        {}", describe_file(&new)))
+                    .text(format!("Существующий: {}", describe_file(&existing)))
+                    .separator()
+                    .check("Применить ко всем", false)
+                    .buttons(
+                        &[
+                            "Заменить",
+                            "Пропустить",
+                            "Переименовать",
+                            "Дописать",
+                            "Отмена",
+                        ],
+                        0,
+                    );
+                self.ask(dialog, Purpose::Conflict { reply });
             }
             OpMsg::Finished { id, report } => {
                 self.overlays
@@ -432,10 +715,22 @@ impl App {
                 for p in &mut self.panels {
                     p.reload(None);
                 }
+                if let Some((side, name)) = &op.focus {
+                    self.panels[*side].set_cursor_by_name(name);
+                }
                 if let Some(reply) = op.reply {
-                    let _ = reply.send(Ok(describe_report(op.kind, &report)));
+                    let _ = reply.send(Ok(describe_report(op.kind, op.dest.as_deref(), &report)));
                 }
             }
+        }
+    }
+
+    /// Shows a question from a running operation.
+    fn ask(&mut self, dialog: Dialog, purpose: Purpose) {
+        self.overlays.push(Overlay::Dialog { dialog, purpose });
+        // The question needs the user even if they were talking to the agent.
+        if self.focus == Focus::Agent {
+            self.say("Файловая операция ждёт ответа — Ctrl+Space");
         }
     }
 
@@ -446,6 +741,7 @@ impl App {
                 op_id: id,
                 op: kind,
                 done: report.done,
+                skipped: report.skipped,
                 failed_count: report.failed.len(),
                 failed: report.failed.iter().take(LIST_LIMIT).cloned().collect(),
                 cancelled: report.cancelled,
@@ -468,6 +764,28 @@ impl App {
         Ok(format!("created: {}", list.join(", ")))
     }
 
+    /// Paths of `names` in a panel; those that do not exist go to the error.
+    fn agent_sources(&self, side: usize, names: &[String]) -> Result<Vec<PathBuf>, String> {
+        let base = &self.panels[side].path;
+        let (found, missing): (Vec<PathBuf>, Vec<PathBuf>) = names
+            .iter()
+            .map(|n| base.join(n.trim_matches('"')))
+            .partition(|p| std::fs::symlink_metadata(p).is_ok());
+        if found.is_empty() {
+            return Err(format!("nothing found: {missing:?}"));
+        }
+        Ok(found)
+    }
+
+    /// Shows the agent's request: panels visible, items selected, the
+    /// keyboard on the dialog.
+    fn present_agent_request(&mut self, side: usize, names: &[String], what: &str) {
+        self.set_panels_visible(true);
+        self.panels[side].select_names(names, false);
+        self.focus = Focus::Panels;
+        self.say(format!("Агент просит {what}"));
+    }
+
     /// `afar_delete`: asks the user in a dialog; the reply is sent when the
     /// deletion has finished or the user declined.
     pub(super) fn agent_delete(
@@ -477,25 +795,60 @@ impl App {
         permanent: bool,
         reply: oneshot::Sender<Reply>,
     ) {
-        let base = self.panels[side].path.clone();
-        let (targets, missing): (Vec<PathBuf>, Vec<PathBuf>) = names
-            .iter()
-            .map(|n| base.join(n.trim_matches('"')))
-            .partition(|p| std::fs::symlink_metadata(p).is_ok());
-        if targets.is_empty() {
-            let _ = reply.send(Err(format!("nothing to delete: not found {missing:?}")));
-            return;
+        match self.agent_sources(side, names) {
+            Ok(targets) => {
+                self.present_agent_request(
+                    side,
+                    names,
+                    &format!("удалить {}", objects(targets.len())),
+                );
+                self.delete_dialog(targets, permanent, Actor::Agent, Some(reply));
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e));
+            }
         }
-        self.set_panels_visible(true);
-        self.panels[side].select_names(names, false);
-        self.focus = Focus::Panels;
-        self.say(format!("Агент просит удалить {}", objects(targets.len())));
-        self.delete_dialog(targets, permanent, Actor::Agent, Some(reply));
+    }
+
+    /// `afar_copy` / `afar_move`: the copy dialog filled in by the agent;
+    /// the user may change it before confirming.
+    pub(super) fn agent_copy(
+        &mut self,
+        side: usize,
+        names: &[String],
+        dest: String,
+        moving: bool,
+        reply: oneshot::Sender<Reply>,
+    ) {
+        match self.agent_sources(side, names) {
+            Ok(sources) => {
+                let what = if moving {
+                    "перенести"
+                } else {
+                    "скопировать"
+                };
+                self.present_agent_request(
+                    side,
+                    names,
+                    &format!("{what} {}", objects(sources.len())),
+                );
+                self.open_copy_dialog(sources, dest, moving, side, Actor::Agent, Some(reply));
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e));
+            }
+        }
     }
 }
 
-fn describe_report(kind: OpKind, report: &OpReport) -> String {
+fn describe_report(kind: OpKind, dest: Option<&Path>, report: &OpReport) -> String {
     let mut out = format!("{}: {} item(s) done", kind.name(), report.done);
+    if let Some(dest) = dest {
+        out.push_str(&format!(" → {}", dest.display()));
+    }
+    if report.skipped > 0 {
+        out.push_str(&format!(", {} existing file(s) skipped", report.skipped));
+    }
     if !report.failed.is_empty() {
         out.push_str(&format!(", {} failed", report.failed.len()));
         for (p, e) in report.failed.iter().take(5) {
@@ -510,7 +863,7 @@ fn describe_report(kind: OpKind, report: &OpReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::objects;
+    use super::{bar, objects};
 
     #[test]
     fn plural_forms() {
@@ -520,5 +873,11 @@ mod tests {
         assert_eq!(objects(11), "11 объектов");
         assert_eq!(objects(22), "22 объекта");
         assert_eq!(objects(112), "112 объектов");
+    }
+
+    #[test]
+    fn progress_bar() {
+        assert_eq!(bar(1, 2, 4), "██░░");
+        assert_eq!(bar(0, 0, 3), "░░░");
     }
 }

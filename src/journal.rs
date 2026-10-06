@@ -58,6 +58,8 @@ pub enum Event {
         op_id: u64,
         op: OpKind,
         done: usize,
+        /// Existing files left alone (copy/move).
+        skipped: usize,
         failed_count: usize,
         /// Up to 20 failures.
         failed: Vec<(PathBuf, String)>,
@@ -205,11 +207,15 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 op_id,
                 op,
                 done,
+                skipped,
                 failed_count,
                 failed,
                 cancelled,
             } => {
                 let mut s = format!("done   [op-{op_id}] {}: {done} ok", op.name());
+                if *skipped > 0 {
+                    s.push_str(&format!(", {skipped} skipped"));
+                }
                 if *failed_count > 0 {
                     s.push_str(&format!(", {failed_count} failed"));
                     if let Some((p, e)) = failed.first() {

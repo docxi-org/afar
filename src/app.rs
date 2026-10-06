@@ -253,6 +253,17 @@ impl App {
                         let _ = reply.send(Err(e));
                     }
                 },
+                Request::Copy {
+                    side,
+                    names,
+                    dest,
+                    moving,
+                } => match self.resolve_side(&side) {
+                    Ok(side) => self.agent_copy(side, &names, dest, moving, reply),
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                    }
+                },
                 request => {
                     let _ = reply.send(self.on_mcp(request));
                 }
@@ -768,17 +779,19 @@ impl App {
                 self.cmdline_key(&key);
             }
             KeyCode::Tab => self.active = 1 - a,
+            KeyCode::F(5) if !alt && !ctrl => self.copy_dialog(false, shift),
+            KeyCode::F(6) if !alt && !ctrl => self.copy_dialog(true, shift),
             KeyCode::F(7) if !alt && !ctrl && !shift => self.mkdir_dialog(),
             KeyCode::F(8) if !alt && !ctrl => {
-                let targets = self.delete_targets(shift);
+                let targets = self.op_sources(shift);
                 self.delete_dialog(targets, false, Actor::User, None);
             }
             KeyCode::Delete if shift => {
-                let targets = self.delete_targets(false);
+                let targets = self.op_sources(false);
                 self.delete_dialog(targets, true, Actor::User, None);
             }
             KeyCode::Delete if !alt && !ctrl && self.cmdline.is_empty() => {
-                let targets = self.delete_targets(false);
+                let targets = self.op_sources(false);
                 self.delete_dialog(targets, false, Actor::User, None);
             }
             KeyCode::Up if shift => {
@@ -994,7 +1007,7 @@ impl App {
                 let side = self.resolve_side(&side)?;
                 self.agent_mkdir(side, &names)
             }
-            Request::Delete { .. } => Err("handled asynchronously".into()),
+            Request::Delete { .. } | Request::Copy { .. } => Err("handled asynchronously".into()),
             Request::HookPrompt => Ok(self.prompt_context()),
             Request::HookSessionStart => Ok(format!(
                 "[afar] left panel: {} | right panel: {} | active: {} | journal at #{} | mode: {}",

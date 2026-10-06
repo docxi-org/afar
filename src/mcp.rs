@@ -54,6 +54,13 @@ pub enum Request {
         side: String,
         names: Vec<String>,
     },
+    /// Answered after the user confirms and the copy/move finishes.
+    Copy {
+        side: String,
+        names: Vec<String>,
+        dest: String,
+        moving: bool,
+    },
     /// Answered after the user confirms and the deletion finishes.
     Delete {
         side: String,
@@ -153,6 +160,17 @@ pub struct DeleteParams {
     pub names: Vec<String>,
     /// Delete permanently instead of moving to the recycle bin.
     pub permanent: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct CopyParams {
+    /// Panel with the items: `left`, `right`, `active` (default) or `passive`.
+    pub side: Option<String>,
+    /// File or directory names in the panel's directory, or absolute paths.
+    pub names: Vec<String>,
+    /// Destination: a directory to put the items into (absolute, or relative
+    /// to the panel's directory), or a new name for a single item.
+    pub dest: String,
 }
 
 #[derive(Clone)]
@@ -305,6 +323,42 @@ impl AfarMcp {
             )
             .await,
         )
+    }
+
+    #[tool(
+        description = "Copy files or directories through afar: the user sees the copy dialog \
+        filled in (\"requested by the agent\"), may change it and confirms; afar copies with \
+        progress and asks the user about existing files. Waits for the user (up to 10 minutes); \
+        returns the result or that the user declined."
+    )]
+    async fn afar_copy(
+        &self,
+        Parameters(p): Parameters<CopyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let request = Request::Copy {
+            side: p.side.unwrap_or_else(|| "active".into()),
+            names: p.names,
+            dest: p.dest,
+            moving: false,
+        };
+        result(ask_within(&self.tx, request, Duration::from_secs(600)).await)
+    }
+
+    #[tool(
+        description = "Move or rename files or directories through afar, confirmed by the \
+        user in the move dialog like afar_copy. For a rename, pass the new name as dest."
+    )]
+    async fn afar_move(
+        &self,
+        Parameters(p): Parameters<CopyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let request = Request::Copy {
+            side: p.side.unwrap_or_else(|| "active".into()),
+            names: p.names,
+            dest: p.dest,
+            moving: true,
+        };
+        result(ask_within(&self.tx, request, Duration::from_secs(600)).await)
     }
 
     #[tool(

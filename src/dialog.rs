@@ -20,6 +20,11 @@ pub enum Item {
         label: String,
         checked: bool,
     },
+    /// A radio button; consecutive radio buttons form one group.
+    Radio {
+        label: String,
+        selected: bool,
+    },
     /// A line across the frame.
     Separator,
     /// A row of buttons; the buttons of all rows are numbered in order.
@@ -125,6 +130,17 @@ impl Dialog {
         self
     }
 
+    /// A group of radio buttons with `selected` chosen.
+    pub fn radios(mut self, labels: &[&str], selected: usize) -> Self {
+        for (i, l) in labels.iter().enumerate() {
+            self.items.push(Item::Radio {
+                label: l.to_string(),
+                selected: i == selected,
+            });
+        }
+        self
+    }
+
     pub fn separator(mut self) -> Self {
         self.items.push(Item::Separator);
         self
@@ -164,12 +180,54 @@ impl Dialog {
             .unwrap_or(false)
     }
 
+    /// Index of the selected button in the `n`-th radio group.
+    pub fn radio(&self, n: usize) -> usize {
+        let mut group = None;
+        let mut index = 0;
+        let mut prev_radio = false;
+        for item in &self.items {
+            match item {
+                Item::Radio { selected, .. } => {
+                    if !prev_radio {
+                        group = Some(group.map_or(0, |g| g + 1));
+                        index = 0;
+                    }
+                    if group == Some(n) && *selected {
+                        return index;
+                    }
+                    index += 1;
+                    prev_radio = true;
+                }
+                _ => prev_radio = false,
+            }
+        }
+        0
+    }
+
+    /// Selects radio button `i`, unselecting the rest of its group.
+    fn select_radio(&mut self, i: usize) {
+        let is_radio = |item: &Item| matches!(item, Item::Radio { .. });
+        let mut start = i;
+        while start > 0 && is_radio(&self.items[start - 1]) {
+            start -= 1;
+        }
+        let mut j = start;
+        while j < self.items.len() && is_radio(&self.items[j]) {
+            if let Item::Radio { selected, .. } = &mut self.items[j] {
+                *selected = j == i;
+            }
+            j += 1;
+        }
+    }
+
     fn targets(&self) -> Vec<Target> {
         let mut out = Vec::new();
         let mut button = 0;
         for (i, item) in self.items.iter().enumerate() {
             match item {
-                Item::Input { .. } | Item::Check { .. } => out.push(Target::Item(i)),
+                Item::Input { .. } | Item::Check { .. } | Item::Radio { .. } => {
+                    out.push(Target::Item(i))
+                }
                 Item::Buttons(labels) => {
                     for _ in labels {
                         out.push(Target::Button(i, button));
@@ -182,14 +240,22 @@ impl Dialog {
         out
     }
 
-    /// Focus: the first input field, otherwise the default button.
+    /// The focused control (chosen on first use).
     fn focus(&mut self) -> Option<Target> {
         let targets = self.targets();
         if self.focus.is_none() {
+            // Like Far: the first input field, otherwise the first other
+            // control, otherwise the default button.
+            let is_input = |t: &Target| matches!(t, Target::Item(i) if matches!(self.items[*i], Item::Input { .. }));
             self.focus = targets
                 .iter()
-                .position(|t| matches!(t, Target::Item(i) if matches!(self.items[*i], Item::Input { .. })))
-                .or_else(|| targets.iter().position(|t| matches!(t, Target::Button(_, b) if *b == self.default_button)))
+                .position(is_input)
+                .or_else(|| targets.iter().position(|t| matches!(t, Target::Item(_))))
+                .or_else(|| {
+                    targets.iter().position(
+                        |t| matches!(t, Target::Button(_, b) if *b == self.default_button),
+                    )
+                })
                 .or((!targets.is_empty()).then_some(0));
         }
         self.focus.and_then(|f| targets.get(f).copied())
@@ -230,6 +296,11 @@ impl Dialog {
                 KeyCode::Right => self.move_focus(1),
                 _ => {}
             },
+            Some(Target::Item(i)) if matches!(self.items[i], Item::Radio { .. }) => {
+                if key.code == KeyCode::Char(' ') {
+                    self.select_radio(i);
+                }
+            }
             Some(Target::Item(i)) => match &mut self.items[i] {
                 Item::Check { checked, .. } => {
                     if key.code == KeyCode::Char(' ') {
@@ -286,6 +357,7 @@ impl Dialog {
         }
         match target {
             Target::Button(_, b) => return Some(Outcome::Closed(Some(b))),
+            Target::Item(i) if matches!(self.items[i], Item::Radio { .. }) => self.select_radio(i),
             Target::Item(i) => match &mut self.items[i] {
                 Item::Check { checked, .. } => *checked = !*checked,
                 Item::Input { value, cursor } => {
@@ -300,7 +372,26 @@ impl Dialog {
     /// Draws the dialog centered in `area`; returns the text cursor.
     pub fn draw(&mut self, area: Rect, buf: &mut Buffer) -> Option<Position> {
         let colors = if self.warning { &WARNING } else { &NORMAL };
-        let width = self.width.min(area.width.saturating_sub(12)).max(10);
+        // Wide enough for every row of buttons.
+        let buttons = self
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Buttons(labels) => Some(
+                    labels
+                        .iter()
+                        .map(|l| l.chars().count() as u16 + 5)
+                        .sum::<u16>(),
+                ),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let width = self
+            .width
+            .max(buttons)
+            .min(area.width.saturating_sub(12))
+            .max(10);
         let w = width + 10;
         let h = (self.items.len() as u16 + 4).min(area.height);
         let x = area.x + area.width.saturating_sub(w) / 2;
@@ -371,6 +462,15 @@ impl Dialog {
                 }
                 Item::Check { label, checked } => {
                     let mark = if *checked { "[x] " } else { "[ ] " };
+                    put(buf, cx, row, width, &format!("{mark}{label}"), colors.body);
+                    let n = (label.chars().count() as u16 + 4).min(width);
+                    self.hits.push((Rect::new(cx, row, n, 1), Target::Item(i)));
+                    if focus == Some(Target::Item(i)) {
+                        cursor = Some(Position::new(cx + 1, row));
+                    }
+                }
+                Item::Radio { label, selected } => {
+                    let mark = if *selected { "(•) " } else { "( ) " };
                     put(buf, cx, row, width, &format!("{mark}{label}"), colors.body);
                     let n = (label.chars().count() as u16 + 4).min(width);
                     self.hits.push((Rect::new(cx, row, n, 1), Target::Item(i)));
@@ -457,6 +557,22 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_radio_buttons_in_groups() {
+        let mut d = Dialog::new("t", 30)
+            .radios(&["a", "b", "c"], 0)
+            .separator()
+            .radios(&["x", "y"], 1)
+            .buttons(&["OK"], 0);
+        assert_eq!((d.radio(0), d.radio(1)), (0, 1));
+        d.handle_key(&key(KeyCode::Down)); // b
+        d.handle_key(&key(KeyCode::Down)); // c
+        d.handle_key(&key(KeyCode::Char(' ')));
+        d.handle_key(&key(KeyCode::Down)); // x
+        d.handle_key(&key(KeyCode::Char(' ')));
+        assert_eq!((d.radio(0), d.radio(1)), (2, 0));
+    }
 
     #[test]
     fn wraps_words() {
