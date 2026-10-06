@@ -18,14 +18,16 @@ use ratatui::style::Style;
 
 use crate::dev::{DevMsg, DevState, PanelState};
 use crate::journal::{Actor, Event, Journal, format_entries};
+use crate::keymap::Chord;
 use crate::mcp::{McpMsg, Reply, Request};
 use crate::ops::DeleteMode;
 use crate::ops::{OpId, OpMsg};
-use crate::panel::{FilePanel, SortMode, put};
+use crate::panel::{FilePanel, put};
 use crate::term::{PtySession, SpawnOptions};
 use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
 mod cmdline;
+mod commands;
 mod fileops;
 mod fswatch;
 mod panelcmds;
@@ -207,6 +209,8 @@ pub struct App {
     data_dir: PathBuf,
     /// Settings (`config.toml`).
     config: crate::config::Config,
+    /// Keys → commands: Far's, changed by `keymaps/far.toml`.
+    keymap: crate::keymap::Keymap,
     /// Claude Code session id of the agent (`--session-id`), so that a dev
     /// restart resumes exactly this conversation.
     agent_session: Option<String>,
@@ -238,6 +242,9 @@ impl App {
             .unwrap_or_default();
         let history_file = Some(data_dir.join("history").join("commands.txt"));
         let journal = Journal::open(session_dir);
+        let (keymap, keymap_problems) = crate::keymap::Keymap::load(
+            &crate::config::config_dir().join("keymaps").join("far.toml"),
+        );
         let mut app = Self {
             panels: [FilePanel::new(cwd.clone()), FilePanel::new(cwd)],
             active: 0,
@@ -282,6 +289,7 @@ impl App {
             layout_restored: false,
             data_dir,
             config,
+            keymap,
             agent_session: None,
             agent_resumed_at: None,
             agent_started: Instant::now(),
@@ -291,6 +299,9 @@ impl App {
             Some(Restore::Restart(state)) => app.apply_state(state),
             Some(Restore::LastRun(state)) => app.apply_last_run(state),
             None => {}
+        }
+        for problem in keymap_problems {
+            app.say(tr!("config-problem", problem = problem));
         }
         if let Some(problem) = config_problem {
             app.say(tr!("config-problem", problem = problem));
@@ -1076,199 +1087,25 @@ impl App {
         }
     }
 
+    /// Keys of the panels and the command line: the key map's command, or
+    /// the command line's own editing.
     fn panels_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        let a = self.active;
-        let page = self.last_page();
         if key.code != KeyCode::F(10) {
             self.quit_armed = None;
         }
-        match key.code {
-            KeyCode::F(10) => {
-                if !self.agent_alive() && self.running.is_none()
-                    || self
-                        .quit_armed
-                        .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
-                {
-                    self.quit = true;
-                } else {
-                    self.quit_armed = Some(Instant::now());
-                    self.say(tr!("quit-confirm"));
-                }
-            }
-            KeyCode::Char('o') if ctrl => {
-                if self.running.is_some() && !self.panels_visible() {
-                    self.focus = Focus::Command;
-                } else {
-                    self.set_panels_visible(!self.panels_visible());
-                    if !self.panels_visible() && self.running.is_some() {
-                        self.focus = Focus::Command;
-                    }
-                }
-            }
-            // Like Far: Ctrl+arrows move the boundaries between windows.
-            KeyCode::Up if ctrl => self.move_splitter(wm::MAIN_SPLIT, -1),
-            KeyCode::Down if ctrl => self.move_splitter(wm::MAIN_SPLIT, 1),
-            KeyCode::Left if ctrl && self.cmdline.is_empty() => {
-                self.move_splitter(wm::PANELS_SPLIT, -1)
-            }
-            KeyCode::Right if ctrl && self.cmdline.is_empty() => {
-                self.move_splitter(wm::PANELS_SPLIT, 1)
-            }
-            KeyCode::Enter if ctrl => {
-                if let Some(e) = self.panels[a].current() {
-                    let name = if e.name == ".." {
-                        "..".to_string()
-                    } else {
-                        quote(&e.name)
-                    };
-                    self.cmdline_insert(&format!("{name} "));
-                }
-            }
-            KeyCode::Enter => {
-                if self.cmdline.trim().is_empty() {
-                    if self.panels_visible() {
-                        self.enter();
-                    }
-                } else {
-                    let text = self.cmdline.clone();
-                    self.execute(text);
-                }
-            }
-            // Both panels hidden (the user screen): Ctrl+F1 / Ctrl+F2 bring
-            // back just that one, as in Far.
-            KeyCode::F(n @ (1 | 2)) if ctrl && !alt && !shift && !self.panels_visible() => {
-                let side = usize::from(n - 1);
-                self.set_panels_visible(true);
-                self.wm.set_hidden(WinId::Panel(1 - side), true);
-                self.active = side;
-            }
-            // Paths and names into the command line (also with the panels
-            // hidden).
-            _ if self.cmdline_insert_key(&key) => {}
-            _ if !self.panels_visible() => {
-                self.cmdline_key(&key);
-            }
-            KeyCode::Char('r' | 'R') if ctrl && shift => self.request_restart(),
-            _ if self.selection_key(&key) => {}
-            KeyCode::Char('m') if ctrl => {
-                self.panels[a].restore_selection();
-                self.mark_selection_changed();
-            }
-            KeyCode::Tab if !self.panel_hidden(1 - a) => self.active = 1 - a,
-            KeyCode::Tab => {}
-            KeyCode::Char('u') if ctrl => self.swap_panels(),
-            KeyCode::F(12) if ctrl && !alt && !shift => self.sort_menu(),
-            KeyCode::F(n @ (1 | 2)) if alt && !ctrl && !shift => {
-                self.drive_menu(usize::from(n - 1))
-            }
-            // Ctrl+P: hide or show the passive panel.
-            KeyCode::Char('p') if ctrl => self.toggle_panel(1 - a),
-            KeyCode::F(n @ (1 | 2)) if ctrl && !alt && !shift => {
-                self.toggle_panel(usize::from(n - 1))
-            }
-            // Ctrl+1…4: Far's view modes.
-            KeyCode::Char(c @ '1'..='4') if ctrl => {
-                if let Some(mode) = crate::panel::ViewMode::from_key(c as u8 - b'0') {
-                    self.panels[a].view = mode;
-                }
-            }
-            // Left/Right: one column over in modes with several.
-            // Left/Right: the panel's, unless one column of names and text
-            // in the command line (Far's ShellRightLeftArrowsRule 0).
-            KeyCode::Left
-                if !ctrl
-                    && !alt
-                    && !shift
-                    && (self.panels[a].multi_column() || self.cmdline.is_empty()) =>
-            {
-                self.panels[a].move_column(-1)
-            }
-            KeyCode::Right
-                if !ctrl
-                    && !alt
-                    && !shift
-                    && (self.panels[a].multi_column() || self.cmdline.is_empty()) =>
-            {
-                self.panels[a].move_column(1)
-            }
-            KeyCode::F(5) if !alt && !ctrl => self.copy_dialog(false, shift),
-            KeyCode::F(6) if !alt && !ctrl => self.copy_dialog(true, shift),
-            KeyCode::F(7) if !alt && !ctrl && !shift => self.mkdir_dialog(),
-            KeyCode::F(8) if !alt && !ctrl => {
-                let targets = self.op_sources(shift);
-                self.delete_dialog(targets, DeleteMode::Trash, Actor::User, None);
-            }
-            KeyCode::Delete if shift && !alt => {
-                let targets = self.op_sources(false);
-                self.delete_dialog(targets, DeleteMode::Permanent, Actor::User, None);
-            }
-            // Alt+Del: wipe (contents overwritten before deleting).
-            KeyCode::Delete if alt && !ctrl && !shift => {
-                let targets = self.op_sources(false);
-                self.delete_dialog(targets, DeleteMode::Wipe, Actor::User, None);
-            }
-            KeyCode::Delete if !alt && !ctrl && self.cmdline.is_empty() => {
-                let targets = self.op_sources(false);
-                self.delete_dialog(targets, DeleteMode::Trash, Actor::User, None);
-            }
-            KeyCode::Up if shift => {
-                self.panels[a].toggle_selection();
-                self.panels[a].move_cursor(-1);
-                self.mark_selection_changed();
-            }
-            KeyCode::Down if shift => {
-                self.panels[a].toggle_selection();
-                self.panels[a].move_cursor(1);
-                self.mark_selection_changed();
-            }
-            KeyCode::Insert => {
-                self.panels[a].toggle_selection();
-                self.panels[a].move_cursor(1);
-                self.mark_selection_changed();
-            }
-            KeyCode::Up => self.panels[a].move_cursor(-1),
-            KeyCode::Down => self.panels[a].move_cursor(1),
-            KeyCode::PageUp if ctrl => {
-                if let Some(parent) = self.panels[a].path.parent().map(Path::to_path_buf) {
-                    self.change_dir(a, &parent);
-                }
-            }
-            KeyCode::PageUp => self.panels[a].move_cursor(-(page as isize)),
-            KeyCode::PageDown => self.panels[a].move_cursor(page as isize),
-            KeyCode::Home if !ctrl => self.panels[a].move_cursor(isize::MIN / 2),
-            KeyCode::End if !ctrl => self.panels[a].move_cursor(isize::MAX / 2),
-            KeyCode::Char('\\') if ctrl => {
-                if let Some(root) = self.panels[a]
-                    .path
-                    .ancestors()
-                    .last()
-                    .map(Path::to_path_buf)
-                {
-                    self.change_dir(a, &root);
-                }
-            }
-            KeyCode::Char('r') if ctrl => self.panels[a].reload(None),
-            // Ctrl+F3…F11: sort modes; the same key again reverses.
-            KeyCode::F(n) if ctrl && !alt && !shift && SortMode::from_key(n).is_some() => {
-                if let Some(mode) = SortMode::from_key(n) {
-                    self.panels[a].set_sort_mode(mode);
-                }
-            }
-            // Shift+F12: selected files first.
-            KeyCode::F(12) if shift && !ctrl && !alt => {
-                let p = &mut self.panels[a];
-                p.sort.selected_first = !p.sort.selected_first;
-                p.resort();
-            }
-            KeyCode::F(n @ (1..=9 | 11 | 12)) if !alt && !ctrl => {
-                self.say(tr!("not-implemented", n = n));
-            }
-            _ => {
-                self.cmdline_key(&key);
-            }
+        let command = Chord::from_event(&key).and_then(|c| self.keymap.panels(&c));
+        // With the panels hidden only some commands work (as in Far).
+        if let Some(command) = command
+            && (self.panels_visible() || command.def().with_panels_hidden)
+            && self.run_command(command)
+        {
+            return;
+        }
+        if !self.cmdline_key(&key)
+            && let KeyCode::F(n) = key.code
+            && key.modifiers.is_empty()
+        {
+            self.say(tr!("not-implemented", n = n));
         }
     }
 

@@ -1,10 +1,12 @@
 pub mod app;
+pub mod command;
 pub mod config;
 pub mod dev;
 pub mod dialog;
 pub mod drives;
 pub mod i18n;
 pub mod journal;
+pub mod keymap;
 pub mod keys;
 pub mod masks;
 pub mod mcp;

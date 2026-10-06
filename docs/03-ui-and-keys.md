@@ -150,15 +150,15 @@ C:\proj\src>_                                                                   
 
 Раскладка задаётся файлом `keymaps/far.toml` и привязывает сочетания к **именам команд**:
 
+Раскладка Far встроена (`src/command.rs`: имя команды, клавиши Far, работает ли при погашенных панелях); файл `keymaps/far.toml` рядом с `config.toml` меняет только то, что в нём перечислено:
+
 ```toml
 [panels]
-"F5"         = "fileop.copy_dialog"
-"Shift+F6"   = "fileop.rename_dialog"
-"Ctrl+Space" = "layout.focus_toggle"
-
-[agent]          # контекст: фокус в панели агента
-"Ctrl+Space" = "layout.focus_toggle"
+"Ctrl+F3" = "sort.by_size"   # другая команда
+"Ctrl+M"  = ""               # снять привязку
 ```
+
+Названия клавиш — как в Far: `Ctrl+Shift+F5`, `Alt+Del`, `Gray+`, `Ctrl+[`. `Ctrl+Space` (фокус панели ↔ агент) не переназначается.
 
 ## Диалоги
 

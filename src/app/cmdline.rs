@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, quote};
+use crate::command::Command;
 
 /// Far's WordDiv (config.cpp) plus blanks.
 const WORD_DIV: &str = "~!%^&*()+|{}:\"<>?`-=\\[];',./";
@@ -138,17 +139,12 @@ impl App {
         let cur = self.cmd_cursor.min(len);
         // Panels hidden: Up/Down browse the history, as in Far.
         let browse = match key.code {
-            KeyCode::Char('e') if ctrl && !alt => Some(true),
-            KeyCode::Char('x') if ctrl && !alt => Some(false),
             KeyCode::Up if !self.panels_visible() && !ctrl => Some(true),
             KeyCode::Down if !self.panels_visible() && !ctrl => Some(false),
             _ => None,
         };
         if let Some(back) = browse {
-            let line = self.cmdline.clone();
-            if let Some(text) = self.cmd_history.step(back, &line) {
-                self.set_cmdline(&text);
-            }
+            self.history_step(back);
             return true;
         }
         if key.code == KeyCode::End && ctrl && cur == len {
@@ -218,41 +214,36 @@ impl App {
         self.cmd_cursor = self.cmdline.chars().count();
     }
 
-    /// Far's keys that put paths and names into the command line (they
-    /// work with the panels hidden too); `false` for other keys.
-    pub(super) fn cmdline_insert_key(&mut self, key: &KeyEvent) -> bool {
-        let m = key.modifiers;
-        if !m.contains(KeyModifiers::CONTROL) {
-            return false;
+    /// Ctrl+E / Ctrl+X: the previous / next command of the history.
+    pub(super) fn history_step(&mut self, back: bool) {
+        let line = self.cmdline.clone();
+        if let Some(text) = self.cmd_history.step(back, &line) {
+            self.set_cmdline(&text);
         }
-        let shift = m.contains(KeyModifiers::SHIFT);
+    }
+
+    /// Far's commands that put paths and names into the command line.
+    pub(super) fn insert_for(&mut self, command: Command) {
         let a = self.active;
-        let text = match key.code {
-            // Ctrl+[ / Ctrl+]: the left / right panel's folder; with Shift:
-            // the active / passive one.
-            KeyCode::Char('[') if !shift => folder_text(&self.panels[0].path),
-            KeyCode::Char(']') if !shift => folder_text(&self.panels[1].path),
-            KeyCode::Char('{') | KeyCode::Char('[') => folder_text(&self.panels[a].path),
-            KeyCode::Char('}') | KeyCode::Char(']') => folder_text(&self.panels[1 - a].path),
-            // Ctrl+F (and Ctrl+Alt+F): the full name of the current file;
-            // Ctrl+;: of the passive panel's current file.
-            KeyCode::Char('f') => match self.full_name_text(a) {
-                Some(t) => t,
-                None => return true,
+        let text = match command {
+            // The left / right / active / passive panel's folder.
+            Command::InsertLeftPath => Some(folder_text(&self.panels[0].path)),
+            Command::InsertRightPath => Some(folder_text(&self.panels[1].path)),
+            Command::InsertActivePath => Some(folder_text(&self.panels[a].path)),
+            Command::InsertPassivePath => Some(folder_text(&self.panels[1 - a].path)),
+            // The full name of the current file, here or on the passive panel.
+            Command::InsertFullName => self.full_name_text(a),
+            Command::InsertPassiveFullName => self.full_name_text(1 - a),
+            // The passive panel's current name.
+            Command::InsertPassiveName => match self.panels[1 - a].current() {
+                Some(e) if e.name != ".." => Some(format!("{} ", quote(&e.name))),
+                _ => None,
             },
-            KeyCode::Char(';') => match self.full_name_text(1 - a) {
-                Some(t) => t,
-                None => return true,
-            },
-            // Ctrl+Shift+Enter: the passive panel's current name.
-            KeyCode::Enter if shift => match self.panels[1 - a].current() {
-                Some(e) if e.name != ".." => format!("{} ", quote(&e.name)),
-                _ => return true,
-            },
-            _ => return false,
+            _ => None,
         };
-        self.cmdline_insert(&text);
-        true
+        if let Some(text) = text {
+            self.cmdline_insert(&text);
+        }
     }
 
     fn full_name_text(&self, side: usize) -> Option<String> {

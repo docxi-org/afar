@@ -2,7 +2,7 @@
 //! mask (Gray +, Gray -, Gray * and their Ctrl/Alt/Shift variants, Ctrl+M),
 //! the sort menu (Ctrl+F12), the change-drive menu (Alt+F1, Alt+F2).
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventState, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 
 use super::App;
@@ -16,51 +16,9 @@ use crate::tr;
 use crate::wm::WinId;
 
 impl App {
-    /// Gray +, Gray -, Gray * with modifiers; `false` when `key` is not one
-    /// of them. Keypad keys only: the same characters on the main keyboard
-    /// are typed into the command line.
-    pub(super) fn selection_key(&mut self, key: &KeyEvent) -> bool {
-        if !key.state.contains(KeyEventState::KEYPAD) {
-            return false;
-        }
-        let KeyCode::Char(c @ ('+' | '-' | '*')) = key.code else {
-            return false;
-        };
-        let m = key.modifiers;
-        let (ctrl, alt, shift) = (
-            m.contains(KeyModifiers::CONTROL),
-            m.contains(KeyModifiers::ALT),
-            m.contains(KeyModifiers::SHIFT),
-        );
-        let side = self.active;
-        // Far's "Select folders" (off by default).
-        let folders = self.config.panels.select_folders;
-        match (c, ctrl, alt, shift) {
-            ('+', false, false, false) => self.select_dialog(true),
-            ('-', false, false, false) => self.select_dialog(false),
-            ('+', false, false, true) => self.panels[side].select_all(true, folders),
-            ('-', false, false, true) => self.panels[side].select_all(false, folders),
-            ('+' | '-', true, false, _) => self.select_like_current(c == '+', true),
-            ('+' | '-', false, true, _) => self.select_like_current(c == '+', false),
-            ('*', ..) => {
-                let mode = if ctrl {
-                    SelectMode::InvertAll
-                } else if alt {
-                    SelectMode::InvertFiles
-                } else {
-                    SelectMode::Invert
-                };
-                self.panels[side].select_masked(None, mode, folders);
-            }
-            _ => return false,
-        }
-        self.mark_selection_changed();
-        true
-    }
-
     /// Far's select dialog: 55×7, the mask (last one used, "*.*" at
     /// first), OK / Filter / Cancel.
-    fn select_dialog(&mut self, add: bool) {
+    pub(super) fn select_dialog(&mut self, add: bool) {
         let title = if add {
             tr!("MSelectTitle")
         } else {
@@ -116,7 +74,7 @@ impl App {
 
     /// Ctrl+Gray +/- (same extension) and Alt+Gray +/- (same name) as the
     /// item under the cursor.
-    fn select_like_current(&mut self, add: bool, by_ext: bool) {
+    pub(super) fn select_like_current(&mut self, add: bool, by_ext: bool) {
         let side = self.active;
         let Some(name) = self.panels[side].current().map(|e| e.name.clone()) else {
             return;

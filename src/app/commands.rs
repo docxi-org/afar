@@ -1,0 +1,198 @@
+//! Running commands (`command.rs`): what each named command does. Keys
+//! reach here through the key map; a command that does not apply returns
+//! `false` and the key goes to the command line (as in Far, where the
+//! panel sees a key first and passes on what it does not take).
+
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use super::{App, Focus, quote};
+use crate::command::Command;
+use crate::journal::Actor;
+use crate::ops::DeleteMode;
+use crate::panel::SelectMode;
+use crate::tr;
+use crate::wm::{self, WinId};
+
+impl App {
+    /// Runs `command` for the user; `false`: it does not apply now.
+    pub(super) fn run_command(&mut self, command: Command) -> bool {
+        use Command::*;
+        let a = self.active;
+        let cmdline_empty = self.cmdline.is_empty();
+        match command {
+            Quit => {
+                if !self.agent_alive() && self.running.is_none()
+                    || self
+                        .quit_armed
+                        .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+                {
+                    self.quit = true;
+                } else {
+                    self.quit_armed = Some(Instant::now());
+                    self.say(tr!("quit-confirm"));
+                }
+            }
+            TogglePanels => {
+                if self.running.is_some() && !self.panels_visible() {
+                    self.focus = Focus::Command;
+                } else {
+                    self.set_panels_visible(!self.panels_visible());
+                    if !self.panels_visible() && self.running.is_some() {
+                        self.focus = Focus::Command;
+                    }
+                }
+            }
+            // Like Far: Ctrl+arrows move the boundaries between windows;
+            // left and right only with an empty command line.
+            AgentTaller => self.move_splitter(wm::MAIN_SPLIT, -1),
+            AgentShorter => self.move_splitter(wm::MAIN_SPLIT, 1),
+            SplitterLeft if cmdline_empty => self.move_splitter(wm::PANELS_SPLIT, -1),
+            SplitterRight if cmdline_empty => self.move_splitter(wm::PANELS_SPLIT, 1),
+            SplitterLeft | SplitterRight => return false,
+            DevRestart => self.request_restart(),
+            NextPanel => {
+                if !self.panel_hidden(1 - a) {
+                    self.active = 1 - a;
+                }
+            }
+            SwapPanels => self.swap_panels(),
+            HidePassive => self.toggle_panel(1 - a),
+            ToggleLeft | ToggleRight => {
+                let side = usize::from(command == ToggleRight);
+                if self.panels_visible() {
+                    self.toggle_panel(side);
+                } else {
+                    // Both hidden (the user screen): just that one returns.
+                    self.set_panels_visible(true);
+                    self.wm.set_hidden(WinId::Panel(1 - side), true);
+                    self.active = side;
+                }
+            }
+            DriveMenuLeft => self.drive_menu(0),
+            DriveMenuRight => self.drive_menu(1),
+            CursorUp => self.panels[a].move_cursor(-1),
+            CursorDown => self.panels[a].move_cursor(1),
+            PageUp => self.panels[a].move_cursor(-(self.last_page() as isize)),
+            PageDown => self.panels[a].move_cursor(self.last_page() as isize),
+            Home => self.panels[a].move_cursor(isize::MIN / 2),
+            End => self.panels[a].move_cursor(isize::MAX / 2),
+            // The panel's, unless one column of names and text in the
+            // command line (Far's ShellRightLeftArrowsRule 0).
+            Left | Right if !self.panels[a].multi_column() && !cmdline_empty => return false,
+            Left => self.panels[a].move_column(-1),
+            Right => self.panels[a].move_column(1),
+            Parent => {
+                if let Some(parent) = self.panels[a].path.parent().map(Path::to_path_buf) {
+                    self.change_dir(a, &parent);
+                }
+            }
+            Root => {
+                if let Some(root) = self.panels[a]
+                    .path
+                    .ancestors()
+                    .last()
+                    .map(Path::to_path_buf)
+                {
+                    self.change_dir(a, &root);
+                }
+            }
+            Enter => {
+                if self.cmdline.trim().is_empty() {
+                    if self.panels_visible() {
+                        self.enter();
+                    }
+                } else {
+                    let text = self.cmdline.clone();
+                    self.execute(text);
+                }
+            }
+            Refresh => self.panels[a].reload(None),
+            View(mode) => self.panels[a].view = mode,
+            Sort(mode) => self.panels[a].set_sort_mode(mode),
+            SortMenu => self.sort_menu(),
+            SelectedFirst => {
+                let p = &mut self.panels[a];
+                p.sort.selected_first = !p.sort.selected_first;
+                p.resort();
+            }
+            SelectToggle | SelectUp | SelectDown => {
+                self.panels[a].toggle_selection();
+                self.panels[a].move_cursor(if command == SelectUp { -1 } else { 1 });
+                self.mark_selection_changed();
+            }
+            SelectDialog => self.select_dialog(true),
+            UnselectDialog => self.select_dialog(false),
+            SelectAll | UnselectAll => {
+                let folders = self.config.panels.select_folders;
+                self.panels[a].select_all(command == SelectAll, folders);
+                self.mark_selection_changed();
+            }
+            SelectSameExt | UnselectSameExt => {
+                self.select_like_current(command == SelectSameExt, true);
+                self.mark_selection_changed();
+            }
+            SelectSameName | UnselectSameName => {
+                self.select_like_current(command == SelectSameName, false);
+                self.mark_selection_changed();
+            }
+            InvertSelection | InvertAll | InvertFiles => {
+                let mode = match command {
+                    InvertAll => SelectMode::InvertAll,
+                    InvertFiles => SelectMode::InvertFiles,
+                    _ => SelectMode::Invert,
+                };
+                let folders = self.config.panels.select_folders;
+                self.panels[a].select_masked(None, mode, folders);
+                self.mark_selection_changed();
+            }
+            RestoreSelection => {
+                self.panels[a].restore_selection();
+                self.mark_selection_changed();
+            }
+            Copy => self.copy_dialog(false, false),
+            CopyCurrent => self.copy_dialog(false, true),
+            Move => self.copy_dialog(true, false),
+            Rename => self.copy_dialog(true, true),
+            MkDir => self.mkdir_dialog(),
+            Delete | DeleteCurrent => {
+                let targets = self.op_sources(command == DeleteCurrent);
+                self.delete_dialog(targets, DeleteMode::Trash, Actor::User, None);
+            }
+            Del if !cmdline_empty => return false,
+            Del => {
+                let targets = self.op_sources(false);
+                self.delete_dialog(targets, DeleteMode::Trash, Actor::User, None);
+            }
+            DeletePermanent | Wipe => {
+                let targets = self.op_sources(false);
+                let mode = if command == Wipe {
+                    DeleteMode::Wipe
+                } else {
+                    DeleteMode::Permanent
+                };
+                self.delete_dialog(targets, mode, Actor::User, None);
+            }
+            InsertName => {
+                if let Some(e) = self.panels[a].current() {
+                    let name = if e.name == ".." {
+                        "..".to_string()
+                    } else {
+                        quote(&e.name)
+                    };
+                    self.cmdline_insert(&format!("{name} "));
+                }
+            }
+            InsertFullName
+            | InsertPassiveFullName
+            | InsertPassiveName
+            | InsertLeftPath
+            | InsertRightPath
+            | InsertActivePath
+            | InsertPassivePath => self.insert_for(command),
+            HistoryPrev => self.history_step(true),
+            HistoryNext => self.history_step(false),
+        }
+        true
+    }
+}
