@@ -1,0 +1,8 @@
+pub mod app;
+pub mod journal;
+pub mod keys;
+pub mod mcp;
+pub mod panel;
+pub mod term;
+pub mod termview;
+pub mod theme;

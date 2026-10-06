@@ -1,0 +1,18 @@
+[package]
+name = "afar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+chrono = { version = "0.4.45", features = ["serde"] }
+crossterm = "0.29"
+portable-pty = "0.9"
+ratatui = "0.30"
+rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "net"] }
+vt100 = { path = "vendor/vt100" }

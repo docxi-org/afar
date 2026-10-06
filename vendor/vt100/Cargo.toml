@@ -1,0 +1,14 @@
+# Vendored copy of vt100 0.16.2 (https://github.com/doy/vt100-rust), MIT license.
+# afar patch: capture of lines scrolled off the top of the main screen
+# (Screen::set_line_capture / Screen::take_scrolled_lines), see AFAR-PATCH markers.
+[package]
+name = "vt100"
+version = "0.16.2"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+itoa = "1.0.15"
+unicode-width = "0.2.1"
+vte = "0.15.0"
