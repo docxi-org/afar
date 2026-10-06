@@ -21,6 +21,7 @@ use crate::journal::{Actor, Event, Journal, format_entries};
 use crate::mcp::{McpMsg, Reply, Request};
 use crate::panel::{FilePanel, put};
 use crate::term::{PtySession, SpawnOptions};
+use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 use crate::{keys, termview, theme};
 
 pub enum AppMsg {
@@ -92,28 +93,33 @@ struct RunningCommand {
     auto_switched: bool,
 }
 
-#[derive(Clone, Copy)]
+/// Geometry of a frame: the window manager's arrangement plus the fixed
+/// bars at the bottom (command line, key bar).
+#[derive(Clone, Default)]
 struct Layout {
+    /// The screen slot: panels or the user screen.
     top: Rect,
-    /// File panels (when shown) inside `top`.
+    /// File panels; empty rectangles when another screen is shown.
     panels: [Rect; 2],
     /// The agent pane with its frame, and the program area inside it.
     agent_frame: Rect,
     agent: Rect,
     cmdline: Rect,
     keybar: Rect,
+    arrangement: Arrangement,
 }
 
 pub struct App {
     panels: [FilePanel; 2],
     active: usize,
     focus: Focus,
-    show_panels: bool,
+    wm: Wm,
+    /// Splitter being dragged with the mouse, with the grab offset.
+    drag: Option<(SplitId, u16)>,
     cmdline: String,
     /// Cursor in `cmdline`, in chars.
     cmd_cursor: usize,
     agent: Option<PtySession>,
-    agent_height: u16,
     /// The "user screen": text of finished commands.
     history: Vec<String>,
     running: Option<RunningCommand>,
@@ -156,11 +162,11 @@ impl App {
             panels: [FilePanel::new(cwd.clone()), FilePanel::new(cwd)],
             active: 0,
             focus: Focus::Panels,
-            show_panels: true,
+            wm: Wm::new(),
+            drag: None,
             cmdline: String::new(),
             cmd_cursor: 0,
             agent: None,
-            agent_height: 0,
             history: Vec::new(),
             running: None,
             next_cmd_id: 1,
@@ -182,7 +188,11 @@ impl App {
 
     pub fn run(mut self, terminal: &mut DefaultTerminal, rx: Receiver<AppMsg>) -> Result<()> {
         let size = terminal.size()?;
-        self.agent_height = (size.height * 35 / 100).max(8);
+        self.wm.set_extent(
+            wm::MAIN_SPLIT,
+            Extent::SecondFixed((size.height * 35 / 100).max(8)),
+        );
+        self.last_layout = Some(self.layout(Rect::new(0, 0, size.width, size.height)));
         let (rows, cols) = self.last_agent_size();
         self.start_agent(cols, rows);
         loop {
@@ -445,9 +455,9 @@ impl App {
                     pty,
                     started: Instant::now(),
                     captured: Vec::new(),
-                    auto_switched: self.show_panels,
+                    auto_switched: self.panels_visible(),
                 });
-                self.show_panels = false;
+                self.set_panels_visible(false);
                 self.focus = Focus::Command;
             }
             Err(e) => {
@@ -501,7 +511,7 @@ impl App {
             self.focus = Focus::Panels;
         }
         if run.auto_switched {
-            self.show_panels = true;
+            self.set_panels_visible(true);
         }
     }
 
@@ -625,7 +635,7 @@ impl App {
             };
             if self.focus == Focus::Panels && self.running.is_some() {
                 // The command keeps running in the background.
-                self.show_panels = true;
+                self.set_panels_visible(true);
             }
             return;
         }
@@ -686,17 +696,24 @@ impl App {
                 }
             }
             KeyCode::Char('o') if ctrl => {
-                if self.running.is_some() && !self.show_panels {
+                if self.running.is_some() && !self.panels_visible() {
                     self.focus = Focus::Command;
                 } else {
-                    self.show_panels = !self.show_panels;
-                    if !self.show_panels && self.running.is_some() {
+                    self.set_panels_visible(!self.panels_visible());
+                    if !self.panels_visible() && self.running.is_some() {
                         self.focus = Focus::Command;
                     }
                 }
             }
-            KeyCode::Up if ctrl => self.resize_agent(1),
-            KeyCode::Down if ctrl => self.resize_agent(-1),
+            // Like Far: Ctrl+arrows move the boundaries between windows.
+            KeyCode::Up if ctrl => self.move_splitter(wm::MAIN_SPLIT, -1),
+            KeyCode::Down if ctrl => self.move_splitter(wm::MAIN_SPLIT, 1),
+            KeyCode::Left if ctrl && self.cmdline.is_empty() => {
+                self.move_splitter(wm::PANELS_SPLIT, -1)
+            }
+            KeyCode::Right if ctrl && self.cmdline.is_empty() => {
+                self.move_splitter(wm::PANELS_SPLIT, 1)
+            }
             KeyCode::Enter if ctrl => {
                 if let Some(e) = self.panels[a].current() {
                     let name = if e.name == ".." {
@@ -709,7 +726,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if self.cmdline.trim().is_empty() {
-                    if self.show_panels {
+                    if self.panels_visible() {
                         self.enter();
                     }
                 } else {
@@ -717,7 +734,7 @@ impl App {
                     self.execute(text);
                 }
             }
-            _ if !self.show_panels => {
+            _ if !self.panels_visible() => {
                 self.cmdline_key(&key);
             }
             KeyCode::Tab => self.active = 1 - a,
@@ -767,8 +784,29 @@ impl App {
         }
     }
 
-    fn resize_agent(&mut self, delta: i32) {
-        self.agent_height = (self.agent_height as i32 + delta).max(5) as u16;
+    /// Moves a splitter by `delta` cells (positive: right / down).
+    fn move_splitter(&mut self, id: SplitId, delta: i32) {
+        let Some(sp) = self
+            .last_layout
+            .as_ref()
+            .and_then(|l| l.arrangement.splitter(id).copied())
+        else {
+            return;
+        };
+        self.wm
+            .set_first(id, i32::from(sp.first()) + delta, sp.total());
+    }
+
+    fn panels_visible(&self) -> bool {
+        self.wm.current_screen() == ScreenId::Panels
+    }
+
+    fn set_panels_visible(&mut self, visible: bool) {
+        self.wm.switch_to(if visible {
+            ScreenId::Panels
+        } else {
+            ScreenId::UserScreen
+        });
     }
 
     // ---------------------------------------------------------------- mcp
@@ -859,7 +897,7 @@ impl App {
                 let target = self.panels[side].path.join(&path);
                 self.change_dir_as(Actor::Agent, side, &target)?;
                 self.active = side;
-                self.show_panels = true;
+                self.set_panels_visible(true);
                 let mut note = String::new();
                 if let Some(name) = cursor {
                     if !self.panels[side].set_cursor_by_name(&name) {
@@ -877,7 +915,7 @@ impl App {
             Request::Select { side, names, add } => {
                 let side = self.resolve_side(&side)?;
                 let found = self.panels[side].select_names(&names, add);
-                self.show_panels = true;
+                self.set_panels_visible(true);
                 let selected: Vec<String> = self.panels[side]
                     .selected()
                     .map(|e| e.name.clone())
@@ -965,7 +1003,7 @@ impl App {
             "right": panel(1),
             "active_panel": side_name(self.active),
             "focus": format!("{:?}", self.focus).to_lowercase(),
-            "panels_visible": self.show_panels,
+            "panels_visible": self.panels_visible(),
             "running_command": self.running.as_ref().map(|r| {
                 let rec = self.commands.iter().find(|c| c.id == r.id);
                 serde_json::json!({ "cmd_id": r.id, "text": rec.map(|c| c.text.as_str()) })
@@ -1038,9 +1076,35 @@ impl App {
     // -------------------------------------------------------------- mouse
 
     fn on_mouse(&mut self, ev: MouseEvent) {
-        let Some(l) = self.last_layout else { return };
+        let Some(l) = self.last_layout.clone() else {
+            return;
+        };
         let pos = Position::new(ev.column, ev.row);
         let pressed = matches!(ev.kind, MouseEventKind::Down(_));
+
+        // Dragging a boundary between windows.
+        if let Some((id, offset)) = self.drag {
+            match ev.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if let Some(sp) = l.arrangement.splitter(id) {
+                        let first = sp.first_for(pos, offset);
+                        self.wm.set_first(id, i32::from(first), sp.total());
+                    }
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.drag = None;
+                    return;
+                }
+                _ => self.drag = None,
+            }
+        }
+        if ev.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(grab) = l.arrangement.grab(pos) {
+                self.drag = Some(grab);
+                return;
+            }
+        }
 
         if l.agent_frame.contains(pos) {
             if pressed {
@@ -1093,7 +1157,7 @@ impl App {
         if !l.top.contains(pos) {
             return;
         }
-        if !self.show_panels || l.top.height < 5 {
+        if !self.panels_visible() || l.top.height < 5 {
             // User screen: the running command gets the mouse if it wants it.
             let Some(run) = &self.running else { return };
             if pressed {
@@ -1152,60 +1216,57 @@ impl App {
 
     // ------------------------------------------------------------- layout
 
-    fn layout(&mut self, area: Rect) -> Layout {
-        let h = area.height;
-        let max_agent = h.saturating_sub(10).max(5);
-        self.agent_height = self.agent_height.clamp(5.min(max_agent), max_agent);
+    fn layout(&self, area: Rect) -> Layout {
         let keybar = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
         let cmdline = Rect::new(area.x, keybar.y.saturating_sub(1), area.width, 1);
-        let agent_top = cmdline.y.saturating_sub(self.agent_height);
-        let agent_frame = Rect::new(area.x, agent_top, area.width, self.agent_height);
+        let desktop = Rect::new(area.x, area.y, area.width, cmdline.y.saturating_sub(area.y));
+        let arrangement = self.wm.arrange(desktop);
+        let rect = |w| arrangement.rect(w).unwrap_or_default();
+        let agent_frame = rect(WinId::Agent);
         let agent = Rect::new(
-            area.x + 1,
-            agent_top + 1,
-            area.width.saturating_sub(2),
-            self.agent_height.saturating_sub(2),
+            agent_frame.x + 1,
+            agent_frame.y + 1,
+            agent_frame.width.saturating_sub(2),
+            agent_frame.height.saturating_sub(2),
         );
-        let top = Rect::new(area.x, area.y, area.width, agent_top.saturating_sub(area.y));
-        let half = top.width / 2;
-        let panels = [
-            Rect::new(top.x, top.y, half, top.height),
-            Rect::new(top.x + half, top.y, top.width - half, top.height),
-        ];
         Layout {
-            top,
-            panels,
+            top: arrangement.screen_area,
+            panels: [rect(WinId::Panel(0)), rect(WinId::Panel(1))],
             agent_frame,
             agent,
             cmdline,
             keybar,
+            arrangement,
         }
     }
 
     fn last_top_size(&self) -> (u16, u16) {
-        let (w, h) = crossterm::terminal::size().unwrap_or((80, 25));
-        let top = h.saturating_sub(2 + self.agent_height);
-        (top.max(2), w.max(20))
+        let top = self.last_layout.as_ref().map(|l| l.top).unwrap_or_default();
+        (top.height.max(2), top.width.max(20))
     }
 
     fn last_agent_size(&self) -> (u16, u16) {
-        let (w, _) = crossterm::terminal::size().unwrap_or((80, 25));
-        (
-            self.agent_height.saturating_sub(2).max(2),
-            w.saturating_sub(2).max(20),
-        )
+        let agent = self
+            .last_layout
+            .as_ref()
+            .map(|l| l.agent)
+            .unwrap_or_default();
+        (agent.height.max(2), agent.width.max(20))
     }
 
     fn last_page(&self) -> usize {
-        let (rows, _) = self.last_top_size();
-        rows.saturating_sub(6).max(1) as usize
+        let h = self
+            .last_layout
+            .as_ref()
+            .map_or(0, |l| l.panels[self.active].height);
+        h.saturating_sub(6).max(1) as usize
     }
 
     // --------------------------------------------------------------- draw
 
     fn draw(&mut self, area: Rect, buf: &mut Buffer) -> Option<Position> {
         let l = self.layout(area);
-        self.last_layout = Some(l);
+        self.last_layout = Some(l.clone());
         let mut cursor = None;
 
         if let Some(agent) = &self.agent {
@@ -1216,7 +1277,7 @@ impl App {
         }
 
         // Top area: panels or the user screen.
-        if self.show_panels && l.top.height >= 5 {
+        if self.panels_visible() && l.top.height >= 5 {
             let panels_active = self.focus == Focus::Panels;
             self.panels[0].draw(l.panels[0], buf, panels_active && self.active == 0);
             self.panels[1].draw(l.panels[1], buf, panels_active && self.active == 1);
