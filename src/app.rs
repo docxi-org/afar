@@ -24,6 +24,7 @@ use crate::panel::{FilePanel, SortMode, put};
 use crate::term::{PtySession, SpawnOptions};
 use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
+mod cmdline;
 mod fileops;
 mod fswatch;
 mod panelcmds;
@@ -174,6 +175,8 @@ pub struct App {
     last_click: Option<(Instant, usize, usize)>,
     /// F-key pressed with the mouse on the key bar (acts on release).
     keybar_pressed: Option<u8>,
+    /// Commands run from the command line (Ctrl+E / Ctrl+X).
+    cmd_history: cmdline::History,
     /// The last mask of Gray + / Gray - (Far's strPrevMask).
     select_mask: String,
     /// Alt+letter search in a panel.
@@ -209,6 +212,11 @@ impl App {
         let cwd = std::env::current_dir()
             .map(crate::panel::strip_verbatim)
             .unwrap_or_else(|_| PathBuf::from("."));
+        // Sessions live in <data>/sessions/<time>; the history beside them.
+        let history_file = session_dir
+            .parent()
+            .and_then(Path::parent)
+            .map(|d| d.join("history").join("commands.txt"));
         let journal = Journal::open(session_dir);
         let mut app = Self {
             panels: [FilePanel::new(cwd.clone()), FilePanel::new(cwd)],
@@ -238,6 +246,7 @@ impl App {
             last_click: None,
             keybar_pressed: None,
             select_mask: "*.*".into(),
+            cmd_history: cmdline::History::load(history_file),
             quick_search: None,
             drive_paths: Default::default(),
             overlays: Vec::new(),
@@ -681,6 +690,7 @@ impl App {
         if text.is_empty() {
             return;
         }
+        self.cmd_history.add(&text);
         // Built-ins handled by afar itself, like Far does.
         let lower = text.to_lowercase();
         if lower == "cd"
@@ -910,38 +920,6 @@ impl App {
         self.cmd_cursor += s.chars().count();
     }
 
-    /// Editing keys of the command line; returns false if not handled.
-    fn cmdline_key(&mut self, key: &KeyEvent) -> bool {
-        let len = self.cmdline.chars().count();
-        match key.code {
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    || key
-                        .modifiers
-                        .contains(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                // Ctrl+Alt is AltGr on many layouts.
-                self.cmdline_insert(&c.to_string());
-            }
-            KeyCode::Backspace if self.cmd_cursor > 0 => {
-                let byte = char_to_byte(&self.cmdline, self.cmd_cursor - 1);
-                self.cmdline.remove(byte);
-                self.cmd_cursor -= 1;
-            }
-            KeyCode::Delete if self.cmd_cursor < len => {
-                let byte = char_to_byte(&self.cmdline, self.cmd_cursor);
-                self.cmdline.remove(byte);
-            }
-            KeyCode::Left => self.cmd_cursor = self.cmd_cursor.saturating_sub(1),
-            KeyCode::Right => self.cmd_cursor = (self.cmd_cursor + 1).min(len),
-            KeyCode::Esc => self.clear_cmdline(),
-            _ => return false,
-        }
-        true
-    }
-
     // --------------------------------------------------------------- keys
 
     fn on_key(&mut self, key: KeyEvent) {
@@ -1087,6 +1065,9 @@ impl App {
                 self.wm.set_hidden(WinId::Panel(1 - side), true);
                 self.active = side;
             }
+            // Paths and names into the command line (also with the panels
+            // hidden).
+            _ if self.cmdline_insert_key(&key) => {}
             _ if !self.panels_visible() => {
                 self.cmdline_key(&key);
             }
@@ -1115,10 +1096,24 @@ impl App {
                 }
             }
             // Left/Right: one column over in modes with several.
+            // Left/Right: the panel's, unless one column of names and text
+            // in the command line (Far's ShellRightLeftArrowsRule 0).
             KeyCode::Left
-                if !ctrl && !alt && self.cmdline.is_empty() && self.panels[a].move_column(-1) => {}
+                if !ctrl
+                    && !alt
+                    && !shift
+                    && (self.panels[a].multi_column() || self.cmdline.is_empty()) =>
+            {
+                self.panels[a].move_column(-1)
+            }
             KeyCode::Right
-                if !ctrl && !alt && self.cmdline.is_empty() && self.panels[a].move_column(1) => {}
+                if !ctrl
+                    && !alt
+                    && !shift
+                    && (self.panels[a].multi_column() || self.cmdline.is_empty()) =>
+            {
+                self.panels[a].move_column(1)
+            }
             KeyCode::F(5) if !alt && !ctrl => self.copy_dialog(false, shift),
             KeyCode::F(6) if !alt && !ctrl => self.copy_dialog(true, shift),
             KeyCode::F(7) if !alt && !ctrl && !shift => self.mkdir_dialog(),
@@ -1158,8 +1153,8 @@ impl App {
             }
             KeyCode::PageUp => self.panels[a].move_cursor(-(page as isize)),
             KeyCode::PageDown => self.panels[a].move_cursor(page as isize),
-            KeyCode::Home => self.panels[a].move_cursor(isize::MIN / 2),
-            KeyCode::End => self.panels[a].move_cursor(isize::MAX / 2),
+            KeyCode::Home if !ctrl => self.panels[a].move_cursor(isize::MIN / 2),
+            KeyCode::End if !ctrl => self.panels[a].move_cursor(isize::MAX / 2),
             KeyCode::Char('\\') if ctrl => {
                 if let Some(root) = self.panels[a]
                     .path

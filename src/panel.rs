@@ -303,13 +303,14 @@ impl FilePanel {
         self.top = self.cursor.saturating_sub((height - 1) / 2).min(max_top);
     }
 
-    /// Left/Right in a mode with several stripes: one column over.
-    pub fn move_column(&mut self, delta: isize) -> bool {
-        if self.stripes < 2 {
-            return false;
-        }
+    /// Left/Right: one column over (a page of rows in a one-column mode).
+    pub fn move_column(&mut self, delta: isize) {
         self.move_cursor(delta * self.rows as isize);
-        true
+    }
+
+    /// The view mode shows several columns of names.
+    pub fn multi_column(&self) -> bool {
+        self.stripes > 1
     }
 
     /// Items on a page (PgUp/PgDn).
