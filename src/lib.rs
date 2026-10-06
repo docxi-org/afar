@@ -1,4 +1,5 @@
 pub mod app;
+pub mod dev;
 pub mod dialog;
 pub mod journal;
 pub mod keys;

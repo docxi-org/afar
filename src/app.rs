@@ -16,6 +16,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
+use crate::dev::{DevMsg, DevState, PanelState};
 use crate::journal::{Actor, Event, Journal, format_entries};
 use crate::mcp::{McpMsg, Reply, Request};
 use crate::ops::{OpId, OpMsg};
@@ -33,6 +34,23 @@ pub enum AppMsg {
     CommandOutput,
     Mcp(McpMsg),
     Op(OpMsg),
+    Dev(DevMsg),
+}
+
+/// How the main loop ended.
+pub enum Exit {
+    Quit,
+    /// Development mode: start the new build with this state.
+    Restart(DevState),
+}
+
+/// Development mode (`afar --dev`): build status and restart conditions.
+struct DevStatus {
+    building: bool,
+    /// A new build is ready: restart when nothing is in progress.
+    ready: bool,
+    restart_now: bool,
+    last_agent_output: Instant,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -151,22 +169,32 @@ pub struct App {
     overlays: Vec<Overlay>,
     ops: std::collections::HashMap<OpId, RunningOp>,
     next_op_id: OpId,
+    dev: Option<DevStatus>,
+    /// Restored after a dev restart: keep the layout, continue the agent's
+    /// conversation.
+    restored: bool,
+    /// Claude Code session id of the agent (`--session-id`), so that a dev
+    /// restart resumes exactly this conversation.
+    agent_session: Option<String>,
+    /// The agent was started with `--resume` at that time: if it exits
+    /// right away (nothing to resume yet), start it afresh.
+    agent_resumed_at: Option<Instant>,
+    exit: Option<Exit>,
 }
 
 impl App {
-    pub fn new(tx: Sender<AppMsg>, session_dir: PathBuf, link: AgentLink) -> Self {
+    pub fn new(
+        tx: Sender<AppMsg>,
+        session_dir: PathBuf,
+        link: AgentLink,
+        dev: bool,
+        restore: Option<DevState>,
+    ) -> Self {
         let cwd = std::env::current_dir()
             .map(crate::panel::strip_verbatim)
             .unwrap_or_else(|_| PathBuf::from("."));
-        let mut journal = Journal::open(session_dir);
-        journal.push(
-            Actor::System,
-            Event::AppStarted {
-                left: cwd.clone(),
-                right: cwd.clone(),
-            },
-        );
-        Self {
+        let journal = Journal::open(session_dir);
+        let mut app = Self {
             panels: [FilePanel::new(cwd.clone()), FilePanel::new(cwd)],
             active: 0,
             focus: Focus::Panels,
@@ -194,10 +222,166 @@ impl App {
             overlays: Vec::new(),
             ops: std::collections::HashMap::new(),
             next_op_id: 0,
+            dev: dev.then(|| DevStatus {
+                building: false,
+                ready: false,
+                restart_now: false,
+                last_agent_output: Instant::now(),
+            }),
+            restored: false,
+            agent_session: None,
+            agent_resumed_at: None,
+            exit: None,
+        };
+        if let Some(state) = restore {
+            app.apply_state(state);
+        }
+        let (left, right) = (app.panels[0].path.clone(), app.panels[1].path.clone());
+        app.journal
+            .push(Actor::System, Event::AppStarted { left, right });
+        app
+    }
+
+    fn apply_state(&mut self, state: DevState) {
+        for (side, p) in state.panels.into_iter().enumerate().take(2) {
+            if p.path.is_dir() {
+                self.panels[side] = FilePanel::new(p.path);
+            }
+            if let Some(name) = p.cursor {
+                self.panels[side].set_cursor_by_name(&name);
+            }
+        }
+        self.active = state.active.min(1);
+        self.live = state.live;
+        for (id, extent) in state.splits {
+            self.wm.set_extent(SplitId(id), extent);
+        }
+        self.set_panels_visible(state.panels_visible);
+        self.agent_session = state.agent_session;
+        self.restored = true;
+    }
+
+    fn state(&self) -> DevState {
+        DevState {
+            panels: self
+                .panels
+                .iter()
+                .map(|p| PanelState {
+                    path: p.path.clone(),
+                    cursor: p.current().map(|e| e.name.clone()),
+                })
+                .collect(),
+            active: self.active,
+            panels_visible: self.panels_visible(),
+            live: self.live,
+            splits: self
+                .wm
+                .extents()
+                .into_iter()
+                .map(|(id, e)| (id.0, e))
+                .collect(),
+            agent_session: self.agent_session.clone(),
         }
     }
 
-    pub fn run(mut self, terminal: &mut crate::tui::Tui, rx: Receiver<AppMsg>) -> Result<()> {
+    /// Development mode: what keeps a restart waiting.
+    fn restart_blocker(&self) -> Option<&'static str> {
+        let dev = self.dev.as_ref()?;
+        if self.has_overlay() {
+            Some("открыт диалог")
+        } else if !self.ops.is_empty() {
+            Some("идёт файловая операция")
+        } else if self.running.is_some() {
+            Some("выполняется команда")
+        } else if self.agent_alive() && dev.last_agent_output.elapsed() < Duration::from_secs(3) {
+            Some("агент работает")
+        } else {
+            None
+        }
+    }
+
+    fn on_dev(&mut self, msg: DevMsg) {
+        let Some(dev) = &mut self.dev else { return };
+        match msg {
+            DevMsg::BuildStarted => {
+                dev.building = true;
+                self.say("afar: сборка…");
+            }
+            DevMsg::BuildFinished {
+                ok,
+                output,
+                duration,
+            } => {
+                dev.building = false;
+                if ok {
+                    dev.ready = true;
+                    self.say(format!(
+                        "afar: собрано за {:.0} с — перезапуск",
+                        duration.as_secs_f64()
+                    ));
+                } else {
+                    self.record_build_failure(output);
+                    self.say("afar: ошибка сборки — Ctrl+O");
+                }
+            }
+        }
+    }
+
+    /// A failed build goes to the user screen and the command list, where
+    /// the agent can read it too.
+    fn record_build_failure(&mut self, output: Vec<String>) {
+        let id = self.next_cmd_id;
+        self.next_cmd_id += 1;
+        let cwd = crate::dev::project_root();
+        let text = "cargo build (afar --dev)".to_string();
+        self.journal.push(
+            Actor::System,
+            Event::CommandStarted {
+                cmd_id: id,
+                text: text.clone(),
+                cwd: cwd.clone(),
+            },
+        );
+        let _ = std::fs::write(self.journal.output_path(id), output.join("\n"));
+        self.journal.push(
+            Actor::System,
+            Event::CommandFinished {
+                cmd_id: id,
+                exit_code: Some(101),
+                duration_ms: 0,
+                lines: output.len(),
+            },
+        );
+        self.commands.push(CmdRecord {
+            id,
+            text: text.clone(),
+            cwd: cwd.clone(),
+            exit_code: Some(101),
+            duration_ms: 0,
+            lines: output.len(),
+        });
+        self.push_history([format!("{}>{text}", cwd.display())]);
+        self.push_history(output);
+    }
+
+    /// Restarts when a new build is ready (or on request) and nothing is
+    /// in progress.
+    fn maybe_restart(&mut self) {
+        let Some(dev) = &self.dev else { return };
+        if !(dev.ready || dev.restart_now) || dev.building {
+            return;
+        }
+        if let Some(reason) = self.restart_blocker() {
+            if dev.restart_now {
+                self.say(format!("afar: перезапуск ждёт — {reason}"));
+            }
+            return;
+        }
+        self.exit = Some(Exit::Restart(self.state()));
+        self.quit = true;
+    }
+
+    pub fn run(mut self, terminal: &mut crate::tui::Tui, rx: Receiver<AppMsg>) -> Result<Exit> {
         let frame_log = std::env::var_os("AFAR_DEBUG_FRAMES").and_then(|_| {
             std::fs::File::options()
                 .create(true)
@@ -207,10 +391,12 @@ impl App {
         });
         let mut frame_log = frame_log;
         let size = terminal.size()?;
-        self.wm.set_extent(
-            wm::MAIN_SPLIT,
-            Extent::SecondFixed((size.height * 35 / 100).max(8)),
-        );
+        if !self.restored {
+            self.wm.set_extent(
+                wm::MAIN_SPLIT,
+                Extent::SecondFixed((size.height * 35 / 100).max(8)),
+            );
+        }
         self.last_layout = Some(self.layout(Rect::new(0, 0, size.width, size.height)));
         let (rows, cols) = self.last_agent_size();
         self.start_agent(cols, rows);
@@ -232,7 +418,7 @@ impl App {
                 );
             }
             if self.quit {
-                return Ok(());
+                return Ok(self.exit.take().unwrap_or(Exit::Quit));
             }
             match rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(msg) => {
@@ -243,7 +429,7 @@ impl App {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                Err(RecvTimeoutError::Disconnected) => return Ok(Exit::Quit),
             }
             self.tick();
         }
@@ -255,7 +441,23 @@ impl App {
                 self.on_key(key)
             }
             AppMsg::Input(TermEvent::Mouse(mouse)) => self.on_mouse(mouse),
-            AppMsg::Input(_) | AppMsg::AgentOutput => {}
+            AppMsg::AgentOutput => {
+                if let Some(dev) = &mut self.dev {
+                    dev.last_agent_output = Instant::now();
+                }
+                // `--resume` with nothing to resume exits at once.
+                let quick_exit = self.agent.as_ref().is_some_and(|a| a.has_exited())
+                    && self
+                        .agent_resumed_at
+                        .is_some_and(|t| t.elapsed() < Duration::from_secs(15));
+                if quick_exit {
+                    self.restored = false;
+                    let (rows, cols) = self.last_agent_size();
+                    self.start_agent(cols, rows);
+                }
+            }
+            AppMsg::Input(_) => {}
+            AppMsg::Dev(msg) => self.on_dev(msg),
             AppMsg::CommandOutput => self.on_command_output(),
             AppMsg::Mcp(McpMsg { request, reply }) => match request {
                 // Answered later: after the user's confirmation.
@@ -316,6 +518,7 @@ impl App {
         {
             self.message = None;
         }
+        self.maybe_restart();
     }
 
     fn say(&mut self, text: impl Into<String>) {
@@ -381,6 +584,20 @@ impl App {
         ];
         // A new agent session has not seen anything yet.
         self.agent_seen_seq = 0;
+        // Our own session id; after a dev restart: the same conversation.
+        let mut args = args;
+        self.agent_resumed_at = None;
+        match self.agent_session.clone().filter(|_| self.restored) {
+            Some(id) => {
+                args.splice(0..0, ["--resume".to_string(), id]);
+                self.agent_resumed_at = Some(Instant::now());
+            }
+            None => {
+                let id = new_uuid();
+                args.splice(0..0, ["--session-id".to_string(), id.clone()]);
+                self.agent_session = Some(id);
+            }
+        }
         match PtySession::spawn(
             SpawnOptions {
                 program: "claude",
@@ -431,6 +648,11 @@ impl App {
         }
         if text.len() == 2 && text.ends_with(':') && text.as_bytes()[0].is_ascii_alphabetic() {
             self.change_dir(self.active, Path::new(&format!("{text}\\")));
+            self.clear_cmdline();
+            return;
+        }
+        if lower == "afar:restart" {
+            self.request_restart();
             self.clear_cmdline();
             return;
         }
@@ -794,6 +1016,7 @@ impl App {
             _ if !self.panels_visible() => {
                 self.cmdline_key(&key);
             }
+            KeyCode::Char('r' | 'R') if ctrl && shift => self.request_restart(),
             KeyCode::Tab => self.active = 1 - a,
             KeyCode::F(5) if !alt && !ctrl => self.copy_dialog(false, shift),
             KeyCode::F(6) if !alt && !ctrl => self.copy_dialog(true, shift),
@@ -867,6 +1090,17 @@ impl App {
         };
         self.wm
             .set_first(id, i32::from(sp.first()) + delta, sp.total());
+    }
+
+    /// Ctrl+Shift+R / `afar:restart`: restart in development mode.
+    fn request_restart(&mut self) {
+        match &mut self.dev {
+            Some(dev) => {
+                dev.restart_now = true;
+                self.maybe_restart();
+            }
+            None => self.say("Перезапуск работает в режиме разработки: afar --dev"),
+        }
     }
 
     fn panels_visible(&self) -> bool {
@@ -1574,6 +1808,34 @@ impl App {
             );
         }
     }
+}
+
+/// A random UUID (version 4) for a Claude Code session id.
+fn new_uuid() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut bytes = [0u8; 16];
+    for (i, chunk) in bytes.chunks_mut(8).enumerate() {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_usize(i);
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        );
+        chunk.copy_from_slice(&h.finish().to_le_bytes());
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 fn side_name(side: usize) -> &'static str {

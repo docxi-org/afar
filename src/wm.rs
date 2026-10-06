@@ -42,7 +42,7 @@ pub enum Dir {
 /// How the size of a split's first child is defined; it is kept in this
 /// form when the area changes (e.g. the agent pane keeps its height when
 /// the terminal grows, the panels keep their proportion).
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Extent {
     /// Share of the area taken by the first child.
     Ratio(f32),
@@ -322,6 +322,23 @@ impl Wm {
             Extent::FirstFixed(_) => Extent::FirstFixed(first),
             Extent::SecondFixed(_) => Extent::SecondFixed(total - first),
         };
+    }
+
+    /// Extents of all splits (for saving the layout).
+    pub fn extents(&self) -> Vec<(SplitId, Extent)> {
+        fn collect(node: &Node, out: &mut Vec<(SplitId, Extent)>) {
+            if let Node::Split(s) = node {
+                out.push((s.id, s.extent));
+                collect(&s.first, out);
+                collect(&s.second, out);
+            }
+        }
+        let mut out = Vec::new();
+        collect(&self.root, &mut out);
+        for s in &self.screens {
+            collect(&s.tree, &mut out);
+        }
+        out
     }
 
     pub fn set_extent(&mut self, id: SplitId, extent: Extent) {
