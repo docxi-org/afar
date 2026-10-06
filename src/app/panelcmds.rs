@@ -15,10 +15,6 @@ use crate::panel::{SORT_MODES, SelectMode, size_float};
 use crate::tr;
 use crate::wm::WinId;
 
-/// Far's Panel.SelectFolders (off by default): Gray + and Gray * leave
-/// folders alone.
-const SELECT_FOLDERS: bool = false;
-
 impl App {
     /// Gray +, Gray -, Gray * with modifiers; `false` when `key` is not one
     /// of them. Keypad keys only: the same characters on the main keyboard
@@ -37,11 +33,13 @@ impl App {
             m.contains(KeyModifiers::SHIFT),
         );
         let side = self.active;
+        // Far's "Select folders" (off by default).
+        let folders = self.config.panels.select_folders;
         match (c, ctrl, alt, shift) {
             ('+', false, false, false) => self.select_dialog(true),
             ('-', false, false, false) => self.select_dialog(false),
-            ('+', false, false, true) => self.panels[side].select_all(true, SELECT_FOLDERS),
-            ('-', false, false, true) => self.panels[side].select_all(false, SELECT_FOLDERS),
+            ('+', false, false, true) => self.panels[side].select_all(true, folders),
+            ('-', false, false, true) => self.panels[side].select_all(false, folders),
             ('+' | '-', true, false, _) => self.select_like_current(c == '+', true),
             ('+' | '-', false, true, _) => self.select_like_current(c == '+', false),
             ('*', ..) => {
@@ -52,7 +50,7 @@ impl App {
                 } else {
                     SelectMode::Invert
                 };
-                self.panels[side].select_masked(None, mode, SELECT_FOLDERS);
+                self.panels[side].select_masked(None, mode, folders);
             }
             _ => return false,
         }
@@ -95,7 +93,11 @@ impl App {
                 } else {
                     SelectMode::Remove
                 };
-                self.panels[side].select_masked(Some(&masks), mode, SELECT_FOLDERS);
+                self.panels[side].select_masked(
+                    Some(&masks),
+                    mode,
+                    self.config.panels.select_folders,
+                );
                 if self.panels[side].sort.selected_first {
                     self.panels[side].resort();
                 }
@@ -135,7 +137,7 @@ impl App {
             } else {
                 SelectMode::Remove
             };
-            self.panels[side].select_masked(Some(&masks), mode, SELECT_FOLDERS);
+            self.panels[side].select_masked(Some(&masks), mode, self.config.panels.select_folders);
         }
     }
 }

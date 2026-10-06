@@ -44,6 +44,15 @@ pub enum AppMsg {
     Fs(crate::watch::FsEvent),
 }
 
+/// The state to start from.
+pub enum Restore {
+    /// A development rebuild: everything as it was, the agent resumed.
+    Restart(DevState),
+    /// The last run (`state.json`): the active panel stays in the current
+    /// folder; layout, modes and the other panel come back.
+    LastRun(DevState),
+}
+
 /// How the main loop ended.
 pub enum Exit {
     Quit,
@@ -192,6 +201,12 @@ pub struct App {
     /// Restored after a dev restart: keep the layout, continue the agent's
     /// conversation.
     restored: bool,
+    /// Window sizes came from a restart or the last run.
+    layout_restored: bool,
+    /// afar's data folder (`%LOCALAPPDATA%\afar`): sessions, history, state.
+    data_dir: PathBuf,
+    /// Settings (`config.toml`).
+    config: crate::config::Config,
     /// Claude Code session id of the agent (`--session-id`), so that a dev
     /// restart resumes exactly this conversation.
     agent_session: Option<String>,
@@ -208,16 +223,20 @@ impl App {
         session_dir: PathBuf,
         link: AgentLink,
         dev: bool,
-        restore: Option<DevState>,
+        config: crate::config::Config,
+        config_problem: Option<String>,
+        restore: Option<Restore>,
     ) -> Self {
         let cwd = std::env::current_dir()
             .map(crate::panel::strip_verbatim)
             .unwrap_or_else(|_| PathBuf::from("."));
         // Sessions live in <data>/sessions/<time>; the history beside them.
-        let history_file = session_dir
+        let data_dir = session_dir
             .parent()
             .and_then(Path::parent)
-            .map(|d| d.join("history").join("commands.txt"));
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let history_file = Some(data_dir.join("history").join("commands.txt"));
         let journal = Journal::open(session_dir);
         let mut app = Self {
             panels: [FilePanel::new(cwd.clone()), FilePanel::new(cwd)],
@@ -234,7 +253,7 @@ impl App {
             journal,
             commands: Vec::new(),
             link,
-            live: false,
+            live: config.agent.live,
             agent_seen_seq: 0,
             selection_changed: [None, None],
             message: None,
@@ -260,13 +279,21 @@ impl App {
                 last_agent_output: Instant::now(),
             }),
             restored: false,
+            layout_restored: false,
+            data_dir,
+            config,
             agent_session: None,
             agent_resumed_at: None,
             agent_started: Instant::now(),
             exit: None,
         };
-        if let Some(state) = restore {
-            app.apply_state(state);
+        match restore {
+            Some(Restore::Restart(state)) => app.apply_state(state),
+            Some(Restore::LastRun(state)) => app.apply_last_run(state),
+            None => {}
+        }
+        if let Some(problem) = config_problem {
+            app.say(tr!("config-problem", problem = problem));
         }
         let (left, right) = (app.panels[0].path.clone(), app.panels[1].path.clone());
         app.journal
@@ -294,6 +321,45 @@ impl App {
         self.set_panels_visible(state.panels_visible);
         self.agent_session = state.agent_session;
         self.restored = true;
+        self.layout_restored = true;
+    }
+
+    /// The last run: the active panel stays in the current folder (where
+    /// afar was started), the other one, the modes and the layout return.
+    fn apply_last_run(&mut self, state: DevState) {
+        let active = state.active.min(1);
+        for (side, p) in state.panels.into_iter().enumerate().take(2) {
+            if side != active && p.path.is_dir() {
+                self.panels[side] = FilePanel::new(p.path);
+                if let Some(name) = &p.cursor {
+                    self.panels[side].set_cursor_by_name(name);
+                }
+            }
+            self.panels[side].view = p.view;
+            self.panels[side].sort = p.sort;
+            self.panels[side].resort();
+        }
+        self.active = active;
+        for (id, extent) in state.splits {
+            self.wm.set_extent(SplitId(id), extent);
+        }
+        self.layout_restored = true;
+    }
+
+    /// `state.json` of the last run, if any.
+    pub fn load_state(data_dir: &Path) -> Option<DevState> {
+        let data = std::fs::read(data_dir.join("state.json")).ok()?;
+        serde_json::from_slice(&data).ok()
+    }
+
+    /// Saves the state for the next run (not the agent's conversation).
+    fn save_state(&self) {
+        let mut state = self.state();
+        state.agent_session = None;
+        if let Ok(json) = serde_json::to_vec_pretty(&state) {
+            let _ = std::fs::create_dir_all(&self.data_dir);
+            let _ = std::fs::write(self.data_dir.join("state.json"), json);
+        }
     }
 
     fn state(&self) -> DevState {
@@ -430,7 +496,7 @@ impl App {
         });
         let mut frame_log = frame_log;
         let size = terminal.size()?;
-        if !self.restored {
+        if !self.layout_restored {
             self.wm.set_extent(
                 wm::MAIN_SPLIT,
                 Extent::SecondFixed((size.height * 35 / 100).max(8)),
@@ -468,7 +534,11 @@ impl App {
                 if let Some(agent) = &mut self.agent {
                     agent.shutdown(Duration::from_secs(3));
                 }
-                return Ok(self.exit.take().unwrap_or(Exit::Quit));
+                let exit = self.exit.take().unwrap_or(Exit::Quit);
+                if matches!(exit, Exit::Quit) {
+                    self.save_state();
+                }
+                return Ok(exit);
             }
             match rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(msg) => {
@@ -636,6 +706,7 @@ impl App {
     fn start_agent(&mut self, cols: u16, rows: u16) {
         let tx = self.tx.clone();
         let cwd = self.panels[self.active].path.clone();
+        let program = self.config.agent.command.clone();
         let args = match self.agent_args() {
             Ok(args) => args,
             Err(e) => {
@@ -653,7 +724,8 @@ impl App {
         // A new agent session has not seen anything yet.
         self.agent_seen_seq = 0;
         // Our own session id; after a dev restart: the same conversation.
-        let mut args = args;
+        // The configured extra arguments go first.
+        let mut args: Vec<String> = self.config.agent.args.iter().cloned().chain(args).collect();
         self.agent_resumed_at = None;
         self.agent_started = Instant::now();
         match self.agent_session.clone().filter(|_| self.restored) {
@@ -669,7 +741,7 @@ impl App {
         }
         match PtySession::spawn(
             SpawnOptions {
-                program: "claude",
+                program: &program,
                 args: &args,
                 cwd: Some(&cwd),
                 env: &env,

@@ -280,6 +280,10 @@ impl App {
                 if key.code == KeyCode::Esc
                     && let Some(op) = self.ops.get(&p.op)
                 {
+                    if !self.config.confirm.esc {
+                        op.control.cancel();
+                        return;
+                    }
                     // Far: the operation stops while it asks.
                     op.control.set_paused(true);
                     let id = p.op;
@@ -694,7 +698,11 @@ impl App {
         );
         let control = OpControl::new();
         let tx = self.tx.clone();
-        let started = ops::spawn_delete(id, targets, mode, control.clone(), move |m| {
+        let confirm = ops::Confirmations {
+            folders: self.config.confirm.delete_folder,
+            read_only: self.config.confirm.read_only,
+        };
+        let started = ops::spawn_delete(id, targets, mode, confirm, control.clone(), move |m| {
             let _ = tx.send(AppMsg::Op(m));
         });
         self.track_op(id, kind, actor, reply, control, None, None, started);

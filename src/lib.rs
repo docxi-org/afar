@@ -1,4 +1,5 @@
 pub mod app;
+pub mod config;
 pub mod dev;
 pub mod dialog;
 pub mod drives;

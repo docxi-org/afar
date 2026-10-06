@@ -1,0 +1,42 @@
+# afar settings. afar reads this file at start; the settings dialogs
+# (F9 → Options) write their changes here, keeping these comments.
+
+[general]
+# Interface language: "en", "ru", "de", … (Far's 13 languages).
+# Empty: the Windows interface language. The AFAR_LANG variable wins.
+language = ""
+
+[panels]
+# Gray + and Gray * select folders too (Far: "Select folders").
+select_folders = false
+
+[confirm]
+# Ask before deleting a folder that is not empty.
+delete_folder = true
+# Ask before deleting a read-only file.
+read_only = true
+# Esc during a file operation asks before cancelling it.
+esc = true
+
+[agent]
+# The agent in the bottom pane and its extra arguments (afar adds its own:
+# MCP server, hooks, system prompt, session).
+command = "claude"
+args = []
+# Start in live mode: your actions go with each prompt to the agent.
+# Otherwise the agent reads the journal when it needs it.
+live = false
+
+[agent.permissions]
+# What the agent may do through afar (its afar_* tools):
+#   "allow"   — without asking,
+#   "confirm" — after your confirmation in a dialog,
+#   "deny"    — never.
+# The agent's own tools (Bash, Edit, Write) are asked about by Claude Code.
+navigate = "allow"          # move the panels' cursor, change folders, select
+mkdir = "allow"             # create folders
+copy = "confirm"
+move = "confirm"            # move and rename
+delete = "confirm"          # to the recycle bin
+delete_permanent = "deny"   # bypassing the recycle bin
+run_command = "confirm"     # run a command in the command line

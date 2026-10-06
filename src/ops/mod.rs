@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::Serialize;
 
 pub use copy::{CopyJob, plan_targets, spawn_copy, unique_name};
-pub use delete::{DeleteMode, spawn_delete};
+pub use delete::{Confirmations, DeleteMode, spawn_delete};
 
 pub type OpId = u64;
 

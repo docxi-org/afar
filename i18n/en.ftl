@@ -50,3 +50,5 @@ copy-root = { $path }: cannot copy or move a drive root
 copy-file-where-folder = a file with the same name is where the folder should go
 copy-folder-where-file = { $path }: there is a folder here
 link-create-failed = could not create the link: { $error }
+
+config-problem = Settings not read: { $problem }

@@ -20,10 +20,27 @@ pub enum DeleteMode {
 
 /// Deletes `targets` on a new thread. Symbolic links and junctions are
 /// deleted themselves, never what they point to.
+/// Which of Far's questions to ask (Options → Confirmations).
+#[derive(Clone, Copy, Debug)]
+pub struct Confirmations {
+    pub folders: bool,
+    pub read_only: bool,
+}
+
+impl Default for Confirmations {
+    fn default() -> Self {
+        Self {
+            folders: true,
+            read_only: true,
+        }
+    }
+}
+
 pub fn spawn_delete(
     id: OpId,
     targets: Vec<PathBuf>,
     mode: DeleteMode,
+    confirm: Confirmations,
     control: Arc<OpControl>,
     send: impl Fn(OpMsg) + Send + 'static,
 ) -> std::io::Result<()> {
@@ -31,6 +48,10 @@ pub fn spawn_delete(
         .name(format!("op-{id}"))
         .spawn(move || {
             let mut w = Worker::new(id, control, &send);
+            w.delete_folders = !confirm.folders;
+            if !confirm.read_only {
+                w.readonly = Some(true);
+            }
             if mode == DeleteMode::Trash {
                 w.total = targets.len();
                 for t in &targets {
@@ -283,6 +304,7 @@ mod tests {
             1,
             targets,
             DeleteMode::Permanent,
+            Confirmations::default(),
             OpControl::new(),
             move |m| {
                 let _ = tx.send(m);
@@ -319,9 +341,16 @@ mod tests {
         answers: &[ConfirmAnswer],
     ) -> (OpReport, Vec<Question>) {
         let (tx, rx) = mpsc::channel();
-        spawn_delete(1, targets, mode, OpControl::new(), move |m| {
-            let _ = tx.send(m);
-        })
+        spawn_delete(
+            1,
+            targets,
+            mode,
+            Confirmations::default(),
+            OpControl::new(),
+            move |m| {
+                let _ = tx.send(m);
+            },
+        )
         .unwrap();
         let mut asked = Vec::new();
         loop {
@@ -441,6 +470,7 @@ mod tests {
             1,
             files.clone(),
             DeleteMode::Permanent,
+            Confirmations::default(),
             control.clone(),
             move |m| {
                 let _ = tx.send(m);

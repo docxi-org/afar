@@ -2,7 +2,8 @@ use std::hash::{BuildHasher, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use afar::app::{AgentLink, App, AppMsg, Exit};
+use afar::app::{AgentLink, App, AppMsg, Exit, Restore};
+use afar::config::Config;
 
 fn data_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
@@ -41,7 +42,14 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(afar::dev::supervise()?);
     }
     let dev = afar::dev::is_child();
-    let restore = if dev { afar::dev::take_state() } else { None };
+    // Settings first: they may choose the language.
+    let (config, config_problem) = Config::load(&afar::config::config_path(), afar::i18n::detect);
+    afar::i18n::init(&afar::i18n::detect_with(&config.general.language));
+    // After a dev rebuild: exactly where we were; otherwise the last run.
+    let restore = match dev.then(afar::dev::take_state).flatten() {
+        Some(state) => Some(Restore::Restart(state)),
+        None => App::load_state(&data_dir()).map(Restore::LastRun),
+    };
 
     let session = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let session_dir = data_dir().join("sessions").join(session);
@@ -70,8 +78,16 @@ fn main() -> anyhow::Result<()> {
 
     // Raw mode, alternate screen, mouse; restored on exit and on panic.
     let mut terminal = afar::tui::Tui::init()?;
-    let result =
-        App::new(tx, session_dir, AgentLink { port, token }, dev, restore).run(&mut terminal, rx);
+    let result = App::new(
+        tx,
+        session_dir,
+        AgentLink { port, token },
+        dev,
+        config,
+        config_problem,
+        restore,
+    )
+    .run(&mut terminal, rx);
     afar::tui::restore();
     match result? {
         Exit::Quit => Ok(()),

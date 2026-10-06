@@ -51,3 +51,5 @@ copy-root = { $path }: нельзя копировать или переноси
 copy-file-where-folder = на месте папки уже есть файл с тем же именем
 copy-folder-where-file = { $path }: на этом месте папка
 link-create-failed = не удалось создать ссылку: { $error }
+
+config-problem = Настройки не прочитаны: { $problem }

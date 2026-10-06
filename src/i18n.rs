@@ -111,8 +111,16 @@ impl Catalog {
 
 /// The language to use: `AFAR_LANG`, the system UI language, English.
 pub fn detect() -> String {
+    detect_with("")
+}
+
+/// The language to use: `AFAR_LANG`, `configured` (the setting, if not
+/// empty), the system UI language, English.
+pub fn detect_with(configured: &str) -> String {
     let wanted = std::env::var("AFAR_LANG")
         .ok()
+        .filter(|l| !l.is_empty())
+        .or_else(|| (!configured.is_empty()).then(|| configured.to_string()))
         .or_else(sys_locale::get_locale)
         .unwrap_or_default();
     let primary = wanted
