@@ -1366,11 +1366,11 @@ impl App {
             Some(_) => "работает".to_string(),
         };
         let frame = l.agent_frame;
-        crate::panel::draw_frame(buf, frame, theme::PANEL);
+        crate::panel::draw_frame(buf, frame, theme::PANEL_BOX);
         let title_style = if agent_focused {
-            theme::TITLE_ACTIVE
+            theme::PANEL_TITLE_SELECTED
         } else {
-            theme::PANEL
+            theme::PANEL_TITLE
         };
         let title = format!(" Агент · claude · {status} ");
         crate::panel::put_title(buf, frame, frame.y, &title, title_style);
@@ -1399,7 +1399,7 @@ impl App {
                 y,
                 hint_w,
                 &hint,
-                theme::PANEL,
+                theme::PANEL_BOX,
             );
         }
         // Only the frame is blue: inside, the program keeps the terminal's
@@ -1421,7 +1421,7 @@ impl App {
             l.cmdline.y,
             l.cmdline.width,
             &line,
-            theme::CMDLINE,
+            theme::COMMAND_LINE,
         );
         if self.focus == Focus::Panels {
             let x = (prompt.chars().count() + self.cmd_cursor) as u16;
@@ -1463,7 +1463,7 @@ impl App {
 
     /// History of finished commands plus the live screen of the running one.
     fn draw_user_screen(&mut self, area: Rect, buf: &mut Buffer) -> Option<Position> {
-        buf.set_style(area, theme::CMDLINE);
+        buf.set_style(area, theme::COMMAND_LINE);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 buf[(x, y)].set_symbol(" ");
@@ -1498,7 +1498,7 @@ impl App {
                 first_y + i as u16,
                 line.as_str(),
                 area.width as usize,
-                theme::CMDLINE,
+                theme::COMMAND_LINE,
             );
         }
         cursor
@@ -1528,7 +1528,7 @@ impl App {
                 Focus::Agent => " Ввод идёт агенту · Ctrl+Space — к панелям",
                 _ => " Ввод идёт команде · Ctrl+Space — к агенту · Ctrl+O — экран команды",
             };
-            put(buf, area.x, area.y, area.width, text, theme::KEYBAR_LABEL);
+            put(buf, area.x, area.y, area.width, text, theme::KEYBAR_TEXT);
             return;
         }
         let cell = (area.width / 12).max(4);
@@ -1547,7 +1547,7 @@ impl App {
                 area.y,
                 lw,
                 label,
-                theme::KEYBAR_LABEL,
+                theme::KEYBAR_TEXT,
             );
         }
     }

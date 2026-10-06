@@ -4,9 +4,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 
 use crate::panel::{draw_frame, put, put_title};
+use crate::theme;
 
 pub enum Item {
     Text(String),
@@ -15,6 +16,9 @@ pub enum Item {
     Input {
         value: String,
         cursor: usize,
+        /// Not edited yet: like in Far, the text is shown dimmed and the
+        /// first typed character replaces it.
+        unchanged: bool,
     },
     Check {
         label: String,
@@ -53,17 +57,17 @@ struct Colors {
 }
 
 const NORMAL: Colors = Colors {
-    body: Style::new().fg(Color::Black).bg(Color::Gray),
-    frame: Style::new().fg(Color::White).bg(Color::Gray),
-    field: Style::new().fg(Color::Black).bg(Color::Cyan),
-    focused_button: Style::new().fg(Color::Black).bg(Color::Cyan),
+    body: theme::DIALOG_TEXT,
+    frame: theme::DIALOG_BOX,
+    field: theme::DIALOG_EDIT,
+    focused_button: theme::DIALOG_BUTTON_SELECTED,
 };
 
 const WARNING: Colors = Colors {
-    body: Style::new().fg(Color::White).bg(Color::Red),
-    frame: Style::new().fg(Color::White).bg(Color::Red),
-    field: Style::new().fg(Color::Black).bg(Color::Cyan),
-    focused_button: Style::new().fg(Color::Black).bg(Color::Gray),
+    body: theme::WARN_TEXT,
+    frame: theme::WARN_BOX,
+    field: theme::DIALOG_EDIT,
+    focused_button: theme::WARN_BUTTON_SELECTED,
 };
 
 pub struct Dialog {
@@ -118,7 +122,11 @@ impl Dialog {
     pub fn input(mut self, value: impl Into<String>) -> Self {
         let value = value.into();
         let cursor = value.chars().count();
-        self.items.push(Item::Input { value, cursor });
+        self.items.push(Item::Input {
+            unchanged: !value.is_empty(),
+            value,
+            cursor,
+        });
         self
     }
 
@@ -307,7 +315,17 @@ impl Dialog {
                         *checked = !*checked;
                     }
                 }
-                Item::Input { value, cursor } => {
+                Item::Input {
+                    value,
+                    cursor,
+                    unchanged,
+                } => {
+                    // Typing over untouched text replaces it.
+                    if *unchanged && matches!(key.code, KeyCode::Char(_)) && !(ctrl ^ alt) {
+                        value.clear();
+                        *cursor = 0;
+                    }
+                    *unchanged = false;
                     let len = value.chars().count();
                     let byte =
                         |s: &str, c: usize| s.char_indices().nth(c).map_or(s.len(), |(i, _)| i);
@@ -360,7 +378,12 @@ impl Dialog {
             Target::Item(i) if matches!(self.items[i], Item::Radio { .. }) => self.select_radio(i),
             Target::Item(i) => match &mut self.items[i] {
                 Item::Check { checked, .. } => *checked = !*checked,
-                Item::Input { value, cursor } => {
+                Item::Input {
+                    value,
+                    cursor,
+                    unchanged,
+                } => {
+                    *unchanged = false;
                     *cursor = usize::from(ev.column - rect.x).min(value.chars().count());
                 }
                 _ => {}
@@ -399,7 +422,7 @@ impl Dialog {
         let outer = Rect::new(x, y, w.min(area.width), h);
 
         // Shadow: two columns to the right and one row below.
-        let shadow = Style::new().fg(Color::DarkGray).bg(Color::Black);
+        let shadow = theme::SHADOW;
         for sy in outer.y + 1..=outer.bottom() {
             for sx in outer.right()..outer.right() + 2 {
                 if sx < area.right() && sy < area.bottom() {
@@ -449,11 +472,20 @@ impl Dialog {
                     let n = (s.chars().count() as u16).min(width);
                     put(buf, cx + (width - n) / 2, row, n, s, colors.body);
                 }
-                Item::Input { value, cursor: c } => {
+                Item::Input {
+                    value,
+                    cursor: c,
+                    unchanged,
+                } => {
                     // Scroll long values so the cursor stays visible.
                     let skip = c.saturating_sub(usize::from(width) - 1);
                     let shown: String = value.chars().skip(skip).collect();
-                    put(buf, cx, row, width, &shown, colors.field);
+                    let style = if *unchanged {
+                        theme::DIALOG_EDIT_UNCHANGED
+                    } else {
+                        colors.field
+                    };
+                    put(buf, cx, row, width, &shown, style);
                     let rect = Rect::new(cx, row, width, 1);
                     self.hits.push((rect, Target::Item(i)));
                     if focus == Some(Target::Item(i)) {
@@ -603,6 +635,17 @@ mod tests {
         d.handle_key(&key(KeyCode::Backspace));
         assert_eq!(d.input_value(0), "нова");
         assert_eq!(d.handle_key(&key(KeyCode::Enter)), Outcome::Closed(Some(0)));
+    }
+
+    #[test]
+    fn typing_replaces_untouched_text() {
+        let mut d = Dialog::new("t", 30).input("old").buttons(&["OK"], 0);
+        d.handle_key(&key(KeyCode::Char('n')));
+        assert_eq!(d.input_value(0), "n");
+        let mut d = Dialog::new("t", 30).input("old").buttons(&["OK"], 0);
+        d.handle_key(&key(KeyCode::End));
+        d.handle_key(&key(KeyCode::Char('!')));
+        assert_eq!(d.input_value(0), "old!");
     }
 
     #[test]

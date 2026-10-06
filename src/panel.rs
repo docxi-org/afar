@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use chrono::{DateTime, Local};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 
 use crate::theme;
 
@@ -17,6 +17,8 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<SystemTime>,
     pub selected: bool,
+    pub hidden: bool,
+    pub system: bool,
 }
 
 impl Entry {
@@ -68,7 +70,10 @@ impl FilePanel {
                 for de in rd.flatten() {
                     let meta = de.metadata().ok();
                     let name = de.file_name().to_string_lossy().into_owned();
+                    let (hidden, system) = hidden_system(&name, meta.as_ref());
                     entries.push(Entry {
+                        hidden,
+                        system,
                         is_dir: meta.as_ref().is_some_and(|m| m.is_dir()),
                         size: meta.as_ref().map_or(0, |m| m.len()),
                         modified: meta.as_ref().and_then(|m| m.modified().ok()),
@@ -93,6 +98,8 @@ impl FilePanel {
                     size: 0,
                     modified: None,
                     selected: false,
+                    hidden: false,
+                    system: false,
                 },
             );
         }
@@ -195,7 +202,7 @@ impl FilePanel {
         if area.width < 20 || area.height < 5 {
             return;
         }
-        let frame = theme::PANEL;
+        let frame = theme::PANEL_BOX;
         draw_frame(buf, area, frame);
         let (x0, y0, x1, y1) = (area.x, area.y, area.right() - 1, area.bottom() - 1);
         // Single separator above the status line.
@@ -227,7 +234,7 @@ impl FilePanel {
             buf[(cx - 1, y0)].set_symbol("╤");
             buf[(cx - 1, y1 - 2)].set_symbol("┴");
         }
-        let header = Style::default().fg(Color::Yellow).bg(Color::Blue);
+        let header = theme::PANEL_COLUMN_TITLE;
         put_centered(buf, col_x[0], y0 + 1, name_w, "Имя", header);
         put_centered(buf, col_x[1], y0 + 1, size_w, "Размер", header);
         put_centered(buf, col_x[2], y0 + 1, date_w, "Дата", header);
@@ -244,7 +251,13 @@ impl FilePanel {
         for (i, e) in self.entries.iter().enumerate().skip(self.top).take(list_h) {
             let y = list_top + (i - self.top) as u16;
             let is_cursor = active && i == self.cursor;
-            let style = theme::entry_style(e.is_dir, e.selected, is_cursor);
+            let attrs = theme::FileAttrs {
+                name: &e.name,
+                is_dir: e.is_dir,
+                hidden: e.hidden,
+                system: e.system,
+            };
+            let style = theme::file_style(&attrs, e.selected, is_cursor);
             put(buf, col_x[0], y, name_w, &e.name, style);
             let size = if e.is_up() {
                 "Вверх".to_string()
@@ -270,7 +283,11 @@ impl FilePanel {
         let title = truncate_left(&title, (inner_w as usize).saturating_sub(2));
         let title_w = title.chars().count() as u16;
         let tx = x0 + (area.width.saturating_sub(title_w)) / 2;
-        let title_style = if active { theme::TITLE_ACTIVE } else { frame };
+        let title_style = if active {
+            theme::PANEL_TITLE_SELECTED
+        } else {
+            theme::PANEL_TITLE
+        };
         put(buf, tx, y0, title_w, &title, title_style);
 
         // Status line: current item.
@@ -290,7 +307,7 @@ impl FilePanel {
             }
             (None, None) => String::new(),
         };
-        put(buf, x0 + 1, y1 - 1, inner_w, &status, frame);
+        put(buf, x0 + 1, y1 - 1, inner_w, &status, theme::PANEL_TEXT);
 
         // Footer: selection summary.
         let (count, bytes) = self
@@ -305,9 +322,25 @@ impl FilePanel {
                 y1 - 2,
                 w,
                 &text,
-                theme::SELECTED_INFO,
+                theme::PANEL_INFO_SELECTED,
             );
         }
+    }
+}
+
+/// Hidden and system attributes (on Unix: hidden = dot file).
+fn hidden_system(name: &str, meta: Option<&std::fs::Metadata>) -> (bool, bool) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let _ = name;
+        let attrs = meta.map_or(0, |m| m.file_attributes());
+        (attrs & 0x2 != 0, attrs & 0x4 != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = meta;
+        (name.starts_with('.') && name != "..", false)
     }
 }
 
