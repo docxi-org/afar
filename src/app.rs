@@ -1273,8 +1273,11 @@ impl App {
                 theme::PANEL,
             );
         }
+        // Only the frame is blue: inside, the program keeps the terminal's
+        // own colors.
+        buf.set_style(l.agent, Style::reset());
         if let Some(agent) = &self.agent {
-            let c = termview::draw_rows(agent.parser().screen(), 0, l.agent, buf, theme::PANEL);
+            let c = termview::draw_rows(agent.parser().screen(), 0, l.agent, buf, Style::reset());
             if agent_focused {
                 cursor = c;
             }

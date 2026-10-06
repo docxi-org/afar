@@ -53,13 +53,12 @@ impl vt100::Callbacks for Replies {
     }
 
     fn unhandled_osc(&mut self, _screen: &mut vt100::Screen, params: &[&[u8]]) {
-        // OSC 10/11 ? — default foreground / background color queries. The
-        // answer matches the Far-style pane: light cyan on blue (Windows
-        // Terminal's Campbell scheme), so programs pick a dark-background theme.
+        // OSC 10/11 ? — default foreground / background color queries: a
+        // dark terminal, so programs pick a dark-background theme.
         if let [code, b"?"] = params {
             let color = match *code {
-                b"10" => "6161/d6d6/d6d6",
-                b"11" => "0000/3737/dada",
+                b"10" => "c0c0/c0c0/c0c0",
+                b"11" => "0000/0000/0000",
                 _ => return,
             };
             let code = std::str::from_utf8(code).unwrap_or_default();
