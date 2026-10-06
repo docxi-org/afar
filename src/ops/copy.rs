@@ -15,8 +15,8 @@ use std::sync::mpsc;
 use crate::tr;
 
 use super::{
-    ConflictAction, ConflictAnswer, FileInfo, Flow, Next, OpId, OpMsg, Overwrite, Worker,
-    remove_file_forced,
+    ConflictAction, ConflictAnswer, ErrorContext, FileInfo, Flow, Next, OpId, OpMsg, Overwrite,
+    Worker, remove_file_forced,
 };
 
 const BUFFER: usize = 1 << 20;
@@ -145,7 +145,7 @@ fn scan(path: &Path) -> (usize, u64) {
 }
 
 /// `name (2).ext`, `name (3).ext`, … — the first that does not exist.
-fn unique_name(target: &Path) -> PathBuf {
+pub fn unique_name(target: &Path) -> PathBuf {
     let stem = target
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -183,6 +183,15 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
         if self.w.cancelled() {
             return Flow::Stop;
         }
+        let dest = target.to_path_buf();
+        self.w.context = if self.moving {
+            ErrorContext::Move { dest }
+        } else {
+            ErrorContext::Copy { dest }
+        };
+        self.w.target = Some(target.to_path_buf());
+        self.w.file_done = 0;
+        self.w.file_total = 0;
         let meta = match std::fs::symlink_metadata(src) {
             Ok(m) => m,
             Err(e) => {
@@ -295,6 +304,7 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
                     return Flow::Stop;
                 }
                 ConflictAction::Rename => target = unique_name(&target),
+                ConflictAction::RenameTo(name) => target = target.with_file_name(name),
                 ConflictAction::Append => append = true,
                 ConflictAction::Replace => {}
             }
@@ -372,7 +382,7 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
                     self.policy = match answer.action {
                         ConflictAction::Replace => Overwrite::Replace,
                         ConflictAction::Skip => Overwrite::Skip,
-                        ConflictAction::Rename => Overwrite::Rename,
+                        ConflictAction::Rename | ConflictAction::RenameTo(_) => Overwrite::Rename,
                         ConflictAction::Append => Overwrite::Append,
                         ConflictAction::Cancel => self.policy,
                     };
@@ -386,6 +396,8 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
     fn copy_file(&mut self, src: &Path, target: &Path, append: bool) -> Result<(), CopyError> {
         let mut input = File::open(src)?;
         let meta = input.metadata()?;
+        self.w.file_total = meta.len();
+        self.w.file_done = 0;
         if append {
             let mut out = File::options().append(true).open(target)?;
             return self.pump(src, &mut input, &mut out);
@@ -435,6 +447,7 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
             }
             out.write_all(&buf[..n])?;
             self.w.bytes_done += n as u64;
+            self.w.file_done += n as u64;
             self.w.progress(src);
         }
     }

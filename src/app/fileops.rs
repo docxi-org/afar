@@ -1,12 +1,14 @@
-//! File operations in the UI: Far-style dialogs (F5–F8), operations running
-//! in the background, their progress window and questions on errors and
-//! existing files. Dialogs live in the overlay: modal for input, while the
-//! agent pane and background work keep going.
+//! File operations in the UI, laid out like Far's (docs/09-far-ui-reference.md):
+//! the copy/move (F5/F6), make-folder (F7) and delete (F8) dialogs, the
+//! "file already exists" warning, error messages and progress windows.
+//! Dialogs live in the overlay: modal for input, while the agent pane and
+//! background work keep going.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::buffer::Buffer;
@@ -14,26 +16,33 @@ use ratatui::layout::{Position, Rect};
 use tokio::sync::oneshot;
 
 use super::{App, AppMsg, Focus};
-use crate::dialog::{Dialog, Outcome};
+use crate::dialog::{
+    Button, Dialog, Outcome, check_at, combo_at, input_at, radio_at, text_at, visible, wrap,
+};
 use crate::journal::{Actor, Event};
 use crate::mcp::Reply;
 use crate::ops::{
-    self, ConflictAction, ConflictAnswer, CopyJob, ErrorAnswer, FileInfo, OpId, OpKind, OpMsg,
-    OpReport, Overwrite,
+    self, ConflictAction, ConflictAnswer, CopyJob, ErrorAnswer, ErrorContext, FileInfo, OpId,
+    OpKind, OpMsg, OpReport, Overwrite,
 };
 use crate::panel::group_thousands;
+use crate::tr;
 
 /// Longest path lists kept in journal entries.
 const LIST_LIMIT: usize = 20;
+/// Far's standard dialog width (copy, make folder, progress).
+const FAR_WIDTH: u16 = 76;
+/// Text width inside it.
+const FAR_TEXT: usize = 66;
 
-/// Choices of "existing files" in the copy dialog, in order.
+/// "Already existing files" in the copy dialog, in Far's order.
 const OVERWRITE_CHOICES: [(&str, Overwrite); 6] = [
-    ("Спрашивать", Overwrite::Ask),
-    ("Заменять", Overwrite::Replace),
-    ("Пропускать", Overwrite::Skip),
-    ("Заменять, если новее", Overwrite::ReplaceIfNewer),
-    ("Переименовывать", Overwrite::Rename),
-    ("Дописывать", Overwrite::Append),
+    ("MCopyAsk", Overwrite::Ask),
+    ("MCopyOverwrite", Overwrite::Replace),
+    ("MCopySkip", Overwrite::Skip),
+    ("MCopyRename", Overwrite::Rename),
+    ("MCopyAppend", Overwrite::Append),
+    ("MCopyOnlyNewerFiles", Overwrite::ReplaceIfNewer),
 ];
 
 pub(super) enum Overlay {
@@ -64,6 +73,11 @@ pub(super) enum Purpose {
         reply: mpsc::Sender<ErrorAnswer>,
     },
     Conflict {
+        target: PathBuf,
+        reply: mpsc::Sender<ConflictAnswer>,
+    },
+    /// "&Имя" without "remember": the new name for one file.
+    RenameTo {
         reply: mpsc::Sender<ConflictAnswer>,
     },
     Message,
@@ -71,12 +85,16 @@ pub(super) enum Purpose {
 
 pub(super) struct Progress {
     op: OpId,
-    title: String,
+    kind: OpKind,
+    started: Instant,
     done: usize,
     total: usize,
     bytes_done: u64,
     bytes_total: u64,
+    file_done: u64,
+    file_total: u64,
     current: String,
+    target: String,
 }
 
 pub(super) struct RunningOp {
@@ -90,15 +108,7 @@ pub(super) struct RunningOp {
     dest: Option<PathBuf>,
 }
 
-/// "1 объект", "3 объекта", "5 объектов".
-fn objects(n: usize) -> String {
-    let word = match (n % 10, n % 100) {
-        (1, r) if r != 11 => "объект",
-        (2..=4, r) if !(12..=14).contains(&r) => "объекта",
-        _ => "объектов",
-    };
-    format!("{n} {word}")
-}
+// ------------------------------------------------------------- helpers
 
 fn name_of(p: &Path) -> String {
     p.file_name()
@@ -110,26 +120,148 @@ fn limited(paths: &[PathBuf]) -> Vec<PathBuf> {
     paths.iter().take(LIST_LIMIT).cloned().collect()
 }
 
-fn describe_file(info: &FileInfo) -> String {
-    let time = info
-        .modified
-        .map(|t| {
-            let t: chrono::DateTime<chrono::Local> = t.into();
-            t.format("%d.%m.%Y %H:%M:%S").to_string()
-        })
-        .unwrap_or_default();
-    format!("{:>16} байт   {time}", group_thousands(info.size))
+fn chars(s: &str) -> usize {
+    s.chars().count()
 }
 
-/// A progress bar of `width` cells.
-fn bar(done: u64, total: u64, width: u16) -> String {
-    let width = u64::from(width);
-    let filled = (width * done).checked_div(total).unwrap_or(0).min(width) as usize;
+/// Far's QuoteOuterSpace: quotes only a name with spaces at its ends.
+fn quote_outer_space(s: &str) -> String {
+    if s.starts_with(' ') || s.ends_with(' ') {
+        format!("\"{s}\"")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Cut at the end with "…".
+fn truncate_right(s: &str, max: usize) -> String {
+    if chars(s) <= max {
+        return s.to_string();
+    }
+    let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
+    t.push('…');
+    t
+}
+
+/// Cut in the middle with "…".
+fn truncate_center(s: &str, max: usize) -> String {
+    let n = chars(s);
+    if n <= max || max < 3 {
+        return s.to_string();
+    }
+    let head = (max - 1) / 2;
+    let tail = max - 1 - head;
+    let mut t: String = s.chars().take(head).collect();
+    t.push('…');
+    t.extend(s.chars().skip(n - tail));
+    t
+}
+
+/// Far's truncate_path: keeps the root, "…" in the middle.
+fn truncate_path(p: &str, max: usize) -> String {
+    if chars(p) <= max {
+        return p.to_string();
+    }
+    let root_len = p.find(['\\', '/']).map_or(0, |i| i + 1);
+    let root: String = p.chars().take(root_len).collect();
+    let rest = max.saturating_sub(chars(&root) + 1);
+    let tail: String = p.chars().skip(chars(p) - rest).collect();
+    format!("{root}…{tail}")
+}
+
+fn hms(d: Duration) -> String {
+    let s = d.as_secs();
+    format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+}
+
+/// Far's float size: "512 Б", "1,23 К", "12,3 М", "123 Г".
+fn size_float(bytes: u64) -> String {
+    const UNITS: [&str; 7] = [
+        "MListBytes",
+        "MListKb",
+        "MListMb",
+        "MListGb",
+        "MListTb",
+        "MListPb",
+        "MListEb",
+    ];
+    if bytes < 1024 {
+        return format!("{bytes} {}", tr!(UNITS[0]));
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let decimals = if value < 10.0 {
+        2
+    } else if value < 100.0 {
+        1
+    } else {
+        0
+    };
+    let number = format!("{value:.decimals$}").replace('.', crate::i18n::decimal_separator());
+    format!("{number} {}", tr!(UNITS[unit]))
+}
+
+/// Far's progress bar: 61 cells and the percentage.
+fn bar(done: u64, total: u64) -> String {
+    const CELLS: u64 = 61;
+    let filled = (CELLS * done).checked_div(total).unwrap_or(0).min(CELLS) as usize;
+    let percent = (100 * done).checked_div(total).unwrap_or(0).min(100);
     format!(
-        "{}{}",
+        "{}{} {percent:>3}%",
         "█".repeat(filled),
-        "░".repeat(width as usize - filled)
+        "░".repeat(CELLS as usize - filled)
     )
+}
+
+/// "Файлов:        3 / 10": label and value across 61 cells.
+fn counter(label_id: &str, done: u64, total: u64) -> String {
+    let labels = [tr!("MCopyFilesTotalInfo"), tr!("MCopyBytesTotalInfo")];
+    let label_w = labels.iter().map(|l| chars(l)).max().unwrap_or(0) + 1;
+    let value = format!("{} / {}", group_thousands(done), group_thousands(total));
+    format!(
+        "{:<label_w$}{value:>value_w$}",
+        tr!(label_id),
+        value_w = 61usize.saturating_sub(label_w)
+    )
+}
+
+fn date_time(t: Option<SystemTime>) -> (String, String) {
+    t.map(|t| {
+        let t: chrono::DateTime<chrono::Local> = t.into();
+        (
+            t.format("%d.%m.%Y").to_string(),
+            t.format("%H:%M:%S").to_string(),
+        )
+    })
+    .unwrap_or_default()
+}
+
+/// A line of the "file exists" warning: label, size, date, time (66 wide).
+fn file_line(label_id: &str, info: &FileInfo) -> String {
+    let (date, time) = date_time(info.modified);
+    let label = tr!(label_id);
+    // Far pads the label including its `&` to 26.
+    format!(
+        "{label:<26} {:>20} {date} {time}",
+        group_thousands(info.size)
+    )
+}
+
+/// Far's Message() with a system error after a separator.
+fn error_message(title: &str, lines: Vec<String>, error: &str, buttons: &[&str]) -> Dialog {
+    let cols = crossterm::terminal::size().map_or(80, |(w, _)| w) as usize;
+    let widest = lines.iter().map(|l| chars(l)).max().unwrap_or(0).max(40);
+    let width = widest.min(cols.saturating_sub(11));
+    let mut all = lines;
+    if !error.is_empty() {
+        all.push("\x01".into());
+        all.extend(wrap(error, width));
+    }
+    Dialog::message(title, &all, buttons, true)
 }
 
 impl App {
@@ -137,23 +269,14 @@ impl App {
         !self.overlays.is_empty()
     }
 
+    /// Far's Message(): lines, a separator, OK.
     pub(super) fn message(&mut self, title: &str, lines: &[String], warning: bool) {
-        let width = lines
+        let lines: Vec<String> = lines
             .iter()
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(20)
-            .clamp(30, 70) as u16;
-        let mut d = Dialog::new(title, width);
-        if warning {
-            d = d.warning();
-        }
-        for l in lines {
-            for part in l.lines() {
-                d = d.wrapped(part);
-            }
-        }
-        let dialog = d.separator().buttons(&["OK"], 0);
+            .flat_map(|l| l.lines().map(str::to_string))
+            .collect();
+        let ok = tr!("MOk");
+        let dialog = Dialog::message(title, &lines, &[&ok], warning);
         self.overlays.push(Overlay::Dialog {
             dialog,
             purpose: Purpose::Message,
@@ -165,11 +288,10 @@ impl App {
     pub(super) fn overlay_key(&mut self, key: KeyEvent) {
         match self.overlays.last_mut() {
             Some(Overlay::Progress(p)) => {
-                if key.code == KeyCode::Esc {
-                    if let Some(op) = self.ops.get(&p.op) {
-                        op.cancel.store(true, Ordering::SeqCst);
-                    }
-                    p.title = format!("{} — отмена…", p.title.trim_end_matches(" — отмена…"));
+                if key.code == KeyCode::Esc
+                    && let Some(op) = self.ops.get(&p.op)
+                {
+                    op.cancel.store(true, Ordering::SeqCst);
                 }
             }
             Some(Overlay::Dialog { dialog, .. }) => {
@@ -197,15 +319,7 @@ impl App {
         match purpose {
             Purpose::MkDir { side } => {
                 if button == Some(0) {
-                    let text = dialog.input_value(0).to_string();
-                    let names: Vec<String> = if dialog.checked(0) {
-                        text.split(';').map(str::to_string).collect()
-                    } else {
-                        vec![text]
-                    };
-                    if let Err(e) = self.mkdir(side, Actor::User, &names) {
-                        self.message("Ошибка", &[e], true);
-                    }
+                    self.mkdir_from_dialog(side, &dialog);
                 }
             }
             Purpose::Delete {
@@ -234,11 +348,13 @@ impl App {
                     return;
                 }
                 let dest = dialog.input_value(0).trim().trim_matches('"').to_string();
-                let overwrite = OVERWRITE_CHOICES[dialog.radio(0)].1;
+                let overwrite = OVERWRITE_CHOICES
+                    .get(dialog.combo(0))
+                    .map_or(Overwrite::Ask, |(_, o)| *o);
                 if let Err(e) =
                     self.start_copy(sources, &dest, moving, overwrite, side, actor, reply)
                 {
-                    self.message("Ошибка", &[e], true);
+                    self.message(&tr!("MError"), &[e], true);
                 }
             }
             Purpose::OpError { reply } => {
@@ -250,18 +366,30 @@ impl App {
                 };
                 let _ = reply.send(answer);
             }
-            Purpose::Conflict { reply } => {
+            Purpose::Conflict { target, reply } => {
+                let all = dialog.checked(0);
                 let action = match button {
                     Some(0) => ConflictAction::Replace,
                     Some(1) => ConflictAction::Skip,
+                    Some(2) if !all => {
+                        // Far asks for the new name of this one file.
+                        self.rename_dialog(&target, reply);
+                        return;
+                    }
                     Some(2) => ConflictAction::Rename,
                     Some(3) => ConflictAction::Append,
                     _ => ConflictAction::Cancel,
                 };
-                let _ = reply.send(ConflictAnswer {
-                    action,
-                    all: dialog.checked(0),
-                });
+                let _ = reply.send(ConflictAnswer { action, all });
+            }
+            Purpose::RenameTo { reply } => {
+                let name = dialog.input_value(0);
+                let action = if button == Some(0) && !name.trim().is_empty() {
+                    ConflictAction::RenameTo(name.trim().to_string())
+                } else {
+                    ConflictAction::Skip
+                };
+                let _ = reply.send(ConflictAnswer { action, all: false });
             }
             Purpose::Message => {}
         }
@@ -273,23 +401,7 @@ impl App {
             cursor = match overlay {
                 Overlay::Dialog { dialog, .. } => dialog.draw(area, buf),
                 Overlay::Progress(p) => {
-                    let width = 50u16;
-                    let mut d = Dialog::new(&p.title, width).text(p.current.clone());
-                    if p.bytes_total > 0 {
-                        d = d
-                            .text(bar(p.bytes_done, p.bytes_total, width))
-                            .center(format!(
-                                "{} из {} байт",
-                                group_thousands(p.bytes_done),
-                                group_thousands(p.bytes_total)
-                            ))
-                            .center(format!("объектов: {} из {}", p.done, p.total));
-                    } else {
-                        d = d
-                            .text(bar(p.done as u64, p.total as u64, width))
-                            .center(format!("{} из {}", p.done, p.total));
-                    }
-                    d.separator().center("Esc — отменить").draw(area, buf);
+                    progress_dialog(p).draw(area, buf);
                     None
                 }
             };
@@ -299,17 +411,77 @@ impl App {
 
     // ------------------------------------------------------------- mkdir
 
+    /// F7, as Far's make-folder dialog (mkdir.cpp).
     pub(super) fn mkdir_dialog(&mut self) {
-        let dialog = Dialog::new("Создание папки", 60)
-            .text("Создать папку:")
-            .input("")
-            .check("Обработать несколько имён (через ;)", false)
+        let link_types = vec![
+            Some(tr!("MMakeFolderLinkNone")),
+            Some(tr!("MMakeFolderLinkJunction")),
+            Some(tr!("MMakeFolderLinkSymlink")),
+        ];
+        let dialog = Dialog::far(tr!("MMakeFolderTitle"), FAR_WIDTH)
+            .text(tr!("MCreateFolder"))
+            .row(vec![input_at(5, 66, "", true)])
             .separator()
-            .buttons(&["OK", "Отмена"], 0);
+            .row(vec![
+                text_at(5, tr!("MMakeFolderLinkType")),
+                combo_at(20, 51, link_types, 0),
+            ])
+            .row(vec![
+                text_at(5, tr!("MMakeFolderLinkTarget")),
+                input_at(20, 51, "", true),
+            ])
+            .row(vec![check_at(5, tr!("MMultiMakeDir"), false)])
+            .separator()
+            .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
         self.overlays.push(Overlay::Dialog {
             dialog,
             purpose: Purpose::MkDir { side: self.active },
         });
+    }
+
+    fn mkdir_from_dialog(&mut self, side: usize, dialog: &Dialog) {
+        let text = dialog.input_value(0);
+        let names: Vec<String> = if dialog.checked(0) {
+            text.split([';', ',']).map(str::to_string).collect()
+        } else {
+            vec![text]
+        };
+        let link = match dialog.combo(0) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        };
+        let result = match link {
+            None => self.mkdir(side, Actor::User, &names).map(|_| ()),
+            Some(junction) => {
+                let target = PathBuf::from(dialog.input_value(1).trim().trim_matches('"'));
+                self.make_links(side, &names, &target, junction)
+            }
+        };
+        if let Err(lines) = result {
+            self.message(&tr!("MError"), &[lines], true);
+        }
+    }
+
+    /// Junctions or symbolic links named `names` pointing to `target`.
+    fn make_links(
+        &mut self,
+        side: usize,
+        names: &[String],
+        target: &Path,
+        junction: bool,
+    ) -> Result<(), String> {
+        let base = self.panels[side].path.clone();
+        let target = base.join(target);
+        for name in names.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+            let link = base.join(name);
+            ops::make_link(&link, &target, junction)
+                .map_err(|e| format!("{}\n{}\n{e}", tr!("MCannotCreateFolder"), link.display()))?;
+        }
+        for p in &mut self.panels {
+            p.reload(None);
+        }
+        Ok(())
     }
 
     /// Creates directories in a panel; puts the cursor on the first new one.
@@ -322,7 +494,7 @@ impl App {
         let base = self.panels[side].path.clone();
         let (created, report) = ops::make_dirs(&base, names);
         if created.is_empty() && report.failed.is_empty() {
-            return Err("не задано имя папки".into());
+            return Err(tr!("MIncorrectDirList"));
         }
         let id = self.next_op_id();
         self.journal.push(
@@ -348,7 +520,11 @@ impl App {
             self.panels[side].set_cursor_by_name(&name);
         }
         match report.failed.first() {
-            Some((path, e)) => Err(format!("{}: {e}", path.display())),
+            Some((path, e)) => Err(format!(
+                "{}\n{}\n{e}",
+                tr!("MCannotCreateFolder"),
+                path.display()
+            )),
             None => Ok(created),
         }
     }
@@ -370,6 +546,7 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// F8 / Shift+Del, as Far's delete confirmation (delete.cpp).
     pub(super) fn delete_dialog(
         &mut self,
         targets: Vec<PathBuf>,
@@ -380,24 +557,67 @@ impl App {
         if targets.is_empty() {
             return;
         }
-        let what = if targets.len() == 1 {
-            name_of(&targets[0])
-        } else {
-            objects(targets.len())
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 25));
+        let what = match targets.as_slice() {
+            [one] if one.is_dir() => tr!("MAskDeleteFolder"),
+            [_] => tr!("MAskDeleteFile"),
+            _ => tr!("MAskDeleteObjects"),
         };
-        let question = if permanent {
-            "Вы хотите безвозвратно удалить"
+        let (question, button) = if permanent {
+            (tr!("MAskDelete", p0 = what), tr!("MDelete"))
         } else {
-            "Вы хотите удалить в Корзину"
+            (tr!("MAskDeleteRecycle", p0 = what), tr!("MDeleteRecycle"))
         };
-        let mut d = Dialog::new("Удаление", 50)
-            .warning()
-            .center(question)
-            .center(what);
-        if actor == Actor::Agent {
-            d = d.center("— запрошено агентом —");
+        let cancel = tr!("MCancel");
+        let max_line = usize::from(cols.saturating_sub(12));
+        let mut lines: Vec<(String, bool)> = Vec::new(); // text, is a name
+        if let [one] = targets.as_slice() {
+            lines.push((question, false));
+            lines.push((
+                truncate_center(&quote_outer_space(&name_of(one)), max_line),
+                false,
+            ));
+        } else {
+            lines.push((question, false));
+            let show = 10.min(targets.len()).min(usize::from(rows / 2));
+            let show = if targets.len() - show == 1 {
+                show + 1
+            } else {
+                show
+            };
+            for t in &targets[..show] {
+                lines.push((truncate_center(&name_of(t), max_line), true));
+            }
+            if targets.len() > show {
+                lines.push((tr!("MAskDeleteAndMore", p0 = targets.len() - show), false));
+            }
         }
-        let dialog = d.separator().buttons(&["Удалить", "Отмена"], 0);
+        let content = lines
+            .iter()
+            .map(|(l, _)| chars(l))
+            .chain([chars(&button) + chars(&cancel) + 6])
+            .max()
+            .unwrap_or(0)
+            .min(max_line) as u16;
+        let mut d = Dialog::new(tr!("MDeleteTitle"), content);
+        if permanent {
+            d = d.warning();
+        }
+        let single = targets.len() == 1;
+        for (i, (line, is_name)) in lines.into_iter().enumerate() {
+            let elem = text_at(5, line).literal();
+            let elem = if single { elem.centered() } else { elem };
+            d = d.row(vec![if is_name { elem.highlighted() } else { elem }]);
+            if i == 0 && !single {
+                d = d.separator();
+            }
+        }
+        if actor == Actor::Agent {
+            d = d.row(vec![
+                text_at(5, tr!("requested-by-agent")).literal().centered(),
+            ]);
+        }
+        let dialog = d.separator().buttons(&[&button, &cancel], 0);
         self.overlays.push(Overlay::Dialog {
             dialog,
             purpose: Purpose::Delete {
@@ -437,12 +657,7 @@ impl App {
         let started = ops::spawn_delete(id, targets, permanent, cancel.clone(), move |m| {
             let _ = tx.send(AppMsg::Op(m));
         });
-        let title = if permanent {
-            "Удаление"
-        } else {
-            "Удаление в Корзину"
-        };
-        self.track_op(id, kind, actor, reply, cancel, None, None, title, started);
+        self.track_op(id, kind, actor, reply, cancel, None, None, started);
     }
 
     // -------------------------------------------------------- copy / move
@@ -458,8 +673,7 @@ impl App {
         let dest = if current_only {
             name_of(&sources[0])
         } else {
-            let other = &self.panels[1 - self.active].path;
-            let mut s = other.display().to_string();
+            let mut s = self.panels[1 - self.active].path.display().to_string();
             if !s.ends_with(std::path::MAIN_SEPARATOR) {
                 s.push(std::path::MAIN_SEPARATOR);
             }
@@ -468,6 +682,7 @@ impl App {
         self.open_copy_dialog(sources, dest, moving, self.active, Actor::User, None);
     }
 
+    /// Far's copy / move dialog (copy.cpp:648-977), 76×17.
     fn open_copy_dialog(
         &mut self,
         sources: Vec<PathBuf>,
@@ -477,31 +692,83 @@ impl App {
         actor: Actor,
         reply: Option<oneshot::Sender<Reply>>,
     ) {
-        let what = if sources.len() == 1 {
-            format!("«{}»", name_of(&sources[0]))
+        let to = tr!("MCMLTargetTO");
+        let prompt = if let [one] = sources.as_slice() {
+            let id = if moving { "MMoveFile" } else { "MCopyFile" };
+            let empty = visible(&tr!(id, p0 = "", p1 = to.clone()));
+            let room = 67usize.saturating_sub(chars(&empty));
+            let name = truncate_right(&name_of(one), room).replace('&', "&&");
+            tr!(id, p0 = name, p1 = to)
         } else {
-            objects(sources.len())
+            let n = sources.len();
+            let id = if moving { "MMoveFiles" } else { "MCopyFiles" };
+            tr!(id, p0 = n, p1 = crate::i18n::far_items_suffix(n), p2 = to)
         };
-        let (title, prompt, button) = if moving {
-            (
-                "Переименование/перенос",
-                format!("Переименовать или перенести {what} в:"),
-                "Перенести",
-            )
-        } else {
-            ("Копирование", format!("Копировать {what} в:"), "Копировать")
-        };
-        let labels: Vec<&str> = OVERWRITE_CHOICES.iter().map(|(l, _)| *l).collect();
-        let mut d = Dialog::new(title, 64)
-            .wrapped(&prompt)
-            .input(dest)
-            .separator()
-            .text("Уже существующие файлы:")
-            .radios(&labels, 0);
-        if actor == Actor::Agent {
-            d = d.center("— запрошено агентом —");
+        let rights = tr!("MCopySecurity");
+        let rights_options = [
+            tr!("MCopySecurityDefault"),
+            tr!("MCopySecurityCopy"),
+            tr!("MCopySecurityInherit"),
+        ];
+        let mut d = Dialog::far(
+            tr!(if moving {
+                "MMoveDlgTitle"
+            } else {
+                "MCopyDlgTitle"
+            }),
+            FAR_WIDTH,
+        );
+        let group = d.new_group();
+        let mut security = vec![text_at(5, rights.clone())];
+        let mut x = 5 + chars(&visible(&rights)) as u16 + 1;
+        for (i, label) in rights_options.iter().enumerate() {
+            // Only the default is implemented: access rights are not copied.
+            let radio = radio_at(x, label.clone(), i == 0, group);
+            security.push(if i == 0 { radio } else { radio.disabled() });
+            x += chars(&visible(label)) as u16 + 5;
         }
-        let dialog = d.separator().buttons(&[button, "Отмена"], 0);
+        let existing: Vec<Option<String>> = OVERWRITE_CHOICES
+            .iter()
+            .map(|(id, _)| Some(tr!(*id)))
+            .collect();
+        d = d
+            .row(vec![text_at(5, prompt)])
+            .row(vec![input_at(5, 66, dest, true)])
+            .separator()
+            .row(security)
+            .separator()
+            .row(vec![
+                text_at(5, tr!("MCopyIfFileExist")),
+                combo_at(29, 42, existing, 0),
+            ])
+            .row(vec![
+                check_at(5, tr!("MCopyPreserveAllTimestamps"), false).disabled(),
+            ])
+            .row(vec![
+                check_at(5, tr!("MCopySymLinkContents"), false).disabled(),
+            ])
+            .row(vec![
+                check_at(5, tr!("MCopyMultiActions"), false).disabled(),
+            ])
+            .separator()
+            .row(vec![check_at(5, tr!("MCopyUseFilter"), false).disabled()]);
+        if actor == Actor::Agent {
+            d = d.row(vec![
+                text_at(5, tr!("requested-by-agent")).literal().centered(),
+            ]);
+        }
+        let dialog = d.separator().button_row(vec![
+            Button::new(tr!(if moving {
+                "MCopyDlgRename"
+            } else {
+                "MCopyDlgCopy"
+            }))
+            .default(),
+            // No folder tree yet: Far hides the button when the tree is off.
+            Button::new(tr!("MCopyDlgTree")).hidden(),
+            Button::new(tr!("MCopySetFilter")).disabled(),
+            Button::new(tr!("MCopyDlgCancel")),
+        ]);
         self.overlays.push(Overlay::Dialog {
             dialog,
             purpose: Purpose::Copy {
@@ -532,7 +799,7 @@ impl App {
             Err(e)
         };
         if dest.is_empty() {
-            return fail(reply, "не задано, куда".into());
+            return fail(reply, tr!("copy-nothing"));
         }
         let dest = self.panels[side].path.join(dest);
         let job = CopyJob {
@@ -572,22 +839,7 @@ impl App {
         let started = ops::spawn_copy(id, pairs, moving, overwrite, cancel.clone(), move |m| {
             let _ = tx.send(AppMsg::Op(m));
         });
-        let title = if moving {
-            "Перенос"
-        } else {
-            "Копирование"
-        };
-        self.track_op(
-            id,
-            kind,
-            actor,
-            reply,
-            cancel,
-            focus,
-            Some(dest),
-            title,
-            started,
-        );
+        self.track_op(id, kind, actor, reply, cancel, focus, Some(dest), started);
         Ok(())
     }
 
@@ -602,7 +854,6 @@ impl App {
         cancel: Arc<AtomicBool>,
         focus: Option<(usize, String)>,
         dest: Option<PathBuf>,
-        title: &str,
         started: std::io::Result<()>,
     ) {
         match started {
@@ -620,12 +871,16 @@ impl App {
                 );
                 self.overlays.push(Overlay::Progress(Progress {
                     op: id,
-                    title: title.into(),
+                    kind,
+                    started: Instant::now(),
                     done: 0,
                     total: 0,
                     bytes_done: 0,
                     bytes_total: 0,
+                    file_done: 0,
+                    file_total: 0,
                     current: String::new(),
+                    target: String::new(),
                 }));
             }
             Err(e) => {
@@ -651,7 +906,10 @@ impl App {
                 total,
                 bytes_done,
                 bytes_total,
+                file_done,
+                file_total,
                 current,
+                target,
             } => {
                 for o in &mut self.overlays {
                     if let Overlay::Progress(p) = o
@@ -661,20 +919,64 @@ impl App {
                         p.total = total;
                         p.bytes_done = bytes_done;
                         p.bytes_total = bytes_total;
+                        p.file_done = file_done;
+                        p.file_total = file_total;
                         p.current = current.display().to_string();
+                        p.target = target
+                            .as_ref()
+                            .map(|t| t.display().to_string())
+                            .unwrap_or_default();
                     }
                 }
             }
             OpMsg::Error {
-                path, error, reply, ..
+                path,
+                error,
+                context,
+                reply,
+                ..
             } => {
-                let dialog = Dialog::new("Ошибка", 60)
-                    .warning()
-                    .text("Не удалось обработать")
-                    .text(path.display().to_string())
-                    .wrapped(&error)
-                    .separator()
-                    .buttons(&["Повторить", "Пропустить", "Пропустить все", "Отмена"], 0);
+                let copy_like = match &context {
+                    ErrorContext::Copy { dest } => Some(("MCannotCopy", dest.clone())),
+                    ErrorContext::Move { dest } => Some(("MCannotMove", dest.clone())),
+                    ErrorContext::Delete => None,
+                };
+                let dialog = match copy_like {
+                    Some((what, dest)) => error_message(
+                        &tr!("MError"),
+                        vec![
+                            tr!(what),
+                            format!("\"{}\"", path.display()),
+                            tr!("MCannotCopyTo"),
+                            format!("\"{}\"", dest.display()),
+                        ],
+                        &error,
+                        &[
+                            &tr!("MCopyRetry"),
+                            &tr!("MCopySkip"),
+                            &tr!("MCopySkipAll"),
+                            &tr!("MCopyCancel"),
+                        ],
+                    ),
+                    None => error_message(
+                        &tr!("MError"),
+                        vec![
+                            tr!(if path.is_dir() {
+                                "MCannotDeleteFolder"
+                            } else {
+                                "MCannotDeleteFile"
+                            }),
+                            quote_outer_space(&path.display().to_string()),
+                        ],
+                        &error,
+                        &[
+                            &tr!("MDeleteRetry"),
+                            &tr!("MDeleteSkip"),
+                            &tr!("MDeleteFileSkipAll"),
+                            &tr!("MCancel"),
+                        ],
+                    ),
+                };
                 self.ask(dialog, Purpose::OpError { reply });
             }
             OpMsg::Conflict {
@@ -684,26 +986,35 @@ impl App {
                 reply,
                 ..
             } => {
-                let dialog = Dialog::new("Предупреждение", 64)
+                let dialog = Dialog::far(tr!("MWarning"), FAR_WIDTH)
                     .warning()
-                    .center("Файл уже существует")
-                    .text(target.display().to_string())
+                    .center(tr!("MCopyFileExist"))
+                    .row(vec![
+                        input_at(
+                            5,
+                            66,
+                            quote_outer_space(&target.display().to_string()),
+                            false,
+                        )
+                        .readonly(),
+                    ])
                     .separator()
-                    .text(format!("Новый:        {}", describe_file(&new)))
-                    .text(format!("Существующий: {}", describe_file(&existing)))
+                    .row(vec![text_at(5, file_line("MCopySource", &new))])
+                    .row(vec![text_at(5, file_line("MCopyDest", &existing))])
                     .separator()
-                    .check("Применить ко всем", false)
+                    .row(vec![check_at(5, tr!("MCopyRememberChoice"), false)])
+                    .separator()
                     .buttons(
                         &[
-                            "Заменить",
-                            "Пропустить",
-                            "Переименовать",
-                            "Дописать",
-                            "Отмена",
+                            &tr!("MCopyOverwrite"),
+                            &tr!("MCopySkip"),
+                            &tr!("MCopyRename"),
+                            &tr!("MCopyAppend"),
+                            &tr!("MCopyCancel"),
                         ],
                         0,
                     );
-                self.ask(dialog, Purpose::Conflict { reply });
+                self.ask(dialog, Purpose::Conflict { target, reply });
             }
             OpMsg::Finished { id, report } => {
                 self.overlays
@@ -725,12 +1036,26 @@ impl App {
         }
     }
 
+    /// "&Имя" without "remember": Far asks for the new name.
+    fn rename_dialog(&mut self, target: &Path, reply: mpsc::Sender<ConflictAnswer>) {
+        let suggestion = ops::unique_name(target);
+        let dialog = Dialog::far(tr!("MCopyRenameTitle"), FAR_WIDTH)
+            .text(tr!("MCopyRenameText"))
+            .row(vec![input_at(5, 66, name_of(&suggestion), false)])
+            .separator()
+            .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::RenameTo { reply },
+        });
+    }
+
     /// Shows a question from a running operation.
     fn ask(&mut self, dialog: Dialog, purpose: Purpose) {
         self.overlays.push(Overlay::Dialog { dialog, purpose });
         // The question needs the user even if they were talking to the agent.
         if self.focus == Focus::Agent {
-            self.say("Файловая операция ждёт ответа — Ctrl+Space");
+            self.say(tr!("op-waits-answer"));
         }
     }
 
@@ -779,11 +1104,11 @@ impl App {
 
     /// Shows the agent's request: panels visible, items selected, the
     /// keyboard on the dialog.
-    fn present_agent_request(&mut self, side: usize, names: &[String], what: &str) {
+    fn present_agent_request(&mut self, side: usize, names: &[String], what: String) {
         self.set_panels_visible(true);
         self.panels[side].select_names(names, false);
         self.focus = Focus::Panels;
-        self.say(format!("Агент просит {what}"));
+        self.say(tr!("agent-asks", what = what));
     }
 
     /// `afar_delete`: asks the user in a dialog; the reply is sent when the
@@ -797,11 +1122,8 @@ impl App {
     ) {
         match self.agent_sources(side, names) {
             Ok(targets) => {
-                self.present_agent_request(
-                    side,
-                    names,
-                    &format!("удалить {}", objects(targets.len())),
-                );
+                let what = tr!("objects", count = targets.len());
+                self.present_agent_request(side, names, format!("{}: {what}", tr!("MDeleteTitle")));
                 self.delete_dialog(targets, permanent, Actor::Agent, Some(reply));
             }
             Err(e) => {
@@ -822,21 +1144,110 @@ impl App {
     ) {
         match self.agent_sources(side, names) {
             Ok(sources) => {
-                let what = if moving {
-                    "перенести"
+                let title = tr!(if moving {
+                    "MMoveDlgTitle"
                 } else {
-                    "скопировать"
-                };
-                self.present_agent_request(
-                    side,
-                    names,
-                    &format!("{what} {}", objects(sources.len())),
-                );
+                    "MCopyDlgTitle"
+                });
+                let what = tr!("objects", count = sources.len());
+                self.present_agent_request(side, names, format!("{title}: {what}"));
                 self.open_copy_dialog(sources, dest, moving, side, Actor::Agent, Some(reply));
             }
             Err(e) => {
                 let _ = reply.send(Err(e));
             }
+        }
+    }
+}
+
+/// Far's progress windows (copy_progress.cpp, delete.cpp).
+fn progress_dialog(p: &Progress) -> Dialog {
+    match p.kind {
+        OpKind::Copy | OpKind::Move => {
+            let moving = p.kind == OpKind::Move;
+            let elapsed = p.started.elapsed();
+            let remaining = if p.bytes_done > 0 && p.bytes_total > p.bytes_done {
+                elapsed.mul_f64((p.bytes_total - p.bytes_done) as f64 / p.bytes_done as f64)
+            } else {
+                Duration::ZERO
+            };
+            let speed = match elapsed.as_secs() {
+                0 => String::new(),
+                secs => {
+                    let bps = p.bytes_done / secs;
+                    let size = size_float(bps);
+                    // "12,3 М" + "Б/с": Far glues the unit and "B/s".
+                    let size = if bps < 1024 { format!("{bps} ") } else { size };
+                    format!("{size}{}", tr!("MCopyTimeInfoSpeed"))
+                }
+            };
+            let time = format!("{} {}", tr!("MCopyTimeInfoElapsed"), hms(elapsed));
+            let left = format!("{} {}", tr!("MCopyTimeInfoRemaining"), hms(remaining));
+            let used = chars(&time) + chars(&left) + chars(&speed);
+            let gap = FAR_TEXT.saturating_sub(used) / 2;
+            let time_line = format!("{time}{:gap$}{left}{:gap$}{speed}", "", "");
+            Dialog::far(
+                tr!(if moving {
+                    "MMoveDlgTitle"
+                } else {
+                    "MCopyDlgTitle"
+                }),
+                FAR_WIDTH,
+            )
+            .row(vec![
+                text_at(
+                    5,
+                    tr!(if moving {
+                        "MCopyMoving"
+                    } else {
+                        "MCopyCopying"
+                    }),
+                )
+                .literal(),
+            ])
+            .row(vec![
+                text_at(5, truncate_path(&p.current, FAR_TEXT)).literal(),
+            ])
+            .row(vec![text_at(5, tr!("MCopyTo")).literal()])
+            .row(vec![
+                text_at(5, truncate_path(&p.target, FAR_TEXT)).literal(),
+            ])
+            .row(vec![text_at(5, bar(p.file_done, p.file_total)).literal()])
+            .caption(tr!("MCopyDlgTotal"))
+            .row(vec![
+                text_at(
+                    5,
+                    counter("MCopyFilesTotalInfo", p.done as u64, p.total as u64),
+                )
+                .literal(),
+            ])
+            .row(vec![
+                text_at(
+                    5,
+                    counter("MCopyBytesTotalInfo", p.bytes_done, p.bytes_total),
+                )
+                .literal(),
+            ])
+            .row(vec![text_at(5, bar(p.bytes_done, p.bytes_total)).literal()])
+            .separator()
+            .row(vec![
+                text_at(5, truncate_right(&time_line, FAR_TEXT)).literal(),
+            ])
+        }
+        _ => {
+            let label = tr!("MCopyFilesTotalInfo");
+            let count = group_thousands(p.done as u64);
+            let line = format!(
+                "{label} {count:>w$}",
+                w = 61usize.saturating_sub(chars(&label) + 1)
+            );
+            Dialog::far(tr!("MDeleteTitle"), FAR_WIDTH)
+                .row(vec![text_at(5, tr!("MDeleting")).literal()])
+                .row(vec![
+                    text_at(5, truncate_path(&p.current, FAR_TEXT)).literal(),
+                ])
+                .separator()
+                .row(vec![text_at(5, line).literal()])
         }
     }
 }
@@ -863,21 +1274,17 @@ fn describe_report(kind: OpKind, dest: Option<&Path>, report: &OpReport) -> Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{bar, objects};
+    use super::*;
 
     #[test]
-    fn plural_forms() {
-        assert_eq!(objects(1), "1 объект");
-        assert_eq!(objects(3), "3 объекта");
-        assert_eq!(objects(5), "5 объектов");
-        assert_eq!(objects(11), "11 объектов");
-        assert_eq!(objects(22), "22 объекта");
-        assert_eq!(objects(112), "112 объектов");
-    }
-
-    #[test]
-    fn progress_bar() {
-        assert_eq!(bar(1, 2, 4), "██░░");
-        assert_eq!(bar(0, 0, 3), "░░░");
+    fn far_text_helpers() {
+        assert_eq!(truncate_right("abcdef", 4), "abc…");
+        assert_eq!(truncate_center("abcdefgh", 5), "ab…gh");
+        assert_eq!(truncate_path(r"C:\a\b\c\d\e", 8), r"C:\…\d\e");
+        assert_eq!(quote_outer_space(" x"), "\" x\"");
+        assert_eq!(quote_outer_space("x y"), "x y");
+        assert_eq!(hms(Duration::from_secs(3725)), "01:02:05");
+        assert_eq!(chars(&bar(1, 2)), 66);
+        assert!(bar(1, 2).ends_with(" 50%"));
     }
 }

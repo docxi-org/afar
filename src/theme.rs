@@ -56,6 +56,18 @@ pub const DIALOG_BUTTON_SELECTED: Style = c(con::BLACK, con::CYAN);
 pub const WARN_TEXT: Style = c(con::WHITE, con::RED);
 pub const WARN_BOX: Style = c(con::WHITE, con::RED);
 pub const WARN_BUTTON_SELECTED: Style = c(con::BLACK, con::LIGHTGRAY);
+pub const DIALOG_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
+pub const DIALOG_BUTTON_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::CYAN);
+pub const DIALOG_DISABLED: Style = c(con::DARKGRAY, con::LIGHTGRAY);
+pub const DIALOG_EDIT_SELECTED: Style = c(con::WHITE, con::BLACK);
+pub const DIALOG_LIST_TEXT: Style = c(con::BLACK, con::LIGHTGRAY);
+pub const DIALOG_LIST_SELECTED: Style = c(con::WHITE, con::BLACK);
+pub const DIALOG_LIST_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
+pub const DIALOG_LIST_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
+pub const DIALOG_LIST_DISABLED: Style = c(con::DARKGRAY, con::LIGHTGRAY);
+pub const WARN_HIGHLIGHT: Style = c(con::YELLOW, con::RED);
+pub const WARN_BUTTON_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
+pub const WARN_DISABLED: Style = c(con::DARKGRAY, con::RED);
 /// Far dims what is under a shadow to dark gray on black.
 pub const SHADOW: Style = c(con::DARKGRAY, con::BLACK);
 

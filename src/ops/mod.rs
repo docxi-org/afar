@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 
-pub use copy::{CopyJob, plan_targets, spawn_copy};
+pub use copy::{CopyJob, plan_targets, spawn_copy, unique_name};
 pub use delete::spawn_delete;
 
 pub type OpId = u64;
@@ -67,17 +67,20 @@ pub enum Overwrite {
     Append,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConflictAction {
     Replace,
     Skip,
+    /// Under a new name chosen automatically: `name (2).ext`.
     Rename,
+    /// Under the name the user typed.
+    RenameTo(String),
     Append,
     Cancel,
 }
 
 /// Answer to a conflict; `all` applies it to the following conflicts too.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConflictAnswer {
     pub action: ConflictAction,
     pub all: bool,
@@ -100,6 +103,19 @@ impl FileInfo {
     }
 }
 
+/// What an operation was doing when an error happened (for Far's wording).
+#[derive(Clone, Debug, Default)]
+pub enum ErrorContext {
+    #[default]
+    Delete,
+    Copy {
+        dest: PathBuf,
+    },
+    Move {
+        dest: PathBuf,
+    },
+}
+
 pub enum OpMsg {
     Progress {
         id: OpId,
@@ -108,13 +124,19 @@ pub enum OpMsg {
         /// Bytes copied; zero for operations without data transfer.
         bytes_done: u64,
         bytes_total: u64,
+        /// The file being copied: bytes done of its size.
+        file_done: u64,
+        file_total: u64,
         current: PathBuf,
+        /// Where `current` goes (copy and move).
+        target: Option<PathBuf>,
     },
     /// The operation waits for `reply`.
     Error {
         id: OpId,
         path: PathBuf,
         error: String,
+        context: ErrorContext,
         reply: Sender<ErrorAnswer>,
     },
     /// The destination file exists; the operation waits for `reply`.
@@ -165,6 +187,36 @@ pub fn make_dirs(base: &Path, names: &[String]) -> (Vec<PathBuf>, OpReport) {
     (created, report)
 }
 
+/// Creates a junction (`junction`) or a directory symbolic link `link`
+/// pointing to `target` (Far's make-folder dialog, "link type").
+pub fn make_link(link: &Path, target: &Path, junction: bool) -> Result<(), String> {
+    if !target.is_dir() {
+        return Err(format!("{}: not a folder", target.display()));
+    }
+    #[cfg(windows)]
+    {
+        if junction {
+            let out = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .map_err(|e| e.to_string())?;
+            return if out.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+            };
+        }
+        std::os::windows::fs::symlink_dir(target, link).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = junction;
+        std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Flow {
     Continue,
@@ -189,6 +241,10 @@ struct Worker<'a, F: Fn(OpMsg)> {
     total: usize,
     bytes_total: u64,
     bytes_done: u64,
+    file_done: u64,
+    file_total: u64,
+    target: Option<PathBuf>,
+    context: ErrorContext,
     report: OpReport,
     last_progress: Option<Instant>,
 }
@@ -203,6 +259,10 @@ impl<'a, F: Fn(OpMsg)> Worker<'a, F> {
             total: 0,
             bytes_total: 0,
             bytes_done: 0,
+            file_done: 0,
+            file_total: 0,
+            target: None,
+            context: ErrorContext::Delete,
             report: OpReport::default(),
             last_progress: None,
         }
@@ -230,7 +290,10 @@ impl<'a, F: Fn(OpMsg)> Worker<'a, F> {
             total: self.total,
             bytes_done: self.bytes_done,
             bytes_total: self.bytes_total,
+            file_done: self.file_done,
+            file_total: self.file_total,
             current: current.to_path_buf(),
+            target: self.target.clone(),
         });
     }
 
@@ -245,6 +308,7 @@ impl<'a, F: Fn(OpMsg)> Worker<'a, F> {
                 id: self.id,
                 path: path.to_path_buf(),
                 error: error.clone(),
+                context: self.context.clone(),
                 reply,
             });
             rx.recv().unwrap_or(ErrorAnswer::Cancel)
@@ -338,7 +402,7 @@ pub(crate) mod test_util {
                 }
                 OpMsg::Conflict { reply, .. } => {
                     conflicts += 1;
-                    reply.send(conflict).unwrap();
+                    reply.send(conflict.clone()).unwrap();
                 }
                 OpMsg::Progress { .. } => {}
             }

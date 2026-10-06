@@ -37,7 +37,7 @@ fn tilde_key(out: &mut Vec<u8>, m: KeyModifiers, n: u8) {
 }
 
 /// Latin key at the same position as a Russian/Ukrainian letter (ЙЦУКЕН).
-fn latin_equivalent(c: char) -> Option<char> {
+pub fn latin_equivalent(c: char) -> Option<char> {
     const RU: &str = "йцукенгшщзхъфывапролджэячсмитьбюёіїєґ";
     const EN: &str = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`s]'\\";
     let lower = c.to_lowercase().next()?;

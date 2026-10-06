@@ -1,564 +1,227 @@
-//! Far-style dialogs: a modal box with text, input fields, check boxes and
-//! buttons, drawn over the window layout (the window manager's overlay).
+//! Far-style dialogs (far/dialog.cpp, far/message.cpp): a modal box over
+//! the window layout. Geometry follows Far: the dialog is W×H, the double
+//! box is at (3,1)–(W−4,H−2), row `i` is at y = 2 + i, items sit at x
+//! positions relative to the dialog (5 is the usual left edge), buttons are
+//! centred as a group. Labels carry Far's `&` hotkeys: the letter is
+//! highlighted and Alt+letter (in any keyboard layout) activates the item.
+//! See docs/09-far-ui-reference.md.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 
-use crate::panel::{draw_frame, put, put_title};
+use crate::panel::draw_frame;
 use crate::theme;
 
-pub enum Item {
-    Text(String),
-    /// Text centered in the dialog.
-    Center(String),
+/// Position of an item: from the dialog's left edge, or centred.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum X {
+    At(u16),
+    Center,
+}
+
+pub enum Kind {
+    Text {
+        text: String,
+        /// Show `&` literally instead of as a hotkey marker.
+        show_amp: bool,
+        /// Drawn in the hotkey colour (e.g. names in a delete prompt).
+        highlight: bool,
+    },
     Input {
         value: String,
         cursor: usize,
-        /// Not edited yet: like in Far, the text is shown dimmed and the
-        /// first typed character replaces it.
+        /// Not edited yet: dimmed, replaced by the first typed character.
         unchanged: bool,
+        width: u16,
+        /// Has a history: Far draws `↓` after the field.
+        history: bool,
+        readonly: bool,
+        disabled: bool,
     },
     Check {
         label: String,
         checked: bool,
+        disabled: bool,
     },
-    /// A radio button; consecutive radio buttons form one group.
     Radio {
         label: String,
         selected: bool,
+        group: u16,
+        disabled: bool,
     },
-    /// A line across the frame.
+    /// Far's DIF_DROPDOWNLIST combo box; `None` items are separators.
+    Combo {
+        items: Vec<Option<String>>,
+        selected: usize,
+        width: u16,
+        disabled: bool,
+    },
+}
+
+pub struct Elem {
+    pub x: X,
+    pub kind: Kind,
+}
+
+pub struct Button {
+    pub label: String,
+    pub default: bool,
+    pub disabled: bool,
+    pub hidden: bool,
+}
+
+pub enum Row {
+    Items(Vec<Elem>),
     Separator,
-    /// A row of buttons; the buttons of all rows are numbered in order.
-    Buttons(Vec<String>),
+    /// A separator with text in the middle, like Far's " Всего ".
+    Caption(String),
+    Buttons(Vec<Button>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Target {
-    Item(usize),
-    /// Button: item index, global button number.
-    Button(usize, usize),
+    /// Row, element.
+    Elem(usize, usize),
+    /// Row, button index in the row, button number in the dialog.
+    Button(usize, usize, usize),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     Pending,
-    /// Closed with a button (its number) or cancelled (`None`).
+    /// Closed with a button (its number in the dialog) or cancelled.
     Closed(Option<usize>),
+}
+
+/// An open drop-down list of a combo box.
+struct OpenList {
+    row: usize,
+    elem: usize,
+    current: usize,
 }
 
 struct Colors {
     body: Style,
-    frame: Style,
-    field: Style,
-    focused_button: Style,
+    box_: Style,
+    highlight: Style,
+    button_focused: Style,
+    button_focused_highlight: Style,
+    disabled: Style,
 }
 
 const NORMAL: Colors = Colors {
     body: theme::DIALOG_TEXT,
-    frame: theme::DIALOG_BOX,
-    field: theme::DIALOG_EDIT,
-    focused_button: theme::DIALOG_BUTTON_SELECTED,
+    box_: theme::DIALOG_BOX,
+    highlight: theme::DIALOG_HIGHLIGHT,
+    button_focused: theme::DIALOG_BUTTON_SELECTED,
+    button_focused_highlight: theme::DIALOG_BUTTON_SELECTED_HIGHLIGHT,
+    disabled: theme::DIALOG_DISABLED,
 };
 
 const WARNING: Colors = Colors {
     body: theme::WARN_TEXT,
-    frame: theme::WARN_BOX,
-    field: theme::DIALOG_EDIT,
-    focused_button: theme::WARN_BUTTON_SELECTED,
+    box_: theme::WARN_BOX,
+    highlight: theme::WARN_HIGHLIGHT,
+    button_focused: theme::WARN_BUTTON_SELECTED,
+    button_focused_highlight: theme::WARN_BUTTON_SELECTED_HIGHLIGHT,
+    disabled: theme::WARN_DISABLED,
 };
 
-pub struct Dialog {
-    title: String,
-    items: Vec<Item>,
-    /// Width of the content area.
-    width: u16,
-    warning: bool,
-    default_button: usize,
-    focus: Option<usize>,
-    /// Clickable areas from the last draw.
-    hits: Vec<(Rect, Target)>,
+/// Visible text of a label: `&` markers removed (`&&` is a literal `&`).
+pub fn visible(label: &str) -> String {
+    let mut out = String::new();
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            if chars.peek() == Some(&'&') {
+                out.push('&');
+                chars.next();
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
-impl Dialog {
-    pub fn new(title: impl Into<String>, width: u16) -> Self {
-        Self {
-            title: title.into(),
-            items: Vec::new(),
-            width,
-            warning: false,
-            default_button: 0,
-            focus: None,
-            hits: Vec::new(),
-        }
-    }
+fn width_of(s: &str) -> u16 {
+    s.chars().count() as u16
+}
 
-    /// Red warning style (deletion and other dangerous actions).
-    pub fn warning(mut self) -> Self {
-        self.warning = true;
-        self
-    }
-
-    pub fn text(mut self, s: impl Into<String>) -> Self {
-        self.items.push(Item::Text(s.into()));
-        self
-    }
-
-    /// Text wrapped at word boundaries to the dialog's width.
-    pub fn wrapped(mut self, s: &str) -> Self {
-        for line in wrap(s, usize::from(self.width)) {
-            self.items.push(Item::Text(line));
-        }
-        self
-    }
-
-    pub fn center(mut self, s: impl Into<String>) -> Self {
-        self.items.push(Item::Center(s.into()));
-        self
-    }
-
-    pub fn input(mut self, value: impl Into<String>) -> Self {
-        let value = value.into();
-        let cursor = value.chars().count();
-        self.items.push(Item::Input {
-            unchanged: !value.is_empty(),
-            value,
-            cursor,
-        });
-        self
-    }
-
-    pub fn check(mut self, label: impl Into<String>, checked: bool) -> Self {
-        self.items.push(Item::Check {
-            label: label.into(),
-            checked,
-        });
-        self
-    }
-
-    /// A group of radio buttons with `selected` chosen.
-    pub fn radios(mut self, labels: &[&str], selected: usize) -> Self {
-        for (i, l) in labels.iter().enumerate() {
-            self.items.push(Item::Radio {
-                label: l.to_string(),
-                selected: i == selected,
-            });
-        }
-        self
-    }
-
-    pub fn separator(mut self) -> Self {
-        self.items.push(Item::Separator);
-        self
-    }
-
-    /// Adds a row of buttons; `default` (a global button number) is pressed
-    /// by Enter outside the buttons.
-    pub fn buttons(mut self, labels: &[&str], default: usize) -> Self {
-        self.items.push(Item::Buttons(
-            labels.iter().map(|s| s.to_string()).collect(),
-        ));
-        self.default_button = default;
-        self
-    }
-
-    /// Text of the `n`-th input field.
-    pub fn input_value(&self, n: usize) -> &str {
-        self.items
-            .iter()
-            .filter_map(|i| match i {
-                Item::Input { value, .. } => Some(value.as_str()),
-                _ => None,
-            })
-            .nth(n)
-            .unwrap_or("")
-    }
-
-    /// State of the `n`-th check box.
-    pub fn checked(&self, n: usize) -> bool {
-        self.items
-            .iter()
-            .filter_map(|i| match i {
-                Item::Check { checked, .. } => Some(*checked),
-                _ => None,
-            })
-            .nth(n)
-            .unwrap_or(false)
-    }
-
-    /// Index of the selected button in the `n`-th radio group.
-    pub fn radio(&self, n: usize) -> usize {
-        let mut group = None;
-        let mut index = 0;
-        let mut prev_radio = false;
-        for item in &self.items {
-            match item {
-                Item::Radio { selected, .. } => {
-                    if !prev_radio {
-                        group = Some(group.map_or(0, |g| g + 1));
-                        index = 0;
-                    }
-                    if group == Some(n) && *selected {
-                        return index;
-                    }
-                    index += 1;
-                    prev_radio = true;
+/// The hotkey of a label, as the Latin key at its position (so Alt+К and
+/// Alt+R both find "&Копировать").
+fn hotkey(label: &str) -> Option<char> {
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            match chars.next() {
+                Some('&') => continue,
+                Some(h) => {
+                    let h = h.to_lowercase().next()?;
+                    return Some(crate::keys::latin_equivalent(h).unwrap_or(h));
                 }
-                _ => prev_radio = false,
+                None => return None,
             }
         }
-        0
     }
+    None
+}
 
-    /// Selects radio button `i`, unselecting the rest of its group.
-    fn select_radio(&mut self, i: usize) {
-        let is_radio = |item: &Item| matches!(item, Item::Radio { .. });
-        let mut start = i;
-        while start > 0 && is_radio(&self.items[start - 1]) {
-            start -= 1;
+/// Draws a label at (x, y), at most `max` cells, with its hotkey letter in
+/// `hot`; returns the cells used.
+fn put_label(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    max: u16,
+    label: &str,
+    normal: Style,
+    hot: Style,
+) -> u16 {
+    let mut col = 0u16;
+    let mut chars = label.chars().peekable();
+    let mut next_hot = false;
+    while let Some(c) = chars.next() {
+        if col >= max {
+            break;
         }
-        let mut j = start;
-        while j < self.items.len() && is_radio(&self.items[j]) {
-            if let Item::Radio { selected, .. } = &mut self.items[j] {
-                *selected = j == i;
+        if c == '&' && !next_hot {
+            if chars.peek() == Some(&'&') {
+                chars.next();
+            } else {
+                next_hot = true;
+                continue;
             }
-            j += 1;
         }
+        let style = if next_hot { hot } else { normal };
+        next_hot = false;
+        buf[(x + col, y)]
+            .set_symbol(&c.to_string())
+            .set_style(style);
+        col += 1;
     }
+    col
+}
 
-    fn targets(&self) -> Vec<Target> {
-        let mut out = Vec::new();
-        let mut button = 0;
-        for (i, item) in self.items.iter().enumerate() {
-            match item {
-                Item::Input { .. } | Item::Check { .. } | Item::Radio { .. } => {
-                    out.push(Target::Item(i))
-                }
-                Item::Buttons(labels) => {
-                    for _ in labels {
-                        out.push(Target::Button(i, button));
-                        button += 1;
-                    }
-                }
-                _ => {}
-            }
+fn put_plain(buf: &mut Buffer, x: u16, y: u16, max: u16, text: &str, style: Style) -> u16 {
+    let mut col = 0;
+    for c in text.chars() {
+        if col >= max {
+            break;
         }
-        out
+        buf[(x + col, y)]
+            .set_symbol(&c.to_string())
+            .set_style(style);
+        col += 1;
     }
-
-    /// The focused control (chosen on first use).
-    fn focus(&mut self) -> Option<Target> {
-        let targets = self.targets();
-        if self.focus.is_none() {
-            // Like Far: the first input field, otherwise the first other
-            // control, otherwise the default button.
-            let is_input = |t: &Target| matches!(t, Target::Item(i) if matches!(self.items[*i], Item::Input { .. }));
-            self.focus = targets
-                .iter()
-                .position(is_input)
-                .or_else(|| targets.iter().position(|t| matches!(t, Target::Item(_))))
-                .or_else(|| {
-                    targets.iter().position(
-                        |t| matches!(t, Target::Button(_, b) if *b == self.default_button),
-                    )
-                })
-                .or((!targets.is_empty()).then_some(0));
-        }
-        self.focus.and_then(|f| targets.get(f).copied())
-    }
-
-    fn move_focus(&mut self, delta: isize) {
-        let n = self.targets().len() as isize;
-        if n == 0 {
-            return;
-        }
-        let cur = self
-            .focus()
-            .map(|_| self.focus.unwrap_or(0) as isize)
-            .unwrap_or(0);
-        self.focus = Some((cur + delta).rem_euclid(n) as usize);
-    }
-
-    pub fn handle_key(&mut self, key: &KeyEvent) -> Outcome {
-        let focus = self.focus();
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        match key.code {
-            KeyCode::Esc => return Outcome::Closed(None),
-            KeyCode::Tab | KeyCode::Down => self.move_focus(1),
-            KeyCode::BackTab | KeyCode::Up => self.move_focus(-1),
-            KeyCode::Enter => {
-                return Outcome::Closed(Some(match focus {
-                    Some(Target::Button(_, b)) => b,
-                    _ => self.default_button,
-                }));
-            }
-            _ => {}
-        }
-        match focus {
-            Some(Target::Button(_, b)) => match key.code {
-                KeyCode::Char(' ') => return Outcome::Closed(Some(b)),
-                KeyCode::Left => self.move_focus(-1),
-                KeyCode::Right => self.move_focus(1),
-                _ => {}
-            },
-            Some(Target::Item(i)) if matches!(self.items[i], Item::Radio { .. }) => {
-                if key.code == KeyCode::Char(' ') {
-                    self.select_radio(i);
-                }
-            }
-            Some(Target::Item(i)) => match &mut self.items[i] {
-                Item::Check { checked, .. } => {
-                    if key.code == KeyCode::Char(' ') {
-                        *checked = !*checked;
-                    }
-                }
-                Item::Input {
-                    value,
-                    cursor,
-                    unchanged,
-                } => {
-                    // Typing over untouched text replaces it.
-                    if *unchanged && matches!(key.code, KeyCode::Char(_)) && !(ctrl ^ alt) {
-                        value.clear();
-                        *cursor = 0;
-                    }
-                    *unchanged = false;
-                    let len = value.chars().count();
-                    let byte =
-                        |s: &str, c: usize| s.char_indices().nth(c).map_or(s.len(), |(i, _)| i);
-                    match key.code {
-                        // Ctrl+Alt is AltGr on many layouts.
-                        KeyCode::Char(c) if !(ctrl ^ alt) => {
-                            let at = byte(value, *cursor);
-                            value.insert(at, c);
-                            *cursor += 1;
-                        }
-                        KeyCode::Char('y') if ctrl => {
-                            value.clear();
-                            *cursor = 0;
-                        }
-                        KeyCode::Backspace if *cursor > 0 => {
-                            let at = byte(value, *cursor - 1);
-                            value.remove(at);
-                            *cursor -= 1;
-                        }
-                        KeyCode::Delete if *cursor < len => {
-                            let at = byte(value, *cursor);
-                            value.remove(at);
-                        }
-                        KeyCode::Left => *cursor = cursor.saturating_sub(1),
-                        KeyCode::Right => *cursor = (*cursor + 1).min(len),
-                        KeyCode::Home => *cursor = 0,
-                        KeyCode::End => *cursor = len,
-                        _ => {}
-                    }
-                }
-                _ => {}
-            },
-            None => {}
-        }
-        Outcome::Pending
-    }
-
-    /// Returns `None` when the event is outside the dialog.
-    pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Option<Outcome> {
-        let pos = Position::new(ev.column, ev.row);
-        let (rect, target) = self.hits.iter().copied().find(|(r, _)| r.contains(pos))?;
-        if ev.kind != MouseEventKind::Down(MouseButton::Left) {
-            return Some(Outcome::Pending);
-        }
-        if let Some(i) = self.targets().iter().position(|t| *t == target) {
-            self.focus = Some(i);
-        }
-        match target {
-            Target::Button(_, b) => return Some(Outcome::Closed(Some(b))),
-            Target::Item(i) if matches!(self.items[i], Item::Radio { .. }) => self.select_radio(i),
-            Target::Item(i) => match &mut self.items[i] {
-                Item::Check { checked, .. } => *checked = !*checked,
-                Item::Input {
-                    value,
-                    cursor,
-                    unchanged,
-                } => {
-                    *unchanged = false;
-                    *cursor = usize::from(ev.column - rect.x).min(value.chars().count());
-                }
-                _ => {}
-            },
-        }
-        Some(Outcome::Pending)
-    }
-
-    /// Draws the dialog centered in `area`; returns the text cursor.
-    pub fn draw(&mut self, area: Rect, buf: &mut Buffer) -> Option<Position> {
-        let colors = if self.warning { &WARNING } else { &NORMAL };
-        // Wide enough for every row of buttons.
-        let buttons = self
-            .items
-            .iter()
-            .filter_map(|i| match i {
-                Item::Buttons(labels) => Some(
-                    labels
-                        .iter()
-                        .map(|l| l.chars().count() as u16 + 5)
-                        .sum::<u16>(),
-                ),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
-        let width = self
-            .width
-            .max(buttons)
-            .min(area.width.saturating_sub(12))
-            .max(10);
-        let w = width + 10;
-        let h = (self.items.len() as u16 + 4).min(area.height);
-        let x = area.x + area.width.saturating_sub(w) / 2;
-        let y = area.y + area.height.saturating_sub(h) / 2;
-        let outer = Rect::new(x, y, w.min(area.width), h);
-
-        // Shadow: two columns to the right and one row below.
-        let shadow = theme::SHADOW;
-        for sy in outer.y + 1..=outer.bottom() {
-            for sx in outer.right()..outer.right() + 2 {
-                if sx < area.right() && sy < area.bottom() {
-                    buf[(sx, sy)].set_style(shadow);
-                }
-            }
-        }
-        for sx in outer.x + 2..outer.right() + 2 {
-            if sx < area.right() && outer.bottom() < area.bottom() {
-                buf[(sx, outer.bottom())].set_style(shadow);
-            }
-        }
-        buf.set_style(outer, colors.body);
-        for yy in outer.top()..outer.bottom() {
-            for xx in outer.left()..outer.right() {
-                buf[(xx, yy)].set_symbol(" ");
-            }
-        }
-        let frame = Rect::new(
-            outer.x + 3,
-            outer.y + 1,
-            outer.width.saturating_sub(6),
-            outer.height.saturating_sub(2),
-        );
-        draw_frame(buf, frame, colors.frame);
-        put_title(
-            buf,
-            frame,
-            frame.y,
-            &format!(" {} ", self.title),
-            colors.frame,
-        );
-
-        let focus = self.focus();
-        let cx = frame.x + 2;
-        let mut cursor = None;
-        self.hits.clear();
-        let mut button_no = 0;
-        for (i, item) in self.items.iter().enumerate() {
-            let row = frame.y + 1 + i as u16;
-            if row >= frame.bottom() - 1 {
-                break;
-            }
-            match item {
-                Item::Text(s) => put(buf, cx, row, width, s, colors.body),
-                Item::Center(s) => {
-                    let n = (s.chars().count() as u16).min(width);
-                    put(buf, cx + (width - n) / 2, row, n, s, colors.body);
-                }
-                Item::Input {
-                    value,
-                    cursor: c,
-                    unchanged,
-                } => {
-                    // Scroll long values so the cursor stays visible.
-                    let skip = c.saturating_sub(usize::from(width) - 1);
-                    let shown: String = value.chars().skip(skip).collect();
-                    let style = if *unchanged {
-                        theme::DIALOG_EDIT_UNCHANGED
-                    } else {
-                        colors.field
-                    };
-                    put(buf, cx, row, width, &shown, style);
-                    let rect = Rect::new(cx, row, width, 1);
-                    self.hits.push((rect, Target::Item(i)));
-                    if focus == Some(Target::Item(i)) {
-                        cursor = Some(Position::new(cx + (c - skip) as u16, row));
-                    }
-                }
-                Item::Check { label, checked } => {
-                    let mark = if *checked { "[x] " } else { "[ ] " };
-                    put(buf, cx, row, width, &format!("{mark}{label}"), colors.body);
-                    let n = (label.chars().count() as u16 + 4).min(width);
-                    self.hits.push((Rect::new(cx, row, n, 1), Target::Item(i)));
-                    if focus == Some(Target::Item(i)) {
-                        cursor = Some(Position::new(cx + 1, row));
-                    }
-                }
-                Item::Radio { label, selected } => {
-                    let mark = if *selected { "(•) " } else { "( ) " };
-                    put(buf, cx, row, width, &format!("{mark}{label}"), colors.body);
-                    let n = (label.chars().count() as u16 + 4).min(width);
-                    self.hits.push((Rect::new(cx, row, n, 1), Target::Item(i)));
-                    if focus == Some(Target::Item(i)) {
-                        cursor = Some(Position::new(cx + 1, row));
-                    }
-                }
-                Item::Separator => {
-                    for xx in frame.x + 1..frame.right() - 1 {
-                        buf[(xx, row)].set_symbol("─").set_style(colors.frame);
-                    }
-                    buf[(frame.x, row)].set_symbol("╟");
-                    buf[(frame.right() - 1, row)].set_symbol("╢");
-                }
-                Item::Buttons(labels) => {
-                    // The default button is shown as `{ OK }`, like in Far.
-                    let texts: Vec<String> = labels
-                        .iter()
-                        .enumerate()
-                        .map(|(j, l)| {
-                            if button_no + j == self.default_button {
-                                format!("{{ {l} }}")
-                            } else {
-                                format!("[ {l} ]")
-                            }
-                        })
-                        .collect();
-                    let total: u16 = texts
-                        .iter()
-                        .map(|t| t.chars().count() as u16 + 1)
-                        .sum::<u16>()
-                        - 1;
-                    let mut bx = cx + width.saturating_sub(total) / 2;
-                    for (j, t) in texts.iter().enumerate() {
-                        let n = t.chars().count() as u16;
-                        let target = Target::Button(i, button_no + j);
-                        let style = if focus == Some(target) {
-                            colors.focused_button
-                        } else {
-                            colors.body
-                        };
-                        put(buf, bx, row, n, t, style);
-                        self.hits.push((Rect::new(bx, row, n, 1), target));
-                        bx += n + 1;
-                    }
-                    button_no += labels.len();
-                }
-            }
-        }
-        cursor
-    }
+    col
 }
 
 /// Splits `s` into lines of at most `width` chars at spaces (long words
 /// are cut).
-fn wrap(s: &str, width: usize) -> Vec<String> {
+pub fn wrap(s: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
     let mut line = String::new();
@@ -586,42 +249,1247 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
     lines
 }
 
+pub struct Dialog {
+    title: String,
+    /// Full width W (the box is 3 columns in from each side).
+    width: u16,
+    rows: Vec<Row>,
+    warning: bool,
+    focus: Option<usize>,
+    hits: Vec<(Rect, Target)>,
+    list: Option<OpenList>,
+    next_group: u16,
+}
+
+impl Dialog {
+    /// A dialog of Far's width W (e.g. 76 for copy and make-folder).
+    pub fn far(title: impl Into<String>, width: u16) -> Self {
+        Self {
+            title: title.into(),
+            width,
+            rows: Vec::new(),
+            warning: false,
+            focus: None,
+            hits: Vec::new(),
+            list: None,
+            next_group: 0,
+        }
+    }
+
+    /// A dialog with `content` columns for text (W = content + 10).
+    pub fn new(title: impl Into<String>, content: u16) -> Self {
+        Self::far(title, content + 10)
+    }
+
+    /// Far's `Message()`: centred lines, a separator, buttons; the width
+    /// from the content (message.cpp). Lines starting with `\x01` are
+    /// separators.
+    pub fn message(title: &str, lines: &[String], buttons: &[&str], warning: bool) -> Self {
+        let cols = crossterm::terminal::size().map_or(80, |(w, _)| w);
+        let buttons_len: u16 = buttons
+            .iter()
+            .map(|b| width_of(&visible(b)) + 5)
+            .sum::<u16>()
+            .saturating_sub(1);
+        let longest = lines
+            .iter()
+            .map(|l| width_of(l))
+            .chain([width_of(title) + 2, buttons_len])
+            .max()
+            .unwrap_or(0);
+        let content = longest.min(cols.saturating_sub(11).max(buttons_len));
+        let mut d = Self::new(title, content);
+        d.warning = warning;
+        for l in lines {
+            if l.starts_with('\x01') {
+                d = d.separator();
+            } else {
+                d.rows.push(Row::Items(vec![Elem {
+                    x: X::Center,
+                    kind: Kind::Text {
+                        text: l.clone(),
+                        show_amp: true,
+                        highlight: false,
+                    },
+                }]));
+            }
+        }
+        if !buttons.is_empty() {
+            if !matches!(d.rows.last(), Some(Row::Separator)) {
+                d = d.separator();
+            }
+            d = d.buttons(buttons, 0);
+        }
+        d
+    }
+
+    /// Red warning style.
+    pub fn warning(mut self) -> Self {
+        self.warning = true;
+        self
+    }
+
+    /// Width available to items at x = 5.
+    pub fn content_width(&self) -> u16 {
+        self.width.saturating_sub(10)
+    }
+
+    pub fn row(mut self, elems: Vec<Elem>) -> Self {
+        self.rows.push(Row::Items(elems));
+        self
+    }
+
+    pub fn text(self, s: impl Into<String>) -> Self {
+        self.row(vec![text_at(5, s)])
+    }
+
+    /// Centred text shown as is (`&` included), like Far's prompts.
+    pub fn center(self, s: impl Into<String>) -> Self {
+        self.row(vec![text_at(5, s).centered().literal()])
+    }
+
+    /// Text wrapped at word boundaries to the content width.
+    pub fn wrapped(mut self, s: &str) -> Self {
+        for line in wrap(s, usize::from(self.content_width())) {
+            self = self.row(vec![text_at(5, line).literal()]);
+        }
+        self
+    }
+
+    /// An input field across the content width (with Far's history arrow).
+    pub fn input(self, value: impl Into<String>) -> Self {
+        let width = self.content_width().saturating_sub(1);
+        self.row(vec![input_at(5, width, value, true)])
+    }
+
+    pub fn check(self, label: impl Into<String>, checked: bool) -> Self {
+        self.row(vec![check_at(5, label, checked)])
+    }
+
+    /// A group of radio buttons, one per row.
+    pub fn radios(mut self, labels: &[&str], selected: usize) -> Self {
+        let group = self.new_group();
+        for (i, l) in labels.iter().enumerate() {
+            self = self.row(vec![radio_at(5, *l, i == selected, group)]);
+        }
+        self
+    }
+
+    /// A new radio group id (for radios built with `radio_at`).
+    pub fn new_group(&mut self) -> u16 {
+        self.next_group += 1;
+        self.next_group
+    }
+
+    pub fn separator(mut self) -> Self {
+        self.rows.push(Row::Separator);
+        self
+    }
+
+    pub fn caption(mut self, text: impl Into<String>) -> Self {
+        self.rows.push(Row::Caption(text.into()));
+        self
+    }
+
+    /// A row of buttons; the `default` one (an index in this row) is shown
+    /// as `{ … }` and pressed by Enter elsewhere.
+    pub fn buttons(mut self, labels: &[&str], default: usize) -> Self {
+        self.rows.push(Row::Buttons(
+            labels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| Button {
+                    label: l.to_string(),
+                    default: i == default,
+                    disabled: false,
+                    hidden: false,
+                })
+                .collect(),
+        ));
+        self
+    }
+
+    pub fn button_row(mut self, buttons: Vec<Button>) -> Self {
+        self.rows.push(Row::Buttons(buttons));
+        self
+    }
+
+    /// Focuses the `n`-th focusable item (in reading order).
+    pub fn focus_item(mut self, n: usize) -> Self {
+        self.focus = Some(n);
+        self
+    }
+
+    // ------------------------------------------------------------ values
+
+    fn kinds(&self) -> Vec<&Kind> {
+        self.rows
+            .iter()
+            .flat_map(|r| match r {
+                Row::Items(e) => e.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Text of the `n`-th input field.
+    pub fn input_value(&self, n: usize) -> String {
+        self.kinds()
+            .into_iter()
+            .filter_map(|k| match k {
+                Kind::Input { value, .. } => Some(value.clone()),
+                _ => None,
+            })
+            .nth(n)
+            .unwrap_or_default()
+    }
+
+    /// State of the `n`-th check box.
+    pub fn checked(&self, n: usize) -> bool {
+        self.kinds()
+            .into_iter()
+            .filter_map(|k| match k {
+                Kind::Check { checked, .. } => Some(*checked),
+                _ => None,
+            })
+            .nth(n)
+            .unwrap_or(false)
+    }
+
+    /// Index of the selected button in the `n`-th radio group (in order of
+    /// appearance).
+    pub fn radio(&self, n: usize) -> usize {
+        let mut groups: Vec<u16> = Vec::new();
+        let mut counts: Vec<usize> = Vec::new();
+        for k in self.kinds() {
+            if let Kind::Radio {
+                group, selected, ..
+            } = k
+            {
+                let gi = match groups.iter().position(|g| g == group) {
+                    Some(i) => i,
+                    None => {
+                        groups.push(*group);
+                        counts.push(0);
+                        groups.len() - 1
+                    }
+                };
+                if gi == n && *selected {
+                    return counts[gi];
+                }
+                counts[gi] += 1;
+            }
+        }
+        0
+    }
+
+    /// Selected item of the `n`-th combo box.
+    pub fn combo(&self, n: usize) -> usize {
+        self.kinds()
+            .into_iter()
+            .filter_map(|k| match k {
+                Kind::Combo { selected, .. } => Some(*selected),
+                _ => None,
+            })
+            .nth(n)
+            .unwrap_or(0)
+    }
+
+    // ------------------------------------------------------------- focus
+
+    fn targets(&self) -> Vec<Target> {
+        let mut out = Vec::new();
+        let mut number = 0;
+        for (r, row) in self.rows.iter().enumerate() {
+            match row {
+                Row::Items(elems) => {
+                    for (e, elem) in elems.iter().enumerate() {
+                        let focusable = match &elem.kind {
+                            Kind::Text { .. } => false,
+                            Kind::Input {
+                                disabled, readonly, ..
+                            } => !disabled && !readonly,
+                            Kind::Check { disabled, .. }
+                            | Kind::Radio { disabled, .. }
+                            | Kind::Combo { disabled, .. } => !disabled,
+                        };
+                        if focusable {
+                            out.push(Target::Elem(r, e));
+                        }
+                    }
+                }
+                Row::Buttons(buttons) => {
+                    for (b, button) in buttons.iter().enumerate() {
+                        if !button.disabled && !button.hidden {
+                            out.push(Target::Button(r, b, number));
+                        }
+                        number += 1;
+                    }
+                }
+                Row::Separator | Row::Caption(_) => {}
+            }
+        }
+        out
+    }
+
+    fn default_button(&self) -> Option<usize> {
+        let mut number = 0;
+        for row in &self.rows {
+            if let Row::Buttons(buttons) = row {
+                for b in buttons {
+                    if b.default {
+                        return Some(number);
+                    }
+                    number += 1;
+                }
+            }
+        }
+        None
+    }
+
+    fn elem(&self, r: usize, e: usize) -> Option<&Elem> {
+        match self.rows.get(r)? {
+            Row::Items(elems) => elems.get(e),
+            _ => None,
+        }
+    }
+
+    fn elem_mut(&mut self, r: usize, e: usize) -> Option<&mut Elem> {
+        match self.rows.get_mut(r)? {
+            Row::Items(elems) => elems.get_mut(e),
+            _ => None,
+        }
+    }
+
+    fn is_input(&self, t: Target) -> bool {
+        matches!(t, Target::Elem(r, e) if matches!(self.elem(r, e).map(|e| &e.kind), Some(Kind::Input { .. })))
+    }
+
+    /// The focused item; on first use, like Far: the first input field,
+    /// otherwise the first other control, otherwise the default button.
+    fn focus(&mut self) -> Option<Target> {
+        let targets = self.targets();
+        if self.focus.is_none() {
+            let default = self.default_button();
+            self.focus = targets
+                .iter()
+                .position(|t| self.is_input(*t))
+                .or_else(|| targets.iter().position(|t| matches!(t, Target::Elem(..))))
+                .or_else(|| {
+                    targets
+                        .iter()
+                        .position(|t| matches!(t, Target::Button(_, _, n) if Some(*n) == default))
+                })
+                .or((!targets.is_empty()).then_some(0));
+        }
+        self.focus.and_then(|f| targets.get(f).copied())
+    }
+
+    fn move_focus(&mut self, delta: isize) {
+        let n = self.targets().len() as isize;
+        if n == 0 {
+            return;
+        }
+        self.focus();
+        let cur = self.focus.unwrap_or(0) as isize;
+        self.focus = Some((cur + delta).rem_euclid(n) as usize);
+    }
+
+    fn set_focus(&mut self, target: Target) {
+        if let Some(i) = self.targets().iter().position(|t| *t == target) {
+            self.focus = Some(i);
+        }
+    }
+
+    fn select_radio(&mut self, r: usize, e: usize) {
+        let Some(Kind::Radio { group, .. }) = self.elem(r, e).map(|e| &e.kind) else {
+            return;
+        };
+        let group = *group;
+        for (ri, row) in self.rows.iter_mut().enumerate() {
+            if let Row::Items(elems) = row {
+                for (ei, elem) in elems.iter_mut().enumerate() {
+                    if let Kind::Radio {
+                        group: g, selected, ..
+                    } = &mut elem.kind
+                        && *g == group
+                    {
+                        *selected = ri == r && ei == e;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Activates the item with hotkey `key` (a Latin letter).
+    fn activate_hotkey(&mut self, key: char) -> Option<Outcome> {
+        let targets = self.targets();
+        let mut number = 0usize;
+        let mut found: Option<(usize, usize, bool)> = None; // row, elem, is text
+        'rows: for (r, row) in self.rows.iter().enumerate() {
+            match row {
+                Row::Items(elems) => {
+                    for (e, elem) in elems.iter().enumerate() {
+                        let (label, is_text) = match &elem.kind {
+                            Kind::Text {
+                                text,
+                                show_amp: false,
+                                ..
+                            } => (text, true),
+                            Kind::Check {
+                                label,
+                                disabled: false,
+                                ..
+                            }
+                            | Kind::Radio {
+                                label,
+                                disabled: false,
+                                ..
+                            } => (label, false),
+                            _ => continue,
+                        };
+                        if hotkey(label) == Some(key) {
+                            found = Some((r, e, is_text));
+                            break 'rows;
+                        }
+                    }
+                }
+                Row::Buttons(buttons) => {
+                    for b in buttons {
+                        if !b.disabled && !b.hidden && hotkey(&b.label) == Some(key) {
+                            return Some(Outcome::Closed(Some(number)));
+                        }
+                        number += 1;
+                    }
+                }
+                Row::Separator | Row::Caption(_) => {}
+            }
+        }
+        let (r, e, is_text) = found?;
+        if is_text {
+            // A label: focus the next focusable item after it.
+            if let Some(next) = targets
+                .iter()
+                .position(|t| matches!(*t, Target::Elem(tr, te) if (tr, te) > (r, e)))
+            {
+                self.focus = Some(next);
+            }
+            return Some(Outcome::Pending);
+        }
+        self.set_focus(Target::Elem(r, e));
+        if matches!(self.elem(r, e).map(|e| &e.kind), Some(Kind::Radio { .. })) {
+            self.select_radio(r, e);
+        } else if let Some(Elem {
+            kind: Kind::Check { checked, .. },
+            ..
+        }) = self.elem_mut(r, e)
+        {
+            *checked = !*checked;
+        }
+        Some(Outcome::Pending)
+    }
+
+    // ------------------------------------------------------------- input
+
+    pub fn handle_key(&mut self, key: &KeyEvent) -> Outcome {
+        if self.list.is_some() {
+            return self.list_key(key);
+        }
+        let focus = self.focus();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let on_input = focus.is_some_and(|t| self.is_input(t));
+        // Hotkeys: Alt+letter, or a plain letter when not typing in a field.
+        if let KeyCode::Char(c) = key.code
+            && ((alt && !ctrl) || (!alt && !ctrl && !on_input && c != ' '))
+        {
+            let c = c.to_lowercase().next().unwrap_or(c);
+            let latin = crate::keys::latin_equivalent(c).unwrap_or(c);
+            if let Some(outcome) = self.activate_hotkey(latin) {
+                return outcome;
+            }
+            if alt {
+                return Outcome::Pending;
+            }
+        }
+        match key.code {
+            KeyCode::Esc => return Outcome::Closed(None),
+            KeyCode::Tab => {
+                self.move_focus(1);
+                return Outcome::Pending;
+            }
+            KeyCode::BackTab => {
+                self.move_focus(-1);
+                return Outcome::Pending;
+            }
+            KeyCode::Down if alt || ctrl => {
+                if let Some(Target::Elem(r, e)) = focus {
+                    self.open_list(r, e);
+                }
+                return Outcome::Pending;
+            }
+            KeyCode::Down => {
+                self.move_focus(1);
+                return Outcome::Pending;
+            }
+            KeyCode::Up => {
+                self.move_focus(-1);
+                return Outcome::Pending;
+            }
+            KeyCode::Enter => {
+                return Outcome::Closed(match focus {
+                    Some(Target::Button(_, _, n)) => Some(n),
+                    _ => self.default_button(),
+                });
+            }
+            _ => {}
+        }
+        match focus {
+            Some(Target::Button(_, _, n)) => match key.code {
+                KeyCode::Char(' ') => return Outcome::Closed(Some(n)),
+                KeyCode::Left => self.move_focus(-1),
+                KeyCode::Right => self.move_focus(1),
+                _ => {}
+            },
+            Some(Target::Elem(r, e)) => self.elem_key(r, e, key),
+            None => {}
+        }
+        Outcome::Pending
+    }
+
+    fn elem_key(&mut self, r: usize, e: usize, key: &KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match self.elem(r, e).map(|e| &e.kind) {
+            Some(Kind::Radio { .. }) => {
+                match key.code {
+                    KeyCode::Char(' ') => self.select_radio(r, e),
+                    KeyCode::Left => self.move_focus(-1),
+                    KeyCode::Right => self.move_focus(1),
+                    _ => {}
+                }
+                return;
+            }
+            Some(Kind::Combo { .. }) => {
+                if matches!(key.code, KeyCode::F(4) | KeyCode::Char(' ')) {
+                    self.open_list(r, e);
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some(elem) = self.elem_mut(r, e) else {
+            return;
+        };
+        match &mut elem.kind {
+            Kind::Check { checked, .. } => {
+                if key.code == KeyCode::Char(' ') {
+                    *checked = !*checked;
+                }
+            }
+            Kind::Input {
+                value,
+                cursor,
+                unchanged,
+                ..
+            } => {
+                let typing = matches!(key.code, KeyCode::Char(_)) && !(ctrl ^ alt);
+                // Typing over untouched text replaces it.
+                if *unchanged && typing {
+                    value.clear();
+                    *cursor = 0;
+                }
+                *unchanged = false;
+                let len = value.chars().count();
+                let byte = |s: &str, c: usize| s.char_indices().nth(c).map_or(s.len(), |(i, _)| i);
+                match key.code {
+                    // Ctrl+Alt is AltGr on many layouts.
+                    KeyCode::Char(c) if !(ctrl ^ alt) => {
+                        let at = byte(value, *cursor);
+                        value.insert(at, c);
+                        *cursor += 1;
+                    }
+                    KeyCode::Char('y') if ctrl => {
+                        value.clear();
+                        *cursor = 0;
+                    }
+                    KeyCode::Backspace if *cursor > 0 => {
+                        let at = byte(value, *cursor - 1);
+                        value.remove(at);
+                        *cursor -= 1;
+                    }
+                    KeyCode::Delete if *cursor < len => {
+                        let at = byte(value, *cursor);
+                        value.remove(at);
+                    }
+                    KeyCode::Left => *cursor = cursor.saturating_sub(1),
+                    KeyCode::Right => *cursor = (*cursor + 1).min(len),
+                    KeyCode::Home => *cursor = 0,
+                    KeyCode::End => *cursor = len,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn open_list(&mut self, r: usize, e: usize) {
+        if let Some(Elem {
+            kind:
+                Kind::Combo {
+                    selected,
+                    disabled: false,
+                    ..
+                },
+            ..
+        }) = self.elem(r, e)
+        {
+            self.list = Some(OpenList {
+                row: r,
+                elem: e,
+                current: *selected,
+            });
+        }
+    }
+
+    fn list_items(&self) -> Option<Vec<Option<String>>> {
+        let list = self.list.as_ref()?;
+        match &self.elem(list.row, list.elem)?.kind {
+            Kind::Combo { items, .. } => Some(items.clone()),
+            _ => None,
+        }
+    }
+
+    fn choose(&mut self, r: usize, e: usize, index: usize) {
+        self.list = None;
+        if let Some(Elem {
+            kind: Kind::Combo { selected, .. },
+            ..
+        }) = self.elem_mut(r, e)
+        {
+            *selected = index;
+        }
+    }
+
+    fn list_key(&mut self, key: &KeyEvent) -> Outcome {
+        let (Some(items), Some(list)) = (self.list_items(), self.list.as_ref()) else {
+            self.list = None;
+            return Outcome::Pending;
+        };
+        let (r, e, current) = (list.row, list.elem, list.current);
+        let step = |from: usize, delta: isize| {
+            let n = items.len() as isize;
+            let mut i = from as isize;
+            for _ in 0..n {
+                i = (i + delta).rem_euclid(n);
+                if items[i as usize].is_some() {
+                    return i as usize;
+                }
+            }
+            from
+        };
+        let moved = match key.code {
+            KeyCode::Esc => {
+                self.list = None;
+                return Outcome::Pending;
+            }
+            KeyCode::Enter => {
+                self.choose(r, e, current);
+                return Outcome::Pending;
+            }
+            KeyCode::Up => step(current, -1),
+            KeyCode::Down => step(current, 1),
+            KeyCode::Home => step(items.len() - 1, 1),
+            KeyCode::End => step(0, -1),
+            KeyCode::Char(c) => {
+                let c = c.to_lowercase().next().unwrap_or(c);
+                let latin = crate::keys::latin_equivalent(c).unwrap_or(c);
+                if let Some(i) = items
+                    .iter()
+                    .position(|it| it.as_deref().and_then(hotkey) == Some(latin))
+                {
+                    self.choose(r, e, i);
+                }
+                return Outcome::Pending;
+            }
+            _ => current,
+        };
+        if let Some(l) = &mut self.list {
+            l.current = moved;
+        }
+        Outcome::Pending
+    }
+
+    /// Returns `None` when the event is outside the dialog.
+    pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Option<Outcome> {
+        let pos = Position::new(ev.column, ev.row);
+        let (rect, target) = self.hits.iter().copied().find(|(r, _)| r.contains(pos))?;
+        if ev.kind != MouseEventKind::Down(MouseButton::Left) {
+            return Some(Outcome::Pending);
+        }
+        // The first hit area of an open list is the list itself.
+        if let Some(list) = &self.list {
+            let (r, e) = (list.row, list.elem);
+            if target == Target::Elem(r, e) && self.hits.first().is_some_and(|(lr, _)| *lr == rect)
+            {
+                let index = usize::from(ev.row - rect.y);
+                if self
+                    .list_items()
+                    .is_some_and(|items| items.get(index).is_some_and(Option::is_some))
+                {
+                    self.choose(r, e, index);
+                }
+                return Some(Outcome::Pending);
+            }
+            self.list = None;
+        }
+        self.set_focus(target);
+        match target {
+            Target::Button(_, _, n) => return Some(Outcome::Closed(Some(n))),
+            Target::Elem(r, e) => match self.elem(r, e).map(|e| &e.kind) {
+                Some(Kind::Radio { .. }) => self.select_radio(r, e),
+                Some(Kind::Combo { .. }) => self.open_list(r, e),
+                _ => {
+                    if let Some(elem) = self.elem_mut(r, e) {
+                        match &mut elem.kind {
+                            Kind::Check { checked, .. } => *checked = !*checked,
+                            Kind::Input {
+                                value,
+                                cursor,
+                                unchanged,
+                                ..
+                            } => {
+                                *unchanged = false;
+                                *cursor =
+                                    usize::from(ev.column - rect.x).min(value.chars().count());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            },
+        }
+        Some(Outcome::Pending)
+    }
+
+    // -------------------------------------------------------------- draw
+
+    /// Draws the dialog centred in `area`; returns the text cursor.
+    pub fn draw(&mut self, area: Rect, buf: &mut Buffer) -> Option<Position> {
+        let c = if self.warning { &WARNING } else { &NORMAL };
+        let w = self.width.min(area.width);
+        let h = (self.rows.len() as u16 + 4).min(area.height);
+        let x0 = area.x + area.width.saturating_sub(w) / 2;
+        let y0 = area.y + area.height.saturating_sub(h) / 2;
+        let outer = Rect::new(x0, y0, w, h);
+
+        // Shadow: the row below (from x+2) and two columns to the right.
+        for sy in outer.y + 1..=outer.bottom() {
+            for sx in outer.right()..outer.right() + 2 {
+                if sx < area.right() && sy < area.bottom() {
+                    buf[(sx, sy)].set_style(theme::SHADOW);
+                }
+            }
+        }
+        if outer.bottom() < area.bottom() {
+            for sx in outer.x + 2..(outer.right() + 2).min(area.right()) {
+                buf[(sx, outer.bottom())].set_style(theme::SHADOW);
+            }
+        }
+        buf.set_style(outer, c.body);
+        for yy in outer.top()..outer.bottom() {
+            for xx in outer.left()..outer.right() {
+                buf[(xx, yy)].set_symbol(" ");
+            }
+        }
+        let frame = Rect::new(x0 + 3, y0 + 1, w.saturating_sub(6), h.saturating_sub(2));
+        draw_frame(buf, frame, c.box_);
+        let title = format!(" {} ", visible(&self.title));
+        let title: String = title
+            .chars()
+            .take(usize::from(frame.width.saturating_sub(2)))
+            .collect();
+        let tx = frame.x + frame.width.saturating_sub(width_of(&title)) / 2;
+        put_plain(buf, tx, frame.y, width_of(&title), &title, c.box_);
+
+        let focus = self.focus();
+        let mut cursor = None;
+        self.hits.clear();
+        let mut number = 0usize;
+        let max_x = x0 + w.saturating_sub(4);
+        let rows = std::mem::take(&mut self.rows);
+        for (r, row) in rows.iter().enumerate() {
+            let y = y0 + 2 + r as u16;
+            if y + 1 >= frame.bottom() || y >= area.bottom() {
+                break;
+            }
+            match row {
+                Row::Separator | Row::Caption(_) => {
+                    for xx in frame.x + 1..frame.right().saturating_sub(1) {
+                        buf[(xx, y)].set_symbol("─").set_style(c.box_);
+                    }
+                    buf[(frame.x, y)].set_symbol("╟").set_style(c.box_);
+                    buf[(frame.right() - 1, y)]
+                        .set_symbol("╢")
+                        .set_style(c.box_);
+                    if let Row::Caption(text) = row {
+                        let text = format!(" {text} ");
+                        let len = width_of(&text);
+                        put_plain(buf, x0 + w.saturating_sub(len) / 2, y, len, &text, c.box_);
+                    }
+                }
+                Row::Items(elems) => {
+                    for (e, elem) in elems.iter().enumerate() {
+                        let focused = focus == Some(Target::Elem(r, e));
+                        let target = Target::Elem(r, e);
+                        if let Some(pos) =
+                            self.draw_elem(buf, c, (x0, y, max_x, w), elem, focused, target)
+                        {
+                            cursor = Some(pos);
+                        }
+                    }
+                }
+                Row::Buttons(buttons) => {
+                    let texts: Vec<String> = buttons
+                        .iter()
+                        .map(|b| {
+                            if b.default {
+                                format!("{{ {} }}", b.label)
+                            } else {
+                                format!("[ {} ]", b.label)
+                            }
+                        })
+                        .collect();
+                    let total: u16 = buttons
+                        .iter()
+                        .zip(&texts)
+                        .filter(|(b, _)| !b.hidden)
+                        .map(|(_, t)| width_of(&visible(t)) + 1)
+                        .sum::<u16>()
+                        .saturating_sub(1);
+                    let mut bx = x0 + w.saturating_sub(total) / 2;
+                    for (bi, (b, t)) in buttons.iter().zip(&texts).enumerate() {
+                        let n = number;
+                        number += 1;
+                        if b.hidden {
+                            continue;
+                        }
+                        let target = Target::Button(r, bi, n);
+                        let focused = focus == Some(target);
+                        let (style, hot) = if b.disabled {
+                            (c.disabled, c.disabled)
+                        } else if focused {
+                            (c.button_focused, c.button_focused_highlight)
+                        } else {
+                            (c.body, c.highlight)
+                        };
+                        let len = width_of(&visible(t));
+                        put_label(buf, bx, y, len, t, style, hot);
+                        self.hits.push((Rect::new(bx, y, len, 1), target));
+                        if focused {
+                            cursor = Some(Position::new(bx + 2, y));
+                        }
+                        bx += len + 1;
+                    }
+                }
+            }
+        }
+        self.rows = rows;
+        if self.draw_list(buf, x0, y0, area) {
+            return None;
+        }
+        cursor
+    }
+
+    /// `at`: dialog x, row y, right limit, dialog width.
+    fn draw_elem(
+        &mut self,
+        buf: &mut Buffer,
+        c: &Colors,
+        at: (u16, u16, u16, u16),
+        elem: &Elem,
+        focused: bool,
+        target: Target,
+    ) -> Option<Position> {
+        let (x0, y, max_x, w) = at;
+        let x = |len: u16| match elem.x {
+            X::At(x) => x0 + x,
+            X::Center => x0 + w.saturating_sub(len) / 2,
+        };
+        let dim_edit = theme::DIALOG_EDIT_UNCHANGED.fg(Color::DarkGray);
+        match &elem.kind {
+            Kind::Text {
+                text,
+                show_amp,
+                highlight,
+            } => {
+                let style = if *highlight { c.highlight } else { c.body };
+                if *show_amp {
+                    let at = x(width_of(text));
+                    put_plain(buf, at, y, max_x.saturating_sub(at), text, style);
+                } else {
+                    let at = x(width_of(&visible(text)));
+                    put_label(
+                        buf,
+                        at,
+                        y,
+                        max_x.saturating_sub(at),
+                        text,
+                        style,
+                        c.highlight,
+                    );
+                }
+                None
+            }
+            Kind::Input {
+                value,
+                cursor: cur,
+                unchanged,
+                width,
+                history,
+                readonly,
+                disabled,
+            } => {
+                let at = x(*width);
+                let skip = cur.saturating_sub(usize::from(*width).saturating_sub(1));
+                let shown: String = value.chars().skip(skip).collect();
+                let style = if *readonly {
+                    c.body
+                } else if *disabled {
+                    dim_edit
+                } else if *unchanged {
+                    theme::DIALOG_EDIT_UNCHANGED
+                } else {
+                    theme::DIALOG_EDIT
+                };
+                for i in 0..*width {
+                    buf[(at + i, y)].set_symbol(" ").set_style(style);
+                }
+                put_plain(buf, at, y, *width, &shown, style);
+                if *history && !*readonly {
+                    buf[(at + width, y)].set_symbol("↓").set_style(c.body);
+                }
+                if !*readonly {
+                    self.hits.push((Rect::new(at, y, *width, 1), target));
+                }
+                (focused && !*readonly).then(|| Position::new(at + (cur - skip) as u16, y))
+            }
+            Kind::Check {
+                label,
+                checked,
+                disabled,
+            }
+            | Kind::Radio {
+                label,
+                selected: checked,
+                disabled,
+                ..
+            } => {
+                let radio = matches!(elem.kind, Kind::Radio { .. });
+                let mark = match (radio, *checked) {
+                    (false, true) => "[x] ",
+                    (false, false) => "[ ] ",
+                    (true, true) => "(•) ",
+                    (true, false) => "( ) ",
+                };
+                let len = width_of(&visible(label)) + 4;
+                let at = x(len);
+                let (style, hot) = if *disabled {
+                    (c.disabled, c.disabled)
+                } else {
+                    (c.body, c.highlight)
+                };
+                put_plain(buf, at, y, 4, mark, style);
+                put_label(
+                    buf,
+                    at + 4,
+                    y,
+                    max_x.saturating_sub(at + 4),
+                    label,
+                    style,
+                    hot,
+                );
+                self.hits.push((Rect::new(at, y, len, 1), target));
+                focused.then(|| Position::new(at + 1, y))
+            }
+            Kind::Combo {
+                items,
+                selected,
+                width,
+                disabled,
+            } => {
+                let at = x(*width);
+                let text = items
+                    .get(*selected)
+                    .and_then(|i| i.as_deref())
+                    .map(visible)
+                    .unwrap_or_default();
+                let style = if *disabled {
+                    dim_edit
+                } else if focused {
+                    theme::DIALOG_EDIT_SELECTED
+                } else {
+                    theme::DIALOG_EDIT
+                };
+                for i in 0..*width {
+                    buf[(at + i, y)].set_symbol(" ").set_style(style);
+                }
+                put_plain(buf, at, y, *width, &text, style);
+                buf[(at + width, y)].set_symbol("↓").set_style(c.body);
+                self.hits.push((Rect::new(at, y, *width + 1, 1), target));
+                focused.then(|| Position::new(at, y))
+            }
+        }
+    }
+
+    /// The open drop-down list, below its combo box; returns whether one
+    /// is open.
+    fn draw_list(&mut self, buf: &mut Buffer, x0: u16, y0: u16, area: Rect) -> bool {
+        let Some(list) = &self.list else {
+            return false;
+        };
+        let (r, e, current) = (list.row, list.elem, list.current);
+        let Some(Elem {
+            x: X::At(fx),
+            kind: Kind::Combo { items, width, .. },
+        }) = self.elem(r, e)
+        else {
+            return false;
+        };
+        let items = items.clone();
+        let (lx, ly) = (x0 + fx, y0 + 3 + r as u16);
+        let rect = Rect::new(
+            lx,
+            ly,
+            (*width + 1).min(area.right().saturating_sub(lx)),
+            (items.len() as u16 + 2).min(area.bottom().saturating_sub(ly)),
+        );
+        if rect.width < 3 || rect.height < 3 {
+            return true;
+        }
+        buf.set_style(rect, theme::DIALOG_LIST_TEXT);
+        for yy in rect.top()..rect.bottom() {
+            for xx in rect.left()..rect.right() {
+                buf[(xx, yy)].set_symbol(" ");
+            }
+        }
+        for xx in rect.left()..rect.right() {
+            buf[(xx, rect.top())].set_symbol("─");
+            buf[(xx, rect.bottom() - 1)].set_symbol("─");
+        }
+        for yy in rect.top()..rect.bottom() {
+            buf[(rect.left(), yy)].set_symbol("│");
+            buf[(rect.right() - 1, yy)].set_symbol("│");
+        }
+        buf[(rect.left(), rect.top())].set_symbol("┌");
+        buf[(rect.right() - 1, rect.top())].set_symbol("┐");
+        buf[(rect.left(), rect.bottom() - 1)].set_symbol("└");
+        buf[(rect.right() - 1, rect.bottom() - 1)].set_symbol("┘");
+        let inner = rect.width.saturating_sub(2);
+        for (i, item) in items.iter().enumerate() {
+            let y = rect.y + 1 + i as u16;
+            if y + 1 >= rect.bottom() {
+                break;
+            }
+            match item {
+                None => {
+                    buf[(rect.left(), y)].set_symbol("├");
+                    buf[(rect.right() - 1, y)].set_symbol("┤");
+                    for xx in rect.left() + 1..rect.right() - 1 {
+                        buf[(xx, y)].set_symbol("─");
+                    }
+                }
+                Some(text) => {
+                    let (style, hot) = if i == current {
+                        (
+                            theme::DIALOG_LIST_SELECTED,
+                            theme::DIALOG_LIST_SELECTED_HIGHLIGHT,
+                        )
+                    } else {
+                        (theme::DIALOG_LIST_TEXT, theme::DIALOG_LIST_HIGHLIGHT)
+                    };
+                    for xx in rect.left() + 1..rect.right() - 1 {
+                        buf[(xx, y)].set_symbol(" ").set_style(style);
+                    }
+                    put_label(
+                        buf,
+                        rect.x + 2,
+                        y,
+                        inner.saturating_sub(1),
+                        text,
+                        style,
+                        hot,
+                    );
+                }
+            }
+        }
+        // Clicks inside the list go to its combo box (first hit area).
+        self.hits.insert(
+            0,
+            (
+                Rect::new(rect.x + 1, rect.y + 1, inner, items.len() as u16),
+                Target::Elem(r, e),
+            ),
+        );
+        true
+    }
+}
+
+/// An input field at `x`, `width` wide.
+pub fn input_at(x: u16, width: u16, value: impl Into<String>, history: bool) -> Elem {
+    let value = value.into();
+    Elem {
+        x: X::At(x),
+        kind: Kind::Input {
+            cursor: value.chars().count(),
+            unchanged: !value.is_empty(),
+            value,
+            width,
+            history,
+            readonly: false,
+            disabled: false,
+        },
+    }
+}
+
+pub fn text_at(x: u16, text: impl Into<String>) -> Elem {
+    Elem {
+        x: X::At(x),
+        kind: Kind::Text {
+            text: text.into(),
+            show_amp: false,
+            highlight: false,
+        },
+    }
+}
+
+pub fn check_at(x: u16, label: impl Into<String>, checked: bool) -> Elem {
+    Elem {
+        x: X::At(x),
+        kind: Kind::Check {
+            label: label.into(),
+            checked,
+            disabled: false,
+        },
+    }
+}
+
+pub fn radio_at(x: u16, label: impl Into<String>, selected: bool, group: u16) -> Elem {
+    Elem {
+        x: X::At(x),
+        kind: Kind::Radio {
+            label: label.into(),
+            selected,
+            group,
+            disabled: false,
+        },
+    }
+}
+
+pub fn combo_at(x: u16, width: u16, items: Vec<Option<String>>, selected: usize) -> Elem {
+    Elem {
+        x: X::At(x),
+        kind: Kind::Combo {
+            items,
+            selected,
+            width,
+            disabled: false,
+        },
+    }
+}
+
+impl Elem {
+    /// Greyed out and not focusable.
+    pub fn disabled(mut self) -> Self {
+        match &mut self.kind {
+            Kind::Input { disabled, .. }
+            | Kind::Check { disabled, .. }
+            | Kind::Radio { disabled, .. }
+            | Kind::Combo { disabled, .. } => *disabled = true,
+            Kind::Text { .. } => {}
+        }
+        self
+    }
+
+    /// Text in the hotkey colour (Far highlights names this way).
+    pub fn highlighted(mut self) -> Self {
+        if let Kind::Text { highlight, .. } = &mut self.kind {
+            *highlight = true;
+        }
+        self
+    }
+
+    /// Shows the text as is: `&` is not a hotkey marker.
+    pub fn literal(mut self) -> Self {
+        if let Kind::Text { show_amp, .. } = &mut self.kind {
+            *show_amp = true;
+        }
+        self
+    }
+
+    /// An input field that only shows its text (looks like plain text).
+    pub fn readonly(mut self) -> Self {
+        if let Kind::Input {
+            readonly,
+            unchanged,
+            ..
+        } = &mut self.kind
+        {
+            *readonly = true;
+            *unchanged = false;
+        }
+        self
+    }
+
+    pub fn centered(mut self) -> Self {
+        self.x = X::Center;
+        self
+    }
+}
+
+impl Button {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            default: false,
+            disabled: false,
+            hidden: false,
+        }
+    }
+
+    pub fn default(mut self) -> Self {
+        self.default = true;
+        self
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+
+    pub fn hidden(mut self) -> Self {
+        self.hidden = true;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn selects_radio_buttons_in_groups() {
-        let mut d = Dialog::new("t", 30)
-            .radios(&["a", "b", "c"], 0)
-            .separator()
-            .radios(&["x", "y"], 1)
-            .buttons(&["OK"], 0);
-        assert_eq!((d.radio(0), d.radio(1)), (0, 1));
-        d.handle_key(&key(KeyCode::Down)); // b
-        d.handle_key(&key(KeyCode::Down)); // c
-        d.handle_key(&key(KeyCode::Char(' ')));
-        d.handle_key(&key(KeyCode::Down)); // x
-        d.handle_key(&key(KeyCode::Char(' ')));
-        assert_eq!((d.radio(0), d.radio(1)), (2, 0));
-    }
-
-    #[test]
-    fn wraps_words() {
-        assert_eq!(wrap("один два три", 8), vec!["один два", "три"]);
-        assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
-        assert_eq!(wrap("", 5), vec![""]);
-    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn alt(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+    }
+
     fn mkdir_dialog() -> Dialog {
-        Dialog::new("Создание папки", 40)
-            .text("Создать папку:")
+        Dialog::far("Создание папки", 76)
+            .text("Создать п&апку:")
             .input("")
-            .check("Обработать несколько имён", false)
+            .check("Обрабатыват&ь несколько имён папок", false)
             .separator()
             .buttons(&["OK", "Отмена"], 0)
     }
@@ -635,17 +1503,6 @@ mod tests {
         d.handle_key(&key(KeyCode::Backspace));
         assert_eq!(d.input_value(0), "нова");
         assert_eq!(d.handle_key(&key(KeyCode::Enter)), Outcome::Closed(Some(0)));
-    }
-
-    #[test]
-    fn typing_replaces_untouched_text() {
-        let mut d = Dialog::new("t", 30).input("old").buttons(&["OK"], 0);
-        d.handle_key(&key(KeyCode::Char('n')));
-        assert_eq!(d.input_value(0), "n");
-        let mut d = Dialog::new("t", 30).input("old").buttons(&["OK"], 0);
-        d.handle_key(&key(KeyCode::End));
-        d.handle_key(&key(KeyCode::Char('!')));
-        assert_eq!(d.input_value(0), "old!");
     }
 
     #[test]
@@ -664,17 +1521,114 @@ mod tests {
     }
 
     #[test]
-    fn focuses_default_button_without_inputs() {
-        let mut d = Dialog::new("Удаление", 30)
-            .text("Удалить?")
-            .buttons(&["Удалить", "Отмена"], 0);
-        assert_eq!(d.handle_key(&key(KeyCode::Right)), Outcome::Pending);
-        assert_eq!(d.handle_key(&key(KeyCode::Enter)), Outcome::Closed(Some(1)));
+    fn hotkeys_work_in_any_layout() {
+        let mut d = Dialog::far("t", 40)
+            .check("Обрабатыват&ь", false)
+            .buttons(&["&Копировать", "&Отменить"], 0);
+        // Alt+Ь (Cyrillic layout) and Alt+M (the same key) toggle the box.
+        d.handle_key(&alt('ь'));
+        assert!(d.checked(0));
+        d.handle_key(&alt('m'));
+        assert!(!d.checked(0));
+        // Alt+К presses "&Копировать"; Alt+J (the key of О) "&Отменить".
+        assert_eq!(d.handle_key(&alt('к')), Outcome::Closed(Some(0)));
+        assert_eq!(d.handle_key(&alt('j')), Outcome::Closed(Some(1)));
+    }
+
+    #[test]
+    fn typing_replaces_untouched_text() {
+        let mut d = Dialog::far("t", 40).input("old").buttons(&["OK"], 0);
+        d.handle_key(&key(KeyCode::Char('n')));
+        assert_eq!(d.input_value(0), "n");
+        let mut d = Dialog::far("t", 40).input("old").buttons(&["OK"], 0);
+        d.handle_key(&key(KeyCode::End));
+        d.handle_key(&key(KeyCode::Char('!')));
+        assert_eq!(d.input_value(0), "old!");
+    }
+
+    #[test]
+    fn radio_groups_in_one_row_and_across_rows() {
+        let mut d = Dialog::far("t", 76);
+        let g = d.new_group();
+        let mut d = d
+            .row(vec![
+                text_at(5, "П&рава доступа:"),
+                radio_at(20, "По умол&чанию", true, g),
+                radio_at(37, "Копироват&ь", false, g),
+            ])
+            .radios(&["x", "y"], 1)
+            .buttons(&["OK"], 0);
+        assert_eq!((d.radio(0), d.radio(1)), (0, 1));
+        d.handle_key(&key(KeyCode::Right)); // the second radio of group 0
+        d.handle_key(&key(KeyCode::Char(' ')));
+        assert_eq!((d.radio(0), d.radio(1)), (1, 1));
+    }
+
+    #[test]
+    fn combo_list_opens_and_chooses() {
+        let items = vec![
+            Some("&Запрос действия".to_string()),
+            Some("В&место".into()),
+            None,
+            Some("П&ропустить".into()),
+        ];
+        let mut d = Dialog::far("t", 76)
+            .row(vec![combo_at(29, 42, items, 0)])
+            .buttons(&["OK"], 0);
+        d.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        d.handle_key(&key(KeyCode::Down));
+        d.handle_key(&key(KeyCode::Down)); // skips the separator
+        d.handle_key(&key(KeyCode::Enter));
+        assert_eq!(d.combo(0), 3);
+        assert_eq!(d.handle_key(&key(KeyCode::Enter)), Outcome::Closed(Some(0)));
+    }
+
+    #[test]
+    fn far_geometry_and_buttons() {
+        // Far's make-folder dialog is 76 wide with buttons at 29..34 and
+        // 36..45.
+        let mut d = mkdir_dialog();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 76, 25));
+        d.draw(Rect::new(0, 0, 76, 25), &mut buf);
+        let top = (25 - (5 + 4)) / 2;
+        let row = |y: u16| {
+            (0..76)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
+        assert!(row(top + 1).starts_with("   ╔"), "{}", row(top + 1));
+        assert_eq!(
+            row(top + 6),
+            format!("   ║{:25}{{ OK }} [ Отмена ]{:26}║   ", "", "")
+        );
+        // The hotkey letter is highlighted.
+        let y = top + 2;
+        let a = (10..76).find(|&x| buf[(x, y)].symbol() == "а").unwrap();
+        assert_eq!(buf[(a, y)].style().fg, theme::DIALOG_HIGHLIGHT.fg);
+    }
+
+    #[test]
+    fn message_is_sized_like_far() {
+        let d = Dialog::message(
+            "Ошибка",
+            &["Ошибка удаления файла".into(), "x".into()],
+            &["&Повторить", "Отмена"],
+            true,
+        );
+        // Buttons: (9+5) + (6+5) − 1 = 24 > 21, so W = 24 + 10.
+        assert_eq!(d.width, 34);
+    }
+
+    #[test]
+    fn wraps_words() {
+        assert_eq!(wrap("один два три", 8), vec!["один два", "три"]);
+        assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("", 5), vec![""]);
     }
 
     #[test]
     fn clicks_buttons() {
-        let mut d = Dialog::new("Удаление", 30)
+        let mut d = Dialog::far("Удаление", 40)
             .text("Удалить?")
             .buttons(&["Удалить", "Отмена"], 0);
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 25));
@@ -682,7 +1636,7 @@ mod tests {
         let (rect, _) = d
             .hits
             .iter()
-            .find(|(_, t)| *t == Target::Button(1, 1))
+            .find(|(_, t)| matches!(t, Target::Button(_, _, 1)))
             .copied()
             .unwrap();
         let click = MouseEvent {

@@ -169,3 +169,13 @@ MCannotCopyFolderToItself1
 MCannotCopyFolderToItself2
 MCannotCopyFileToItself1
 MCannotCopyFileToItself2
+
+# Sizes and speed
+MListBytes
+MListKb
+MListMb
+MListGb
+MListTb
+MListPb
+MListEb
+MCopyTimeInfoSpeed

@@ -180,6 +180,12 @@ pub fn far_items_suffix(n: usize) -> String {
     tr(id)
 }
 
+/// Decimal separator of the interface language (until numbers follow the
+/// Windows regional settings, as in Far).
+pub fn decimal_separator() -> &'static str {
+    if lang() == "en" { "." } else { "," }
+}
+
 /// Removes Far's hotkey markers (`&`) from a label.
 pub fn plain(s: &str) -> String {
     s.replace('&', "")
