@@ -95,6 +95,13 @@ pub enum Outcome {
     Closed(Option<usize>),
 }
 
+/// What the mouse button was pressed on (the action happens on release).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pressed {
+    Target(Target, Rect),
+    ListItem(usize),
+}
+
 /// An open drop-down list of a combo box.
 struct OpenList {
     row: usize,
@@ -267,6 +274,7 @@ pub struct Dialog {
     outer: Rect,
     /// Where the open drop-down list was last drawn.
     list_rect: Rect,
+    pressed: Option<Pressed>,
 }
 
 impl Dialog {
@@ -285,6 +293,7 @@ impl Dialog {
             drag: None,
             outer: Rect::default(),
             list_rect: Rect::default(),
+            pressed: None,
         }
     }
 
@@ -938,24 +947,11 @@ impl Dialog {
     }
 
     /// Returns `None` when the event is outside the dialog.
+    ///
+    /// Like Far (and Windows): pressing the button focuses an item, the
+    /// action happens on release over the same item.
     pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Option<Outcome> {
         let pos = Position::new(ev.column, ev.row);
-        // An open list closes on a click anywhere outside it, and that
-        // click does nothing else.
-        if self.list.is_some()
-            && matches!(ev.kind, MouseEventKind::Down(_))
-            && !self.list_rect.contains(pos)
-        {
-            self.list = None;
-            return Some(Outcome::Pending);
-        }
-        // On the list's frame: nothing (the list covers what is below it).
-        if self.list.is_some()
-            && self.list_rect.contains(pos)
-            && !self.hits.first().is_some_and(|(r, _)| r.contains(pos))
-        {
-            return Some(Outcome::Pending);
-        }
         // Moving the dialog: grabbed anywhere but on its items.
         if let Some((lx, ly)) = self.drag {
             match ev.kind {
@@ -968,61 +964,121 @@ impl Dialog {
             }
             return Some(Outcome::Pending);
         }
-        let Some((rect, target)) = self.hits.iter().copied().find(|(r, _)| r.contains(pos)) else {
-            if !self.outer.contains(pos) {
-                return None;
-            }
-            if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.list.is_none() {
-                self.drag = Some((ev.column, ev.row));
-            }
-            return Some(Outcome::Pending);
-        };
-        if ev.kind != MouseEventKind::Down(MouseButton::Left) {
-            return Some(Outcome::Pending);
-        }
-        // The first hit area of an open list is the list itself.
-        if let Some(list) = &self.list {
-            let (r, e) = (list.row, list.elem);
-            if target == Target::Elem(r, e) && self.hits.first().is_some_and(|(lr, _)| *lr == rect)
-            {
-                let index = usize::from(ev.row - rect.y);
-                if self
-                    .list_items()
-                    .is_some_and(|items| items.get(index).is_some_and(Option::is_some))
-                {
-                    self.choose(r, e, index);
-                }
-                return Some(Outcome::Pending);
-            }
+        // An open list closes on a press anywhere outside it, and that
+        // press does nothing else.
+        if self.list.is_some()
+            && matches!(ev.kind, MouseEventKind::Down(_))
+            && !self.list_rect.contains(pos)
+        {
             self.list = None;
+            self.pressed = None;
+            return Some(Outcome::Pending);
         }
-        self.set_focus(target);
-        match target {
-            Target::Button(_, _, n) => return Some(Outcome::Closed(Some(n))),
-            Target::Elem(r, e) => match self.elem(r, e).map(|e| &e.kind) {
-                Some(Kind::Radio { .. }) => self.select_radio(r, e),
-                Some(Kind::Combo { .. }) => self.open_list(r, e),
-                _ => {
-                    if let Some(elem) = self.elem_mut(r, e) {
-                        match &mut elem.kind {
-                            Kind::Check { checked, .. } => *checked = !*checked,
-                            Kind::Input {
-                                value,
-                                cursor,
-                                unchanged,
+        let under = self.under(pos);
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.pressed = under;
+                match under {
+                    Some(Pressed::Target(target, rect)) => {
+                        self.set_focus(target);
+                        // The text cursor goes where the field was pressed.
+                        if let Target::Elem(r, e) = target
+                            && let Some(Elem {
+                                kind:
+                                    Kind::Input {
+                                        value,
+                                        cursor,
+                                        unchanged,
+                                        ..
+                                    },
                                 ..
-                            } => {
-                                *unchanged = false;
-                                *cursor =
-                                    usize::from(ev.column - rect.x).min(value.chars().count());
-                            }
-                            _ => {}
+                            }) = self.elem_mut(r, e)
+                        {
+                            *unchanged = false;
+                            *cursor = usize::from(ev.column - rect.x).min(value.chars().count());
                         }
                     }
+                    Some(Pressed::ListItem(_)) => {}
+                    None if self.list.is_none() && self.outer.contains(pos) => {
+                        self.drag = Some((ev.column, ev.row));
+                    }
+                    None if !self.outer.contains(pos) && self.list.is_none() => return None,
+                    None => {}
                 }
-            },
+                Some(Outcome::Pending)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let pressed = self.pressed.take();
+                let same = match (pressed, under) {
+                    (Some(Pressed::Target(a, _)), Some(Pressed::Target(b, _))) => a == b,
+                    (Some(Pressed::ListItem(a)), Some(Pressed::ListItem(b))) => a == b,
+                    _ => false,
+                };
+                if !same {
+                    return Some(Outcome::Pending);
+                }
+                Some(match under {
+                    Some(Pressed::Target(target, _)) => self.activate(target),
+                    Some(Pressed::ListItem(index)) => {
+                        if let Some(list) = &self.list {
+                            let (r, e) = (list.row, list.elem);
+                            self.choose(r, e, index);
+                        }
+                        Outcome::Pending
+                    }
+                    None => Outcome::Pending,
+                })
+            }
+            _ if under.is_some() || self.outer.contains(pos) || self.list_rect.contains(pos) => {
+                Some(Outcome::Pending)
+            }
+            _ => None,
         }
-        Some(Outcome::Pending)
+    }
+
+    /// What is under the mouse: an item of the open list, or a dialog item.
+    fn under(&self, pos: Position) -> Option<Pressed> {
+        if self.list.is_some() && self.list_rect.contains(pos) {
+            // The first hit area is the list's items; the frame is nothing.
+            let (items, _) = self.hits.first()?;
+            if !items.contains(pos) {
+                return None;
+            }
+            let index = usize::from(pos.y - items.y);
+            return self
+                .list_items()
+                .is_some_and(|it| it.get(index).is_some_and(Option::is_some))
+                .then_some(Pressed::ListItem(index));
+        }
+        self.hits
+            .iter()
+            .skip(usize::from(self.list.is_some()))
+            .find(|(r, _)| r.contains(pos))
+            .map(|(r, t)| Pressed::Target(*t, *r))
+    }
+
+    /// A click (press and release) on an item.
+    fn activate(&mut self, target: Target) -> Outcome {
+        match target {
+            Target::Button(_, _, n) => Outcome::Closed(Some(n)),
+            Target::Elem(r, e) => {
+                match self.elem(r, e).map(|e| &e.kind) {
+                    Some(Kind::Radio { .. }) => self.select_radio(r, e),
+                    Some(Kind::Combo { .. }) => self.open_list(r, e),
+                    Some(Kind::Check { .. }) => {
+                        if let Some(Elem {
+                            kind: Kind::Check { checked, .. },
+                            ..
+                        }) = self.elem_mut(r, e)
+                        {
+                            *checked = !*checked;
+                        }
+                    }
+                    _ => {}
+                }
+                Outcome::Pending
+            }
+        }
     }
 
     // -------------------------------------------------------------- draw
@@ -1172,6 +1228,7 @@ impl Dialog {
         if self.draw_list(buf, x0, y0, area) {
             return None;
         }
+        self.list_rect = Rect::default();
         cursor
     }
 
@@ -1789,12 +1846,44 @@ mod tests {
             .find(|(_, t)| matches!(t, Target::Button(_, _, 1)))
             .copied()
             .unwrap();
-        let click = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x + 1,
+        let ev = |kind, column| MouseEvent {
+            kind,
+            column,
             row: rect.y,
             modifiers: KeyModifiers::NONE,
         };
-        assert_eq!(d.handle_mouse(&click), Some(Outcome::Closed(Some(1))));
+        let down = MouseEventKind::Down(MouseButton::Left);
+        let up = MouseEventKind::Up(MouseButton::Left);
+        // Pressing only focuses; releasing over the same button presses it.
+        assert_eq!(
+            d.handle_mouse(&ev(down, rect.x + 1)),
+            Some(Outcome::Pending)
+        );
+        assert_eq!(
+            d.handle_mouse(&ev(up, rect.x + 2)),
+            Some(Outcome::Closed(Some(1)))
+        );
+        // Released elsewhere: nothing.
+        d.handle_mouse(&ev(down, rect.x + 1));
+        assert_eq!(d.handle_mouse(&ev(up, 0)), Some(Outcome::Pending));
+    }
+
+    #[test]
+    fn check_box_toggles_on_release() {
+        let mut d = Dialog::far("t", 40).check("x", false).buttons(&["OK"], 0);
+        let area = Rect::new(0, 0, 80, 25);
+        let mut buf = Buffer::empty(area);
+        d.draw(area, &mut buf);
+        let (rect, _) = d.hits[0];
+        let ev = |kind| MouseEvent {
+            kind,
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        d.handle_mouse(&ev(MouseEventKind::Down(MouseButton::Left)));
+        assert!(!d.checked(0));
+        d.handle_mouse(&ev(MouseEventKind::Up(MouseButton::Left)));
+        assert!(d.checked(0));
     }
 }

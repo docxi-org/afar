@@ -165,6 +165,8 @@ pub struct App {
     last_live: Rect,
     /// Last left click (time, panel, item) to detect double clicks.
     last_click: Option<(Instant, usize, usize)>,
+    /// F-key pressed with the mouse on the key bar (acts on release).
+    keybar_pressed: Option<u8>,
     /// Dialogs and progress windows over the layout, topmost last.
     overlays: Vec<Overlay>,
     ops: std::collections::HashMap<OpId, RunningOp>,
@@ -220,6 +222,7 @@ impl App {
             last_layout: None,
             last_live: Rect::default(),
             last_click: None,
+            keybar_pressed: None,
             overlays: Vec::new(),
             ops: std::collections::HashMap::new(),
             next_op_id: 0,
@@ -1477,13 +1480,24 @@ impl App {
         }
 
         if l.keybar.contains(pos) {
-            // Clicking a key label presses that key, like in Far.
-            if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.focus == Focus::Panels {
-                let cell = (l.keybar.width / 12).max(4);
-                let n = (ev.column - l.keybar.x) / cell + 1;
-                if n <= 12 {
-                    self.panels_key(KeyEvent::new(KeyCode::F(n as u8), KeyModifiers::NONE));
+            // Clicking a key label presses that key, like in Far: on
+            // release over the same key.
+            let key = keybar_keys(l.keybar.width)
+                .iter()
+                .position(|(start, end)| {
+                    (l.keybar.x + start..l.keybar.x + end).contains(&ev.column)
+                })
+                .map(|i| i as u8 + 1);
+            match ev.kind {
+                MouseEventKind::Down(MouseButton::Left) => self.keybar_pressed = key,
+                MouseEventKind::Up(MouseButton::Left) => {
+                    if let Some(n) = key.filter(|k| self.keybar_pressed.take() == Some(*k))
+                        && self.focus == Focus::Panels
+                    {
+                        self.panels_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
+                    }
                 }
+                _ => {}
             }
             return;
         }
@@ -1803,7 +1817,6 @@ impl App {
     /// space; at 98 columns and more the labels widen, below that the bar
     /// is cut off at the right edge.
     fn draw_keybar(&self, area: Rect, buf: &mut Buffer) {
-        const MIN_LABEL: u16 = 6;
         buf.set_style(area, theme::KEYBAR_TEXT);
         for x in area.left()..area.right() {
             buf[(x, area.y)].set_symbol(" ");
@@ -1824,21 +1837,11 @@ impl App {
             return;
         }
         let width = area.width;
-        let mut pos = 0u16;
-        for i in 0..12u16 {
-            if pos >= width {
-                break;
-            }
+        for (i, (pos, end)) in keybar_keys(width).into_iter().enumerate() {
+            let i = i as u16;
             let num = (i + 1).to_string();
             let num_w = num.len() as u16;
             let gap = u16::from(i < 11);
-            let min_end = pos + num_w + MIN_LABEL + gap;
-            let end = if width >= 98 {
-                min_end.max((i + 1) * width / 12)
-            } else {
-                min_end
-            }
-            .min(width);
             let x = area.x + pos;
             put(
                 buf,
@@ -1866,9 +1869,34 @@ impl App {
                         .set_style(theme::KEYBAR_NUM);
                 }
             }
-            pos = end;
         }
     }
+}
+
+/// Far's key bar layout (keybar.cpp): for each key from F1, the columns it
+/// takes (start, end) — a number, a label of at least 6 cells and a space;
+/// at 98 columns and more the labels widen, below that the bar is cut off.
+fn keybar_keys(width: u16) -> Vec<(u16, u16)> {
+    const MIN_LABEL: u16 = 6;
+    let mut keys = Vec::new();
+    let mut pos = 0u16;
+    for i in 0..12u16 {
+        if pos >= width {
+            break;
+        }
+        let num_w = if i < 9 { 1 } else { 2 };
+        let gap = u16::from(i < 11);
+        let min_end = pos + num_w + MIN_LABEL + gap;
+        let end = if width >= 98 {
+            min_end.max((i + 1) * width / 12)
+        } else {
+            min_end
+        }
+        .min(width);
+        keys.push((pos, end));
+        pos = end;
+    }
+    keys
 }
 
 /// A random UUID (version 4) for a Claude Code session id.
