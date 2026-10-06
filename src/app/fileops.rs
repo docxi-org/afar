@@ -14,7 +14,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use tokio::sync::oneshot;
 
+use super::policy::AgentAction;
 use super::{App, AppMsg, Focus};
+use crate::config::Level;
 use crate::dialog::{
     Button, Dialog, Outcome, check_at, combo_at, input_at, radio_at, text_at, visible, wrap,
 };
@@ -54,12 +56,17 @@ pub(super) enum Overlay {
         menu: crate::menu::Menu,
         purpose: super::panelcmds::MenuPurpose,
     },
+    /// F9.
+    MenuBar(crate::menubar::MenuBar<super::mainmenu::MainAction>),
 }
 
 /// What a dialog was opened for, i.e. what to do when it closes.
 pub(super) enum Purpose {
     MkDir {
         side: usize,
+        actor: Actor,
+        /// The agent's request, answered when the dialog closes.
+        reply: Option<oneshot::Sender<Reply>>,
     },
     Delete {
         targets: Vec<PathBuf>,
@@ -96,6 +103,10 @@ pub(super) enum Purpose {
         reply: mpsc::Sender<ConflictAnswer>,
     },
     Message,
+    /// F9 → Options → Confirmations.
+    Confirmations,
+    /// F9 → Options → the agent and its permissions.
+    AgentSettings,
     /// Gray + / Gray -: select or unselect by the mask.
     Select {
         side: usize,
@@ -305,6 +316,7 @@ impl App {
                 }
             }
             Some(Overlay::Menu { .. }) => self.menu_key(key),
+            Some(Overlay::MenuBar(_)) => self.menubar_key(key),
             None => {}
         }
     }
@@ -320,6 +332,10 @@ impl App {
             self.menu_mouse(ev);
             return;
         }
+        if let Some(Overlay::MenuBar(_)) = self.overlays.last() {
+            self.menubar_mouse(ev);
+            return;
+        }
         if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut()
             && let Some(Outcome::Closed(button)) = dialog.handle_mouse(ev)
         {
@@ -332,9 +348,11 @@ impl App {
             return;
         };
         match purpose {
-            Purpose::MkDir { side } => {
+            Purpose::MkDir { side, actor, reply } => {
                 if button == Some(0) {
-                    self.mkdir_from_dialog(side, &dialog);
+                    self.mkdir_from_dialog(side, &dialog, actor, reply);
+                } else if let Some(reply) = reply {
+                    let _ = reply.send(Err("the user declined creating the folders".into()));
                 }
             }
             Purpose::Delete {
@@ -421,6 +439,16 @@ impl App {
                     op.control.set_paused(false);
                 }
             }
+            Purpose::Confirmations => {
+                if button == Some(0) {
+                    self.confirmations_from_dialog(&dialog);
+                }
+            }
+            Purpose::AgentSettings => {
+                if button == Some(0) {
+                    self.agent_settings_from_dialog(&dialog);
+                }
+            }
             Purpose::Select { side, add } => {
                 if button == Some(0) {
                     self.select_from_dialog(side, add, dialog);
@@ -442,6 +470,10 @@ impl App {
                     menu.draw(area, buf);
                     None
                 }
+                Overlay::MenuBar(bar) => {
+                    bar.draw(area, buf);
+                    None
+                }
             };
         }
         cursor
@@ -451,14 +483,25 @@ impl App {
 
     /// F7, as Far's make-folder dialog (mkdir.cpp).
     pub(super) fn mkdir_dialog(&mut self) {
+        self.open_mkdir_dialog(self.active, &[], Actor::User, None);
+    }
+
+    /// The make-folder dialog; the agent's request comes filled in.
+    pub(super) fn open_mkdir_dialog(
+        &mut self,
+        side: usize,
+        names: &[String],
+        actor: Actor,
+        reply: Option<oneshot::Sender<Reply>>,
+    ) {
         let link_types = vec![
             Some(tr!("MMakeFolderLinkNone")),
             Some(tr!("MMakeFolderLinkJunction")),
             Some(tr!("MMakeFolderLinkSymlink")),
         ];
-        let dialog = Dialog::far(tr!("MMakeFolderTitle"), FAR_WIDTH)
+        let mut d = Dialog::far(tr!("MMakeFolderTitle"), FAR_WIDTH)
             .text(tr!("MCreateFolder"))
-            .row(vec![input_at(5, 66, "", true)])
+            .row(vec![input_at(5, 66, names.join(";"), true)])
             .separator()
             .row(vec![
                 text_at(5, tr!("MMakeFolderLinkType")),
@@ -468,16 +511,26 @@ impl App {
                 text_at(5, tr!("MMakeFolderLinkTarget")),
                 input_at(20, 51, "", true),
             ])
-            .row(vec![check_at(5, tr!("MMultiMakeDir"), false)])
-            .separator()
-            .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
+            .row(vec![check_at(5, tr!("MMultiMakeDir"), names.len() > 1)]);
+        if actor == Actor::Agent {
+            d = d.row(vec![
+                text_at(5, tr!("requested-by-agent")).literal().centered(),
+            ]);
+        }
+        let dialog = d.separator().buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
         self.overlays.push(Overlay::Dialog {
             dialog,
-            purpose: Purpose::MkDir { side: self.active },
+            purpose: Purpose::MkDir { side, actor, reply },
         });
     }
 
-    fn mkdir_from_dialog(&mut self, side: usize, dialog: &Dialog) {
+    fn mkdir_from_dialog(
+        &mut self,
+        side: usize,
+        dialog: &Dialog,
+        actor: Actor,
+        reply: Option<oneshot::Sender<Reply>>,
+    ) {
         let text = dialog.input_value(0);
         let names: Vec<String> = if dialog.checked(0) {
             text.split([';', ',']).map(str::to_string).collect()
@@ -490,12 +543,19 @@ impl App {
             _ => None,
         };
         let result = match link {
-            None => self.mkdir(side, Actor::User, &names).map(|_| ()),
+            None => self.mkdir(side, actor, &names).map(|created| {
+                let list: Vec<String> = created.iter().map(|p| p.display().to_string()).collect();
+                format!("created: {}", list.join(", "))
+            }),
             Some(junction) => {
                 let target = PathBuf::from(dialog.input_value(1).trim().trim_matches('"'));
                 self.make_links(side, &names, &target, junction)
+                    .map(|()| format!("links created to {}", target.display()))
             }
         };
+        if let Some(reply) = reply {
+            let _ = reply.send(result.clone());
+        }
         if let Err(lines) = result {
             self.message(&tr!("MError"), &[lines], true);
         }
@@ -1177,7 +1237,21 @@ impl App {
         mode: DeleteMode,
         reply: oneshot::Sender<Reply>,
     ) {
+        let action = if mode == DeleteMode::Trash {
+            AgentAction::Delete
+        } else {
+            AgentAction::DeletePermanent
+        };
+        let level = self.permission(action);
+        if level == Level::Deny {
+            let _ = reply.send(Err(Self::denied(action)));
+            return;
+        }
         match self.agent_sources(side, names) {
+            Ok(targets) if level == Level::Allow => {
+                self.set_panels_visible(true);
+                self.start_delete(targets, mode, Actor::Agent, Some(reply));
+            }
             Ok(targets) => {
                 let what = tr!("objects", count = targets.len());
                 self.present_agent_request(side, names, format!("{}: {what}", tr!("MDeleteTitle")));
@@ -1199,7 +1273,30 @@ impl App {
         moving: bool,
         reply: oneshot::Sender<Reply>,
     ) {
+        let action = if moving {
+            AgentAction::Move
+        } else {
+            AgentAction::Copy
+        };
+        let level = self.permission(action);
+        if level == Level::Deny {
+            let _ = reply.send(Err(Self::denied(action)));
+            return;
+        }
         match self.agent_sources(side, names) {
+            Ok(sources) if level == Level::Allow => {
+                self.set_panels_visible(true);
+                // Conflicts with existing files are still asked about.
+                let _ = self.start_copy(
+                    sources,
+                    &dest,
+                    moving,
+                    Overwrite::Ask,
+                    side,
+                    Actor::Agent,
+                    Some(reply),
+                );
+            }
             Ok(sources) => {
                 let title = tr!(if moving {
                     "MMoveDlgTitle"

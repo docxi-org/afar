@@ -52,3 +52,25 @@ copy-folder-where-file = { $path }: there is a folder here
 link-create-failed = could not create the link: { $error }
 
 config-problem = Settings not read: { $problem }
+
+## F9 → Options: the agent's settings
+menu-agent-settings = Agent and permissions
+agent-settings-title = Agent and permissions
+agent-settings-command = Agent command:
+agent-settings-args = Arguments:
+agent-settings-live = Start in &live mode (actions go with each prompt)
+agent-settings-permissions = What the agent may do through afar
+perm-navigate = Show and select in panels:
+perm-mkdir = Create folders:
+perm-copy = Copy:
+perm-move = Move and rename:
+perm-delete = Delete to the recycle bin:
+perm-delete-permanent = Delete permanently:
+perm-run-command = Run commands:
+perm-allow = Allow
+perm-confirm = Ask me
+perm-deny = Deny
+agent-settings-note = The agent's own Bash, Edit and Write are asked about by Claude Code.
+agent-settings-restart = Command and arguments apply when the agent starts again.
+settings-saved = Settings saved: { $path }
+settings-save-failed = Settings not saved: { $error }

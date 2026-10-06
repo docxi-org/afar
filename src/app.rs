@@ -30,8 +30,11 @@ mod cmdline;
 mod commands;
 mod fileops;
 mod fswatch;
+mod mainmenu;
 mod panelcmds;
+mod policy;
 mod quicksearch;
+mod settings;
 use crate::{keys, termview, theme, tr};
 use fileops::{Overlay, RunningOp};
 
@@ -605,6 +608,12 @@ impl App {
                         };
                         self.agent_delete(side, &names, mode, reply)
                     }
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                    }
+                },
+                Request::MkDir { side, names } => match self.resolve_side(&side) {
+                    Ok(side) => self.agent_mkdir_request(side, names, reply),
                     Err(e) => {
                         let _ = reply.send(Err(e));
                     }
@@ -1265,6 +1274,11 @@ impl App {
                     ))
                 }
             },
+            Request::Navigate { .. } | Request::Select { .. }
+                if self.permission(policy::AgentAction::Navigate) == crate::config::Level::Deny =>
+            {
+                Err(Self::denied(policy::AgentAction::Navigate))
+            }
             Request::Navigate { side, path, cursor } => {
                 let side = self.resolve_side(&side)?;
                 let target = self.panels[side].path.join(&path);
@@ -1320,11 +1334,9 @@ impl App {
                 }
                 Ok(out)
             }
-            Request::MkDir { side, names } => {
-                let side = self.resolve_side(&side)?;
-                self.agent_mkdir(side, &names)
+            Request::Delete { .. } | Request::Copy { .. } | Request::MkDir { .. } => {
+                Err("handled asynchronously".into())
             }
-            Request::Delete { .. } | Request::Copy { .. } => Err("handled asynchronously".into()),
             Request::HookPrompt => {
                 self.fs_new_prompt();
                 Ok(self.prompt_context())

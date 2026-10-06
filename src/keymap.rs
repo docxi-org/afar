@@ -178,7 +178,25 @@ impl Chord {
         })
     }
 
-    /// Far's name of the chord (for menus and help).
+    /// The name Far shows in menus: the keypad keys are "Add",
+    /// "Subtract", "Multiply", "Divide" (keyboard.cpp).
+    pub fn far_label(&self) -> String {
+        let gray = match self.key {
+            Key::Gray('+') => "Add",
+            Key::Gray('-') => "Subtract",
+            Key::Gray('*') => "Multiply",
+            Key::Gray('/') => "Divide",
+            _ => return self.label(),
+        };
+        let plain = Chord {
+            key: Key::Char('x'),
+            ..*self
+        }
+        .label();
+        format!("{}{gray}", plain.trim_end_matches('X'))
+    }
+
+    /// The chord as written in key map files (`Gray+`, `Ctrl+[`).
     pub fn label(&self) -> String {
         let mut s = String::new();
         for (on, name) in [

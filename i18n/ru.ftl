@@ -53,3 +53,25 @@ copy-folder-where-file = { $path }: на этом месте папка
 link-create-failed = не удалось создать ссылку: { $error }
 
 config-problem = Настройки не прочитаны: { $problem }
+
+## F9 → Параметры: настройки агента
+menu-agent-settings = Агент и ра&зрешения
+agent-settings-title = Агент и разрешения
+agent-settings-command = Команда агента:
+agent-settings-args = Аргументы:
+agent-settings-live = Режим &live при запуске (действия уходят с каждым запросом)
+agent-settings-permissions = Что агенту можно делать через afar
+perm-navigate = Показывать и выделять в панелях:
+perm-mkdir = Создавать папки:
+perm-copy = Копировать:
+perm-move = Перемещать и переименовывать:
+perm-delete = Удалять в Корзину:
+perm-delete-permanent = Удалять минуя Корзину:
+perm-run-command = Выполнять команды:
+perm-allow = Разрешать
+perm-confirm = Спрашивать
+perm-deny = Запрещать
+agent-settings-note = Свои Bash, Edit и Write агента подтверждает Claude Code.
+agent-settings-restart = Команда и аргументы применятся при следующем запуске агента.
+settings-saved = Настройки сохранены: { $path }
+settings-save-failed = Настройки не сохранены: { $error }

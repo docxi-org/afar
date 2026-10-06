@@ -9,6 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
+use crate::keymap::Chord;
 use crate::theme;
 
 pub struct Item {
@@ -19,7 +20,7 @@ pub struct Item {
     pub separator: bool,
     /// Cannot be chosen; the cursor skips it.
     pub disabled: bool,
-    accel: Option<(KeyCode, KeyModifiers)>,
+    accel: Option<Chord>,
 }
 
 impl Item {
@@ -51,8 +52,15 @@ impl Item {
     }
 
     /// A key that chooses the item; its name is shown after the text.
-    pub fn accel(mut self, code: KeyCode, modifiers: KeyModifiers) -> Self {
-        self.accel = Some((code, modifiers));
+    pub fn accel(self, code: KeyCode, modifiers: KeyModifiers) -> Self {
+        match Chord::from_event(&KeyEvent::new(code, modifiers)) {
+            Some(chord) => self.accel_chord(chord),
+            None => self,
+        }
+    }
+
+    pub fn accel_chord(mut self, chord: Chord) -> Self {
+        self.accel = Some(chord);
         self
     }
 
@@ -76,6 +84,10 @@ pub struct Menu {
     top: usize,
     /// Column of the list's frame; `None` centres the menu.
     column: Option<u16>,
+    /// Row of the list's frame; `None` centres the menu.
+    row: Option<u16>,
+    /// Far's "thin" box: no margin around the frame (submenus of F9).
+    thin: bool,
     /// Geometry of the last drawing.
     outer: Rect,
     list: Rect,
@@ -94,9 +106,9 @@ impl Menu {
             .max()
             .unwrap_or(0);
         for item in items.iter_mut().filter(|i| !i.separator) {
-            if let Some((code, mods)) = item.accel {
+            if let Some(chord) = item.accel {
                 let pad = longest + 1 - visible_len(&item.text);
-                item.text = format!("{}{}{}", item.text, " ".repeat(pad), key_name(code, mods));
+                item.text = format!("{}{}{}", item.text, " ".repeat(pad), chord.far_label());
             }
         }
         let mut menu = Self {
@@ -106,6 +118,8 @@ impl Menu {
             selected: 0,
             top: 0,
             column: None,
+            row: None,
+            thin: false,
             outer: Rect::default(),
             list: Rect::default(),
             rows: 1,
@@ -126,11 +140,24 @@ impl Menu {
         self
     }
 
+    /// A submenu of the menu bar: a thin box with its frame at `x`, `y`.
+    pub fn at(mut self, x: u16, y: u16) -> Self {
+        self.column = Some(x);
+        self.row = Some(y);
+        self.thin = true;
+        self
+    }
+
     pub fn select(mut self, index: usize) -> Self {
         if self.items.get(index).is_some_and(Item::selectable) {
             self.selected = index;
         }
         self
+    }
+
+    /// The items back (with their decorated texts).
+    pub fn into_items(self) -> Vec<Item> {
+        self.items
     }
 
     pub fn rect(&self) -> Rect {
@@ -220,7 +247,7 @@ impl Menu {
     fn accel_item(&self, key: &KeyEvent) -> Option<usize> {
         self.items
             .iter()
-            .position(|i| i.selectable() && i.accel == Some((key.code, key.modifiers)))
+            .position(|i| i.selectable() && i.accel.is_some() && i.accel == Chord::from_event(key))
     }
 
     /// A letter, or Alt+letter, in any keyboard layout.
@@ -309,21 +336,29 @@ impl Menu {
             .count()
             .max(self.bottom_title.chars().count());
         let wn = (longest + 5).max(titles + 6) as u16;
-        let w = (wn + 4).min(area.width);
-        let wn = w.saturating_sub(4);
+        // The full box has a margin of 2 columns and 1 row around the list.
+        let (mx, my) = if self.thin { (0, 0) } else { (2, 1) };
+        let w = (wn + 2 * mx).min(area.width);
+        let wn = w.saturating_sub(2 * mx);
         // Far lets the blank row below go off screen before cutting items.
-        let h = (n as u16 + 4).min(area.height + 1);
+        let h = match self.row {
+            Some(r) => (n as u16 + 2 + 2 * my).min(area.bottom().saturating_sub(area.y + r)),
+            None => (n as u16 + 2 + 2 * my).min(area.height + 1),
+        };
         let mut x = match self.column {
-            Some(c) if c > 1 => area.x + c - 2,
+            Some(c) if c >= mx => area.x + c - mx,
             Some(c) => area.x + c,
             None => area.x + (area.width - w) / 2,
         };
         if x > area.x && x + w > area.right().saturating_sub(1) {
             x = area.right().saturating_sub(1).saturating_sub(w);
         }
-        let y = area.y + area.height.saturating_sub(h) / 2;
+        let y = match self.row {
+            Some(r) => area.y + r.saturating_sub(my),
+            None => area.y + area.height.saturating_sub(h) / 2,
+        };
         let outer = Rect::new(x, y, w, h);
-        let list = Rect::new(x + 2, y + 1, wn, h.saturating_sub(2));
+        let list = Rect::new(x + mx, y + my, wn, h.saturating_sub(2 * my));
         self.outer = outer;
         self.list = list;
         let rows = usize::from(list.height.saturating_sub(2)).max(1);
@@ -511,33 +546,6 @@ fn label_cells(text: &str, max: usize) -> (Vec<(char, bool)>, bool) {
         out.push(cell);
     }
     (out, false)
-}
-
-/// Far's key names (keyboard.cpp): modifiers Ctrl, Alt, Shift, then the key.
-pub fn key_name(code: KeyCode, mods: KeyModifiers) -> String {
-    let mut s = String::new();
-    for (m, name) in [
-        (KeyModifiers::CONTROL, "Ctrl"),
-        (KeyModifiers::ALT, "Alt"),
-        (KeyModifiers::SHIFT, "Shift"),
-    ] {
-        if mods.contains(m) {
-            s.push_str(name);
-            s.push('+');
-        }
-    }
-    let key = match code {
-        KeyCode::F(n) => format!("F{n}"),
-        KeyCode::Char(c) => c.to_uppercase().to_string(),
-        KeyCode::Delete => "Del".into(),
-        KeyCode::Insert => "Ins".into(),
-        KeyCode::Enter => "Enter".into(),
-        KeyCode::Esc => "Esc".into(),
-        KeyCode::Tab => "Tab".into(),
-        KeyCode::Backspace => "BS".into(),
-        other => format!("{other:?}"),
-    };
-    s + &key
 }
 
 #[cfg(test)]

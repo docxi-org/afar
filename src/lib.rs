@@ -11,6 +11,7 @@ pub mod keys;
 pub mod masks;
 pub mod mcp;
 pub mod menu;
+pub mod menubar;
 pub mod ops;
 pub mod panel;
 pub mod term;

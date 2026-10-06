@@ -65,6 +65,11 @@ pub const DIALOG_LIST_SELECTED: Style = c(con::WHITE, con::BLACK);
 pub const DIALOG_LIST_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
 pub const DIALOG_LIST_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
 pub const DIALOG_LIST_DISABLED: Style = c(con::DARKGRAY, con::LIGHTGRAY);
+/// The menu bar (HMenu.*).
+pub const HMENU_TEXT: Style = c(con::BLACK, con::CYAN);
+pub const HMENU_SELECTED: Style = c(con::WHITE, con::BLACK);
+pub const HMENU_HIGHLIGHT: Style = c(con::YELLOW, con::CYAN);
+pub const HMENU_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
 /// Menus (Menu.*): sort, drives, later F9 and F2.
 pub const MENU_BOX: Style = c(con::WHITE, con::CYAN);
 pub const MENU_TITLE: Style = c(con::WHITE, con::CYAN);

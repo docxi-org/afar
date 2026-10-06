@@ -33,6 +33,7 @@ impl App {
                     self.say(tr!("quit-confirm"));
                 }
             }
+            MainMenu => self.main_menu(),
             TogglePanels => {
                 if self.running.is_some() && !self.panels_visible() {
                     self.focus = Focus::Command;

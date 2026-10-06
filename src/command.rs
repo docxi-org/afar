@@ -9,6 +9,7 @@ use crate::panel::{SortMode, ViewMode};
 pub enum Command {
     // The application and the layout.
     Quit,
+    MainMenu,
     TogglePanels,
     AgentTaller,
     AgentShorter,
@@ -109,6 +110,7 @@ use Command::*;
 #[rustfmt::skip]
 pub const COMMANDS: &[Def] = &[
     def("app.quit", Quit, &["F10"], true),
+    def("app.menu", MainMenu, &["F9"], true),
     def("layout.toggle_panels", TogglePanels, &["Ctrl+O"], true),
     def("layout.agent_taller", AgentTaller, &["Ctrl+Up"], true),
     def("layout.agent_shorter", AgentShorter, &["Ctrl+Down"], true),
