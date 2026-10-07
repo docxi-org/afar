@@ -435,7 +435,10 @@ pub struct Dialog {
     focused_rect: Rect,
     /// The ghost suggestion: shown in grey after the focused field's text
     /// while it is this text and the cursor is at its end.
-    ghost: Option<(String, String)>,
+    ghost: Option<Box<(String, String)>>,
+    /// Check boxes that mean something only when another is checked:
+    /// (dependent, the one it depends on), by their order in the dialog.
+    links: Vec<(usize, usize)>,
 }
 
 impl Dialog {
@@ -459,16 +462,54 @@ impl Dialog {
             filled: false,
             focused_rect: Rect::default(),
             ghost: None,
+            links: Vec::new(),
+        }
+    }
+
+    /// The `child`-th check box is available only while the `parent`-th
+    /// is checked (Far greys such a box, e.g. "Modal mode" under "Show
+    /// list").
+    pub fn check_depends(mut self, child: usize, parent: usize) -> Self {
+        self.links.push((child, parent));
+        self.sync_links();
+        self
+    }
+
+    /// Greys or enables the dependent check boxes.
+    fn sync_links(&mut self) {
+        if self.links.is_empty() {
+            return;
+        }
+        let states: Vec<bool> = self
+            .kinds()
+            .into_iter()
+            .filter_map(|k| match k {
+                Kind::Check { checked, .. } => Some(*checked),
+                _ => None,
+            })
+            .collect();
+        let links = self.links.clone();
+        let mut n = 0;
+        for row in &mut self.rows {
+            let Row::Items(elems) = row else { continue };
+            for elem in elems {
+                if let Kind::Check { disabled, .. } = &mut elem.kind {
+                    if let Some((_, parent)) = links.iter().find(|(c, _)| *c == n) {
+                        *disabled = !states.get(*parent).copied().unwrap_or(false);
+                    }
+                    n += 1;
+                }
+            }
         }
     }
 
     /// The ghost suggestion for the focused field: `(its text, the rest)`.
     pub fn set_ghost(&mut self, ghost: Option<(String, String)>) {
-        self.ghost = ghost;
+        self.ghost = ghost.map(Box::new);
     }
 
     pub fn ghost(&self) -> Option<(String, String)> {
-        self.ghost.clone()
+        self.ghost.as_deref().cloned()
     }
 
     /// The dialog is being moved with the mouse.
@@ -1054,6 +1095,12 @@ impl Dialog {
     // ------------------------------------------------------------- input
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> Outcome {
+        let outcome = self.handle_key_inner(key);
+        self.sync_links();
+        outcome
+    }
+
+    fn handle_key_inner(&mut self, key: &KeyEvent) -> Outcome {
         if self.list.is_some() {
             return self.list_key(key);
         }
@@ -1413,6 +1460,12 @@ impl Dialog {
     /// Like Far (and Windows): pressing the button focuses an item, the
     /// action happens on release over the same item.
     pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Option<Outcome> {
+        let outcome = self.handle_mouse_inner(ev);
+        self.sync_links();
+        outcome
+    }
+
+    fn handle_mouse_inner(&mut self, ev: &MouseEvent) -> Option<Outcome> {
         let pos = Position::new(ev.column, ev.row);
         // Moving the dialog: grabbed anywhere but on its items.
         if let Some((lx, ly)) = self.drag {
@@ -1760,7 +1813,7 @@ impl Dialog {
                 if focused
                     && !*unchanged
                     && *cur >= value.chars().count()
-                    && let Some((base, rest)) = &self.ghost
+                    && let Some((base, rest)) = self.ghost.as_deref()
                     && base == value
                 {
                     let gx = (cur - skip) as u16;

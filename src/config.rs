@@ -253,6 +253,9 @@ pub struct Agent {
     /// afar wakes the agent with events (Claude Code's Channels, research
     /// preview): `afar channel` is its channel server.
     pub channels: bool,
+    /// afar answers Claude Code's question about development channels at
+    /// the agent's start itself (only when afar's channel is the only one).
+    pub confirm_channels: bool,
     pub permissions: Permissions,
 }
 
@@ -273,6 +276,7 @@ impl Default for Agent {
             position: AgentPosition::Bottom,
             ide: false,
             channels: false,
+            confirm_channels: false,
             permissions: Permissions::default(),
         }
     }

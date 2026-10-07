@@ -683,6 +683,7 @@ impl App {
                 if let Some(dev) = &mut self.dev {
                     dev.last_agent_output = Instant::now();
                 }
+                self.confirm_dev_channels();
                 // `--resume` with nothing to resume exits at once.
                 let quick_exit = self.agent.pty.as_ref().is_some_and(|a| a.has_exited())
                     && self
@@ -858,6 +859,34 @@ impl App {
         Ok(args)
     }
 
+    /// `[agent] confirm_channels`: answers Claude Code's question about
+    /// development channels on the agent's start — once, in its first
+    /// minute, and only when afar's own channel is the only one listed.
+    fn confirm_dev_channels(&mut self) {
+        let a = &self.config.agent;
+        if !a.channels
+            || !a.confirm_channels
+            || self.agent.channels_confirmed
+            || self.agent.started.elapsed() > Duration::from_secs(60)
+        {
+            return;
+        }
+        let Some(pty) = &self.agent.pty else { return };
+        let lines = crate::termview::screen_lines(pty.parser().screen());
+        let ours = lines
+            .iter()
+            .any(|l| l.trim() == "Channels: server:afar-channel");
+        let selected = lines.iter().any(|l| {
+            let t = l.trim();
+            t.starts_with('❯') && t.ends_with("I am using this for local development")
+        });
+        if ours && selected {
+            self.agent.channels_confirmed = true;
+            let _ = pty.write(b"\r");
+            self.say(tr!("agent-channels-confirmed"));
+        }
+    }
+
     /// Starts the agent: after a dev restart the same conversation in its
     /// folder, otherwise a new one in the active panel's folder.
     fn start_agent(&mut self, cols: u16, rows: u16) {
@@ -921,6 +950,7 @@ impl App {
         }
         self.agent.resumed_at = None;
         self.agent.started = Instant::now();
+        self.agent.channels_confirmed = false;
         self.agent.cwd = Some(cwd.clone());
         self.agent.ide_sent = None;
         match launch {

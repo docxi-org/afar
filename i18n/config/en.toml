@@ -40,6 +40,12 @@ ide = false
 # event starts the agent's turn without typing in its pane. Needs a claude.ai
 # login or a Console key. Applies when the agent starts next time.
 channels = false
+# Claude Code asks to confirm the development channel on every start ("I am
+# using this for local development"). true: afar answers itself when only its
+# own channel (server:afar-channel) is listed, and says so in the message line.
+# It is Claude Code's warning: turn this on only if you agree to confirm it
+# in advance.
+confirm_channels = false
 
 [agent.permissions]
 # What the agent may do through afar (its afar_* tools):

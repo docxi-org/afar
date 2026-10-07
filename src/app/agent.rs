@@ -43,6 +43,8 @@ pub(super) struct AgentSession {
     pub name_checked: Instant,
     /// Enter for text typed into the agent's input, when it is due.
     pub enter_at: Option<Instant>,
+    /// The development channels question has been answered by afar.
+    pub channels_confirmed: bool,
 }
 
 impl AgentSession {
@@ -64,6 +66,7 @@ impl AgentSession {
             channel_waiter: None,
             name_checked: Instant::now(),
             enter_at: None,
+            channels_confirmed: false,
         }
     }
 

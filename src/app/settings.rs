@@ -104,6 +104,7 @@ impl App {
         let live = tr!("agent-settings-live");
         let ide = tr!("agent-settings-ide");
         let channels = tr!("agent-settings-channels");
+        let confirm_channels = tr!("agent-settings-confirm-channels");
         let note = tr!("agent-settings-note");
         let position_label = tr!("agent-settings-position");
         let positions = [tr!("agent-position-bottom"), tr!("agent-position-top")];
@@ -112,6 +113,7 @@ impl App {
             .max(chars(&live) + 4)
             .max(chars(&ide) + 4)
             .max(chars(&channels) + 4)
+            .max(chars(&confirm_channels) + 8)
             .max(chars(&note))
             .max(56);
         let field_x = 5 + chars(&command_label).max(chars(&args_label)) + 1;
@@ -128,6 +130,8 @@ impl App {
             .row(vec![check_at(5, live, a.live)])
             .row(vec![check_at(5, ide, a.ide)])
             .row(vec![check_at(5, channels, a.channels)])
+            .row(vec![check_at(9, confirm_channels, a.confirm_channels)])
+            .check_depends(3, 2)
             .row(vec![
                 text_at(5, position_label.clone()),
                 combo_at(
@@ -187,6 +191,7 @@ impl App {
         a.live = dialog.checked(0);
         a.ide = dialog.checked(1);
         a.channels = dialog.checked(2);
+        a.confirm_channels = dialog.checked(3);
         a.position = if dialog.combo(0) == 1 {
             AgentPosition::Top
         } else {
@@ -392,7 +397,7 @@ impl App {
                     a.suggest as usize,
                 ),
             ])
-            .row(vec![check_at(9, checks[1].clone(), a.modal)])
+            .row(vec![check_at(5, checks[1].clone(), a.modal)])
             .row(vec![check_at(5, fuzzy_label.clone(), a.fuzzy)])
             // Appending the first match is not done (the ghost shows it).
             .row(vec![check_at(5, checks[2].clone(), false).disabled()])
