@@ -465,3 +465,5 @@ MViewAutoDetectCodePage = &Kódlap automatikus felismerése
 MHistoryTitle = Parancs előzmények
 MHistoryClear = Az előzmények minden eleme törlődik. Folytatja?
 MClear = Elő&zmények törlése
+MConfigDialogsAutoComplete = Beviteli sor a&utomatikus kiegészítése
+MConfigCmdlineAutoComplete = Automatikus kiegészítés

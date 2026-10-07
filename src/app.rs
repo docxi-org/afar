@@ -28,6 +28,7 @@ use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
 mod agent;
 mod agentmenu;
+mod autocomplete;
 mod cmdline;
 mod commands;
 mod fileops;
@@ -207,6 +208,9 @@ pub struct App {
     keybar_pressed: Option<u8>,
     /// The history database: dialogs' fields, commands (docs/15).
     store: crate::history::History,
+    /// The open autocompletion list, and the programs on PATH it offers.
+    completion: Option<autocomplete::ActiveCompletion>,
+    programs: crate::complete::Programs,
     /// Commands run from the command line (Ctrl+E / Ctrl+X).
     cmd_history: cmdline::History,
     /// The last mask of Gray + / Gray - (Far's strPrevMask).
@@ -330,6 +334,8 @@ impl App {
             select_mask: "*.*".into(),
             cmd_history,
             store,
+            completion: None,
+            programs: Default::default(),
             quick_search: None,
             drive_paths: Default::default(),
             viewers: Vec::new(),
@@ -1227,8 +1233,10 @@ impl App {
         let is_focus_key =
             key.code == KeyCode::Null || ctrl && matches!(key.code, KeyCode::Char(' ' | '@' | '2'));
         if is_focus_key {
-            // While a menu or dialog is open, the agent pane is out of reach.
+            // While a menu or dialog is open, the agent pane is out of reach
+            // (a dialog takes Ctrl+Space: Far's manual completion).
             if self.has_overlay() {
+                self.overlay_key(key);
                 return;
             }
             // Hidden by Ctrl+O: it comes back to take the input.
@@ -1302,6 +1310,17 @@ impl App {
     /// Keys of the panels and the command line: the key map's command, or
     /// the command line's own editing.
     fn panels_key(&mut self, key: KeyEvent) {
+        // The command line's completion list takes keys first; an edit of
+        // the line recomputes it.
+        if self.completion_key(autocomplete::Owner::Cmdline, &key) {
+            return;
+        }
+        let before = self.cmdline.clone();
+        self.panels_key_inner(key);
+        self.cmdline_edited(&before);
+    }
+
+    fn panels_key_inner(&mut self, key: KeyEvent) {
         if key.code != KeyCode::F(10) {
             self.quit_armed = None;
         }
@@ -1750,6 +1769,10 @@ impl App {
             return;
         };
         let pos = Position::new(ev.column, ev.row);
+        // The completion list is over everything.
+        if self.completion_mouse(&ev) {
+            return;
+        }
         let pressed = matches!(ev.kind, MouseEventKind::Down(_));
         // A click closes the quick search and does nothing else.
         if pressed && self.quick_search.is_some() {
@@ -2258,6 +2281,11 @@ impl App {
             self.fill_dialogs_from_history();
             cursor = self.draw_overlays(over, bar, agent_bar, buf);
         }
+        // The completion list, over everything.
+        let prompt = format!("{}>", self.panels[self.active].path.display())
+            .chars()
+            .count() as u16;
+        self.draw_completion(area, l.cmdline, prompt, buf);
         cursor
     }
 

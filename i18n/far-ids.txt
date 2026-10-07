@@ -537,3 +537,14 @@ MViewConfigDefaultCodePage
 MHistoryTitle
 MHistoryClear
 MClear
+
+# Autocompletion
+MCompletionHistoryTitle
+MCompletionFilesTitle
+MCompletionEnvironmentTitle
+MConfigAutoCompleteTitle
+MConfigAutoCompleteShowList
+MConfigAutoCompleteModalList
+MConfigAutoCompleteAutoAppend
+MConfigDialogsAutoComplete
+MConfigCmdlineAutoComplete

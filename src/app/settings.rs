@@ -260,12 +260,9 @@ impl App {
         let dialog = Dialog::new(t("MViewConfigTitle"), content)
             .row(vec![check_at(5, external, v.external_f3)])
             .row(vec![text_at(5, t("MViewConfigExternalCommand"))])
-            .row(vec![input_at(
-                5,
-                64,
-                v.external_command.clone(),
-                Some("ExternalViewer"),
-            )])
+            .row(vec![
+                input_at(5, 64, v.external_command.clone(), Some("ExternalViewer")).exec(),
+            ])
             .caption(t("MViewConfigInternal"))
             .row(vec![
                 check_at(5, left[0].clone(), v.persistent_selection),
@@ -337,6 +334,89 @@ impl App {
         let (pages, _) = default_codepages();
         v.default_codepage = pages.get(dialog.combo(0)).copied().unwrap_or(0);
         self.viewer_defaults.scrollbar = v.scrollbar;
+        self.save_config();
+    }
+
+    /// F9 → Options → AutoComplete settings: Far's three check boxes,
+    /// where completion works and its sources (always / Ctrl+Space / never).
+    pub(super) fn autocomplete_settings_dialog(&mut self) {
+        use crate::config::Use;
+        let a = &self.config.autocomplete;
+        let checks = [
+            tr!("MConfigAutoCompleteShowList"),
+            tr!("MConfigAutoCompleteModalList"),
+            tr!("MConfigAutoCompleteAutoAppend"),
+            tr!("MConfigDialogsAutoComplete"),
+            tr!("ac-command-line"),
+        ];
+        let sources = [
+            tr!("ac-source-history"),
+            tr!("ac-source-files"),
+            tr!("ac-source-variables"),
+            tr!("ac-source-programs"),
+        ];
+        let label_w = sources.iter().map(|l| chars(l)).max().unwrap_or(10);
+        const COMBO: u16 = 26;
+        let content = checks
+            .iter()
+            .map(|l| chars(l) + 8)
+            // The combo's arrow after it.
+            .chain([label_w + 1 + COMBO + 2])
+            .max()
+            .unwrap_or(40);
+        let index = |u: Use| match u {
+            Use::Always => 0,
+            Use::CtrlSpace => 1,
+            Use::Never => 2,
+        };
+        let uses = [a.history, a.files, a.variables, a.programs];
+        let mut d = Dialog::new(tr!("MConfigAutoCompleteTitle"), content)
+            .row(vec![check_at(5, checks[0].clone(), a.show_list)])
+            .row(vec![check_at(9, checks[1].clone(), a.modal)])
+            // Appending the first match is not done yet.
+            .row(vec![check_at(5, checks[2].clone(), false).disabled()])
+            .separator()
+            .row(vec![check_at(5, checks[3].clone(), a.dialogs)])
+            .row(vec![check_at(5, checks[4].clone(), a.command_line)])
+            .caption(tr!("ac-sources"));
+        for (label, u) in sources.iter().zip(uses) {
+            d = d.row(vec![
+                text_at(5, label.clone()),
+                combo_at(
+                    5 + label_w + 1,
+                    COMBO,
+                    vec![
+                        Some(tr!("ac-use-always")),
+                        Some(tr!("ac-use-ctrl-space")),
+                        Some(tr!("ac-use-never")),
+                    ],
+                    index(u),
+                ),
+            ]);
+        }
+        let dialog = d.separator().buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::AutocompleteSettings,
+        });
+    }
+
+    pub(super) fn autocomplete_settings_from_dialog(&mut self, dialog: &Dialog) {
+        use crate::config::Use;
+        let a = &mut self.config.autocomplete;
+        a.show_list = dialog.checked(0);
+        a.modal = dialog.checked(1);
+        a.dialogs = dialog.checked(3);
+        a.command_line = dialog.checked(4);
+        let use_of = |i: usize| match dialog.combo(i) {
+            0 => Use::Always,
+            1 => Use::CtrlSpace,
+            _ => Use::Never,
+        };
+        a.history = use_of(0);
+        a.files = use_of(1);
+        a.variables = use_of(2);
+        a.programs = use_of(3);
         self.save_config();
     }
 

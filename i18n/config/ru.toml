@@ -80,3 +80,15 @@ max_line = 10000              # максимальная ширина строк
 detect_dump = true            # двоичный файл открывать дампом
 autodetect_codepage = true
 default_codepage = 0          # 0 — ANSI Windows, иначе номер (866, 65001…)
+
+[autocomplete]
+# Автозавершение, как в Far («Параметры → Настройки автозавершения»).
+dialogs = true            # в полях диалогов с историей или путём
+command_line = true
+show_list = true          # список вариантов появляется при наборе
+modal = false             # список забирает клавиши: движение по нему не меняет поле
+# Источники: "always" — всегда, "ctrl_space" — только по Ctrl+Space, "never".
+history = "always"        # история поля или команд
+files = "always"          # файлы и папки
+variables = "always"      # %ПЕРЕМЕННЫЕ%
+programs = "always"       # программы из PATH (командная строка)

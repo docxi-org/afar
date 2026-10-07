@@ -16,6 +16,62 @@ pub struct Config {
     pub confirm: Confirm,
     pub agent: Agent,
     pub viewer: Viewer,
+    pub autocomplete: Autocomplete,
+}
+
+/// When a completion source is used (Far's three states).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Use {
+    #[default]
+    Always,
+    /// Only on Ctrl+Space.
+    CtrlSpace,
+    Never,
+}
+
+impl Use {
+    /// Whether the source counts: `manual` — the list was asked for.
+    pub fn on(self, manual: bool) -> bool {
+        match self {
+            Use::Always => true,
+            Use::CtrlSpace => manual,
+            Use::Never => false,
+        }
+    }
+}
+
+/// Autocompletion in input fields and the command line (Far's
+/// "AutoComplete settings", docs/15).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Autocomplete {
+    /// In dialogs' fields with a history or a path.
+    pub dialogs: bool,
+    pub command_line: bool,
+    /// The list of matches appears as you type.
+    pub show_list: bool,
+    /// The list takes the keys: moving in it does not change the field.
+    pub modal: bool,
+    pub history: Use,
+    pub files: Use,
+    pub variables: Use,
+    pub programs: Use,
+}
+
+impl Default for Autocomplete {
+    fn default() -> Self {
+        Self {
+            dialogs: true,
+            command_line: true,
+            show_list: true,
+            modal: false,
+            history: Use::Always,
+            files: Use::Always,
+            variables: Use::Always,
+            programs: Use::Always,
+        }
+    }
 }
 
 /// The viewer (F3).

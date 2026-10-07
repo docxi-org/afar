@@ -21,6 +21,7 @@ pub(super) enum MainAction {
     Confirmations,
     AgentSettings,
     ViewerSettings,
+    AutocompleteSettings,
 }
 
 /// An item: Far's text id, the key shown, what it does (`None`: disabled).
@@ -160,7 +161,7 @@ fn commands_menu() -> Vec<Entry> {
 }
 
 fn options_menu() -> Vec<Entry> {
-    use MainAction::{AgentSettings, Confirmations, ViewerSettings};
+    use MainAction::{AgentSettings, AutocompleteSettings, Confirmations, ViewerSettings};
     vec![
         ("MMenuSystemSettings", None, None),
         ("MMenuPanelSettings", None, None),
@@ -172,7 +173,11 @@ fn options_menu() -> Vec<Entry> {
         ("MMenuDialogSettings", None, None),
         ("MMenuVMenuSettings", None, None),
         ("MMenuCmdlineSettings", None, None),
-        ("MMenuAutoCompleteSettings", None, None),
+        (
+            "MMenuAutoCompleteSettings",
+            None,
+            Some(AutocompleteSettings),
+        ),
         ("MMenuInfoPanelSettings", None, None),
         ("MMenuMaskGroups", None, None),
         SEP,
@@ -314,6 +319,7 @@ impl App {
             Some(MainAction::Confirmations) => self.confirmations_dialog(),
             Some(MainAction::AgentSettings) => self.agent_settings_dialog(),
             Some(MainAction::ViewerSettings) => self.viewer_settings_dialog(),
+            Some(MainAction::AutocompleteSettings) => self.autocomplete_settings_dialog(),
             None => {}
         }
     }

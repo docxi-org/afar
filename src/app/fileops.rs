@@ -111,6 +111,8 @@ pub(super) enum Purpose {
     AgentSettings,
     /// F9 → Options → Viewer settings, Alt+Shift+F9 in a viewer.
     ViewerSettings,
+    /// F9 → Options → AutoComplete settings.
+    AutocompleteSettings,
     /// Gray + / Gray -: select or unselect by the mask.
     Select {
         side: usize,
@@ -351,11 +353,24 @@ impl App {
                     });
                 }
             }
-            Some(Overlay::Dialog { dialog, .. }) => match dialog.handle_key(&key) {
-                Outcome::Closed(button) => self.close_dialog(button),
-                Outcome::History(request) => self.dialog_history(request),
-                Outcome::Pending => {}
-            },
+            Some(Overlay::Dialog { .. }) => {
+                // The completion list first; an edit recomputes it.
+                if self.dialog_completion_key(&key) {
+                    return;
+                }
+                let before = self.dialog_field_text();
+                let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() else {
+                    return;
+                };
+                match dialog.handle_key(&key) {
+                    Outcome::Closed(button) => {
+                        self.completion = None;
+                        self.close_dialog(button);
+                    }
+                    Outcome::History(request) => self.dialog_history(request),
+                    Outcome::Pending => self.dialog_edited(before),
+                }
+            }
             Some(Overlay::Menu { .. }) => self.menu_key(key),
             Some(Overlay::MenuBar(_)) => self.menubar_key(key),
             Some(Overlay::AgentMenu(_)) => self.agent_menu_key(key),
@@ -497,6 +512,11 @@ impl App {
                     self.confirmations_from_dialog(&dialog);
                 }
             }
+            Purpose::AutocompleteSettings => {
+                if button == Some(0) {
+                    self.autocomplete_settings_from_dialog(&dialog);
+                }
+            }
             Purpose::ViewerSettings => {
                 if button == Some(0) {
                     self.viewer_settings_from_dialog(&dialog);
@@ -631,7 +651,9 @@ impl App {
         let mut d = Dialog::far(tr!("MMakeFolderTitle"), FAR_WIDTH)
             .text(tr!("MCreateFolder"))
             .row(vec![
-                input_at(5, 66, names.join(";"), Some("NewFolder")).use_last(),
+                input_at(5, 66, names.join(";"), Some("NewFolder"))
+                    .path()
+                    .use_last(),
             ])
             .separator()
             .row(vec![
@@ -640,7 +662,7 @@ impl App {
             ])
             .row(vec![
                 text_at(5, tr!("MMakeFolderLinkTarget")),
-                input_at(20, 51, "", Some("NewFolderLinkTarget")),
+                input_at(20, 51, "", Some("NewFolderLinkTarget")).path(),
             ])
             .row(vec![check_at(5, tr!("MMultiMakeDir"), names.len() > 1)]);
         if actor == Actor::Agent {
@@ -972,7 +994,7 @@ impl App {
             .collect();
         d = d
             .row(vec![text_at(5, prompt)])
-            .row(vec![input_at(5, 66, dest, Some("Copy"))])
+            .row(vec![input_at(5, 66, dest, Some("Copy")).path()])
             .separator()
             .row(security)
             .separator()

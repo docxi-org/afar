@@ -80,3 +80,15 @@ max_line = 10000              # maximum line width
 detect_dump = true            # open binary files as a dump
 autodetect_codepage = true
 default_codepage = 0          # 0: the Windows ANSI code page, else a number (866, 65001…)
+
+[autocomplete]
+# Autocompletion as in Far ("Options → AutoComplete settings").
+dialogs = true            # in dialogs' fields with a history or a path
+command_line = true
+show_list = true          # the list of matches appears as you type
+modal = false             # the list takes the keys: moving in it does not change the field
+# Sources: "always", "ctrl_space" (only on Ctrl+Space), "never".
+history = "always"        # the field's or the commands' history
+files = "always"          # files and folders
+variables = "always"      # %VARIABLES%
+programs = "always"       # programs on PATH (the command line)

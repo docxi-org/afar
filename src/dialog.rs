@@ -40,6 +40,11 @@ pub enum Kind {
         history: Option<String>,
         /// An empty field starts with the newest entry (DIF_USELASTHISTORY).
         use_last: bool,
+        /// Holds paths: completion offers files (DIF_EDITPATH).
+        path: bool,
+        /// Holds a command: completion offers programs too
+        /// (DIF_EDITPATHEXEC).
+        exec: bool,
         readonly: bool,
         disabled: bool,
     },
@@ -100,6 +105,15 @@ pub enum Outcome {
     Closed(Option<usize>),
     /// The focused field's history is needed (the owner keeps it).
     History(HistoryRequest),
+}
+
+/// The focused input field (see `Dialog::focused_field`).
+pub struct FocusedField {
+    pub value: String,
+    pub history: Option<String>,
+    pub path: bool,
+    pub exec: bool,
+    pub rect: Rect,
 }
 
 /// What a field with a history asks of the history's owner.
@@ -339,6 +353,8 @@ pub struct Dialog {
     cycle_prefix: Option<String>,
     /// `fill_last` has run.
     filled: bool,
+    /// Where the focused input field was last drawn.
+    focused_rect: Rect,
 }
 
 impl Dialog {
@@ -360,6 +376,7 @@ impl Dialog {
             pressed: None,
             cycle_prefix: None,
             filled: false,
+            focused_rect: Rect::default(),
         }
     }
 
@@ -638,6 +655,33 @@ impl Dialog {
             .and_then(|t| entries.iter().position(|(e, _)| *e == t))
             .unwrap_or(list.current.min(entries.len() - 1));
         list.history = Some(entries);
+    }
+
+    /// The focused input field, for autocompletion: its text, history
+    /// list, whether it holds paths or a command, and where it is.
+    pub fn focused_field(&mut self) -> Option<FocusedField> {
+        let rect = self.focused_rect;
+        match self.focus()? {
+            Target::Elem(r, e) => match &self.elem(r, e)?.kind {
+                Kind::Input {
+                    value,
+                    history,
+                    path,
+                    exec,
+                    readonly: false,
+                    disabled: false,
+                    ..
+                } => Some(FocusedField {
+                    value: value.clone(),
+                    history: history.clone(),
+                    path: *path,
+                    exec: *exec,
+                    rect,
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Sets the focused field's text (a history entry), cursor at the end.
@@ -1602,6 +1646,9 @@ impl Dialog {
                 if !*readonly {
                     self.hits.push((Rect::new(at, y, *width, 1), target));
                 }
+                if focused {
+                    self.focused_rect = Rect::new(at, y, *width, 1);
+                }
                 (focused && !*readonly).then(|| Position::new(at + (cur - skip) as u16, y))
             }
             Kind::Check {
@@ -1832,6 +1879,8 @@ pub fn input_at(x: u16, width: u16, value: impl Into<String>, history: Option<&s
             width,
             history: history.map(str::to_string),
             use_last: false,
+            path: false,
+            exec: false,
             readonly: false,
             disabled: false,
         },
@@ -1893,6 +1942,23 @@ impl Elem {
             | Kind::Radio { disabled, .. }
             | Kind::Combo { disabled, .. } => *disabled = true,
             Kind::Text { .. } => {}
+        }
+        self
+    }
+
+    /// A field for paths: completion offers files and folders.
+    pub fn path(mut self) -> Self {
+        if let Kind::Input { path, .. } = &mut self.kind {
+            *path = true;
+        }
+        self
+    }
+
+    /// A field for a command: completion offers files and programs.
+    pub fn exec(mut self) -> Self {
+        if let Kind::Input { path, exec, .. } = &mut self.kind {
+            *path = true;
+            *exec = true;
         }
         self
     }
