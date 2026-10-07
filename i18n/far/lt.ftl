@@ -407,3 +407,7 @@ MViewConfigSaveShortPos = Išsaugoti nu&orodas
 MViewAutoDetectCodePage = Auto&nustatyti kodavimo puslapį
 MHistoryTitle = Istorija
 MConfigCmdlineAutoComplete = &Automatinis užbaigimas
+MFolderHistoryTitle = Katalogų istorija
+MViewHistoryTitle = Failų peržiūros istorija
+MHistoryView = Žiūrėti
+MHistoryEdit = Redaguoti

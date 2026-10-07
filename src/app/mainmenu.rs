@@ -139,11 +139,15 @@ fn commands_menu() -> Vec<Entry> {
     use MainAction::Run;
     vec![
         ("MMenuFindFile", Some("Alt+F7"), None),
-        ("MMenuHistory", Some("Alt+F8"), None),
+        ("MMenuHistory", Some("Alt+F8"), Some(Run(CommandHistory))),
         ("MMenuVideoMode", Some("Alt+F9"), None),
         ("MMenuFindFolder", Some("Alt+F10"), None),
-        ("MMenuViewHistory", Some("Alt+F11"), None),
-        ("MMenuFoldersHistory", Some("Alt+F12"), None),
+        ("MMenuViewHistory", Some("Alt+F11"), Some(Run(ViewHistory))),
+        (
+            "MMenuFoldersHistory",
+            Some("Alt+F12"),
+            Some(Run(FolderHistory)),
+        ),
         // afar's own.
         ("menu-import-far-history", None, Some(MainAction::FarImport)),
         SEP,

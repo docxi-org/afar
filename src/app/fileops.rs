@@ -128,6 +128,10 @@ pub(super) enum Purpose {
     },
     /// The agent menu's "Rename…" and "Other model…".
     AgentRename,
+    /// Del in a history menu (Alt+F8, Alt+F11, Alt+F12): "clear it?".
+    HistoryMenuClear {
+        which: super::historymenu::HistoryMenu,
+    },
     /// Import Far's history from this file?
     FarImport {
         path: PathBuf,
@@ -570,6 +574,12 @@ impl App {
                 if let Some(reply) = reply {
                     let _ = reply.send(answer);
                 }
+            }
+            Purpose::HistoryMenuClear { which } => {
+                if button == Some(0) {
+                    self.store.clear(which_kind(which), "");
+                }
+                self.history_menu(which, None);
             }
             Purpose::FarImport { path } => {
                 if button == Some(0) {
@@ -1858,6 +1868,15 @@ impl App {
 }
 
 /// "07.10 14:32 · far": when an entry was last used and in which folder.
+fn which_kind(which: super::historymenu::HistoryMenu) -> crate::history::Kind {
+    use super::historymenu::HistoryMenu;
+    match which {
+        HistoryMenu::Commands => crate::history::Kind::Command,
+        HistoryMenu::Views => crate::history::Kind::View,
+        HistoryMenu::Folders => crate::history::Kind::Folder,
+    }
+}
+
 fn entry_detail(last_used_ms: i64, folder: &str) -> String {
     use chrono::TimeZone;
     let time = chrono::Local

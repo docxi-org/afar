@@ -103,6 +103,12 @@ pub struct Menu {
     pressed: Option<usize>,
     /// The scroll bar's thumb is being dragged.
     dragging_bar: bool,
+    /// The list is at least this wide (in characters of text).
+    min_text: usize,
+    /// Rows kept free above and below a centred menu that fills the area.
+    margin_rows: u16,
+    /// Columns kept free left and right of a centred menu.
+    margin_cols: u16,
 }
 
 impl Menu {
@@ -135,9 +141,31 @@ impl Menu {
             rows: 1,
             pressed: None,
             dragging_bar: false,
+            min_text: 0,
+            margin_rows: 0,
+            margin_cols: 0,
         };
         menu.selected = menu.first_selectable().unwrap_or(0);
         menu
+    }
+
+    /// The list at least `chars` wide (menus that should look alike).
+    pub fn min_text_width(mut self, chars: usize) -> Self {
+        self.min_text = chars;
+        self
+    }
+
+    /// A centred menu taller than the area leaves `rows` free above and
+    /// below (by default it fills the area).
+    pub fn margin_rows(mut self, rows: u16) -> Self {
+        self.margin_rows = rows;
+        self
+    }
+
+    /// A centred menu keeps `cols` of what is under it visible on each side.
+    pub fn margin_cols(mut self, cols: u16) -> Self {
+        self.margin_cols = cols;
+        self
     }
 
     pub fn bottom_title(mut self, text: impl Into<String>) -> Self {
@@ -415,7 +443,8 @@ impl Menu {
             .iter()
             .map(|i| visible_len(&i.text))
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .max(self.min_text);
         let titles = self
             .title
             .chars()
@@ -424,11 +453,14 @@ impl Menu {
         let wn = (longest + 5).max(titles + 6) as u16;
         // The full box has a margin of 2 columns and 1 row around the list.
         let (mx, my) = if self.thin { (0, 0) } else { (2, 1) };
-        let w = (wn + 2 * mx).min(area.width);
+        let w = (wn + 2 * mx).min(area.width.saturating_sub(2 * self.margin_cols));
         let wn = w.saturating_sub(2 * mx);
         // Far lets the blank row below go off screen before cutting items.
         let h = match self.row {
             Some(r) => (n as u16 + 2 + 2 * my).min(area.bottom().saturating_sub(area.y + r)),
+            None if self.margin_rows > 0 => {
+                (n as u16 + 2 + 2 * my).min(area.height.saturating_sub(2 * self.margin_rows))
+            }
             None => (n as u16 + 2 + 2 * my).min(area.height + 1),
         };
         let mut x = match self.column {

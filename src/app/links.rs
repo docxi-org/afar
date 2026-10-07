@@ -25,6 +25,10 @@ impl App {
             let pty = self.agent.pty.as_ref()?;
             return link_at(pty.parser().screen(), y - l.agent.y, x - l.agent.x);
         }
+        // A viewer covers the user screen (unless peeked under with Ctrl+O).
+        if self.shown_viewer().is_some() && !self.viewer_peek {
+            return None;
+        }
         // The user screen is under the mouse (as in `on_mouse`).
         let user_screen = !self.panels_visible() || l.top.height < 5 || !l.top.contains(pos);
         if !l.user.contains(pos) || !user_screen {
@@ -150,6 +154,7 @@ impl App {
                 self.change_dir(side, &path);
             } else if path.is_file() {
                 self.focus = Focus::Panels;
+                self.record_view(&path);
                 if let Some(id) = self.open_viewer(&path, vec![path.clone()])
                     && let Some(line) = line
                     && let Ok(n) = line.parse::<u64>()

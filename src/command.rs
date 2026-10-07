@@ -97,6 +97,10 @@ pub enum Command {
     InsertPassivePath,
     HistoryPrev,
     HistoryNext,
+    // History menus.
+    CommandHistory,
+    ViewHistory,
+    FolderHistory,
     // Screens (F12): panels, viewers.
     Screens,
     NextScreen,
@@ -291,6 +295,9 @@ pub const COMMANDS: &[Def] = &[
     def("cmdline.insert_active_path", InsertActivePath, &["Ctrl+Shift+["], true),
     def("cmdline.insert_passive_path", InsertPassivePath, &["Ctrl+Shift+]"], true),
     def("cmdline.history_prev", HistoryPrev, &["Ctrl+E"], true),
+    def("history.commands", CommandHistory, &["Alt+F8"], true),
+    def("history.views", ViewHistory, &["Alt+F11"], true),
+    def("history.folders", FolderHistory, &["Alt+F12"], true),
     def("cmdline.history_next", HistoryNext, &["Ctrl+X"], true),
     def("fileop.view", ViewFile, &["F3"], false),
     def("fileop.view_alt", ViewFileAlt, &["Alt+F3"], false),

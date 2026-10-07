@@ -122,6 +122,13 @@ fn literal_brackets(s: &str) -> String {
 
 /// What a menu was opened for.
 pub(super) enum MenuPurpose {
+    /// Alt+F8 / Alt+F11 / Alt+F12: the entries, and for each menu row the
+    /// entry it shows (`None`: a date's separator).
+    History {
+        which: super::historymenu::HistoryMenu,
+        entries: Vec<crate::history::Entry>,
+        rows: Vec<Option<usize>>,
+    },
     /// Ctrl+F12.
     Sort { side: usize },
     /// Alt+F1 / Alt+F2: the drives in menu order.
@@ -255,6 +262,9 @@ impl App {
     }
 
     pub(super) fn menu_key(&mut self, key: KeyEvent) {
+        if self.history_menu_key(&key) {
+            return;
+        }
         let Some(Overlay::Menu { menu, purpose }) = self.overlays.last_mut() else {
             return;
         };
@@ -285,6 +295,17 @@ impl App {
         };
         let Some(i) = choice else { return };
         match purpose {
+            // A click on an entry: as Enter.
+            MenuPurpose::History {
+                which,
+                entries,
+                rows,
+            } => {
+                if let Some(e) = rows.get(i).copied().flatten().and_then(|k| entries.get(k)) {
+                    let e = e.clone();
+                    self.history_menu_open(which, &e);
+                }
+            }
             MenuPurpose::Sort { side } => {
                 let p = &mut self.panels[side];
                 let switch = |on: bool| match order {

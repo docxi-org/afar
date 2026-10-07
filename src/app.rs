@@ -34,6 +34,7 @@ mod commands;
 mod farimport;
 mod fileops;
 mod fswatch;
+mod historymenu;
 mod ide;
 mod links;
 mod mainmenu;

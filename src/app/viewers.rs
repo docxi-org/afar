@@ -93,6 +93,8 @@ impl App {
             .filter(|e| !e.is_dir)
             .map(|e| panel.path.join(&e.name))
             .collect();
+        // Far's view history (Alt+F11).
+        self.record_view(&path);
         self.open_viewer(&path, list);
         true
     }

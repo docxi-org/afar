@@ -548,3 +548,10 @@ MConfigAutoCompleteModalList
 MConfigAutoCompleteAutoAppend
 MConfigDialogsAutoComplete
 MConfigCmdlineAutoComplete
+MFolderHistoryTitle
+MViewHistoryTitle
+MHistoryView
+MHistoryEdit
+MHistoryExt
+MHistoryInfoTitle
+MHistoryInfoFolder

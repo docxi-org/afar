@@ -185,3 +185,6 @@ link-unsupported = afar не открывает такие ссылки: { $uri 
 note-from-agent = Агент
 note-from-command = Команда
 link-tooltip = { $uri } · Ctrl+щелчок — открыть
+history-info-exit = Код возврата: { $code }
+history-info-time = Время работы: { $seconds } с
+history-info-used = Последний запуск: { $when }

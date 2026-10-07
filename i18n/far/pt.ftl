@@ -392,3 +392,7 @@ MViewConfigTabSize = &Tamanho da tabulação
 MViewConfigSavePos = &Salvar posição do arquivo
 MViewAutoDetectCodePage = &Auto-detectar code page
 MHistoryTitle = Histórico
+MFolderHistoryTitle = Histórico de diretórios
+MViewHistoryTitle = Histórico da visual. arquivos
+MHistoryView = Ver
+MHistoryEdit = Editar

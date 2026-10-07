@@ -184,3 +184,6 @@ link-unsupported = afar does not open such links: { $uri }
 note-from-agent = Agent
 note-from-command = Command
 link-tooltip = { $uri } · Ctrl+click opens
+history-info-exit = Exit code: { $code }
+history-info-time = Ran for: { $seconds } s
+history-info-used = Last run: { $when }
