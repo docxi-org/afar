@@ -149,7 +149,10 @@ refer to a file or directory, show it with afar_navigate. To point at a place in
 in afar's viewer with afar_view (a line or a pattern) and mark lines with afar_highlight (a label; \
 info / warning / error); afar_viewer_state tells which file and lines the user looks at and what they \
 selected. Blocks starting with [afar journal] in a \
-user message are recent user actions added automatically. In the journal, `ext` entries are file changes made outside afar, `fs` entries by `agent` are changes made by your own commands, and `tool` entries are your own edits; files you change are highlighted in the panels.";
+user message are recent user actions added automatically. In the journal, `fs` entries are file changes afar saw in the panels' folders; afar cannot tell who wrote them: \
+`(while your Bash ran)` means they happened during your shell command (Bash or PowerShell) and most likely are its own \
+writes, `(while [cmd-N] ran)` — during the user's command. `tool` entries are your own tool uses; files you change \
+are highlighted in the panels.";
 
 /// The agent's edit waiting while its difference is viewed: the viewer,
 /// the file, the new text, the tab, the answer.
@@ -170,6 +173,9 @@ pub struct CmdRecord {
     exit_code: Option<u32>,
     duration_ms: u64,
     lines: usize,
+    /// afar's own (a failed development build), not the user's.
+    #[serde(default)]
+    by_afar: bool,
 }
 
 /// Where the agent finds afar's MCP server and hook endpoint.
@@ -182,8 +188,10 @@ struct RunningCommand {
     id: u64,
     pty: PtySession,
     started: Instant,
-    /// Output lines that already scrolled off the command's screen.
+    /// Output lines that already scrolled off the command's screen; the
+    /// last one is still being wrapped when `continues`.
     captured: Vec<termview::Line>,
+    continues: bool,
     /// Panels were hidden automatically and come back when it ends.
     auto_switched: bool,
 }
@@ -244,7 +252,7 @@ pub struct App {
     hovered_link: Option<(String, u16, u16)>,
     /// Where the user screen last drew the kept lines, and the first one's
     /// index in history + captured output.
-    user_lines: (Rect, usize),
+    user_rows: (Rect, Vec<termview::Line>),
     /// The user screen scrolled back by this many lines (0: following the
     /// output), the lines it had then, and its height in the last frame.
     user_scroll: usize,
@@ -405,7 +413,7 @@ impl App {
             last_live: Rect::default(),
             link_pressed: false,
             hovered_link: None,
-            user_lines: (Rect::default(), 0),
+            user_rows: (Rect::default(), Vec::new()),
             user_scroll: 0,
             user_total: 0,
             user_height: 0,
@@ -516,6 +524,7 @@ impl App {
         // The user screen and the commands with their output go on too.
         self.history = state.user_screen;
         self.commands = state.commands;
+        self.next_op_id = self.next_op_id.max(state.next_op_id);
         self.next_cmd_id = state
             .next_cmd_id
             .max(self.commands.iter().map(|c| c.id + 1).max().unwrap_or(1));
@@ -599,6 +608,7 @@ impl App {
             viewer_shown,
             agent_hidden: self.wm.is_hidden(WinId::Agent(0)),
             journal_dir: Some(self.journal.dir().to_path_buf()),
+            next_op_id: self.next_op_id,
             seen_seq: self.agent.seen_seq,
             user_screen: self.history.clone(),
             commands: self.commands.clone(),
@@ -644,7 +654,7 @@ impl App {
                         secs = format!("{:.0}", duration.as_secs_f64())
                     ));
                 } else {
-                    self.record_build_failure(output);
+                    self.record_build_failure(output, duration);
                     self.say(tr!("dev-build-failed"));
                 }
             }
@@ -653,7 +663,8 @@ impl App {
 
     /// A failed build goes to the user screen and the command list, where
     /// the agent can read it too.
-    fn record_build_failure(&mut self, output: Vec<String>) {
+    fn record_build_failure(&mut self, output: Vec<String>, duration: Duration) {
+        let duration_ms = duration.as_millis() as u64;
         let id = self.next_cmd_id;
         self.next_cmd_id += 1;
         let cwd = crate::dev::project_root();
@@ -672,7 +683,7 @@ impl App {
             Event::CommandFinished {
                 cmd_id: id,
                 exit_code: Some(101),
-                duration_ms: 0,
+                duration_ms,
                 lines: output.len(),
             },
         );
@@ -681,8 +692,9 @@ impl App {
             text: text.clone(),
             cwd: cwd.clone(),
             exit_code: Some(101),
-            duration_ms: 0,
+            duration_ms,
             lines: output.len(),
+            by_afar: true,
         });
         self.push_history([format!("{}>{text}", cwd.display()).into()]);
         self.push_history(output.into_iter().map(termview::Line::from));
@@ -973,10 +985,14 @@ impl App {
             "SessionStart": hook("session-start"),
             "UserPromptSubmit": hook("user-prompt"),
             // The agent's own edits and commands (docs/04-agent.md).
-            "PreToolUse": tool_hook("pre-tool", "Bash"),
-            "PostToolUse": tool_hook("post-tool", "Edit|MultiEdit|Write|NotebookEdit|Bash"),
+            // PowerShell is the agent's shell on Windows, as Bash elsewhere.
+            "PreToolUse": tool_hook("pre-tool", "Bash|PowerShell"),
+            "PostToolUse": tool_hook(
+                "post-tool",
+                "Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell"
+            ),
             // A failed command gets this instead of PostToolUse.
-            "PostToolUseFailure": tool_hook("post-tool-failure", "Bash"),
+            "PostToolUseFailure": tool_hook("post-tool-failure", "Bash|PowerShell"),
             // What the agent is doing, for the pane's frame (docs/16).
             "Stop": hook("stop"),
             "Notification": hook("notification"),
@@ -1072,11 +1088,20 @@ impl App {
     }
 
     fn start_agent(&mut self, cols: u16, rows: u16) {
-        let resume = self.agent.session_id.clone().filter(|_| self.restored);
+        let mut resume = self.agent.session_id.clone().filter(|_| self.restored);
         let cwd = match (&resume, &self.agent.cwd) {
             (Some(_), Some(cwd)) if cwd.is_dir() => cwd.clone(),
             _ => self.panels[self.active].path.clone(),
         };
+        // A conversation without a message has no file yet: `--resume`
+        // would fail; it starts anew instead.
+        if let Some(id) = &resume
+            && !crate::claude_sessions::has_messages(
+                &crate::claude_sessions::project_dir(&cwd).join(format!("{id}.jsonl")),
+            )
+        {
+            resume = None;
+        }
         let launch = match resume {
             Some(id) => agent::Launch::Resume(id),
             None => agent::Launch::Fresh,
@@ -1278,6 +1303,7 @@ impl App {
             exit_code: None,
             duration_ms: 0,
             lines: 0,
+            by_afar: false,
         });
         self.push_history([format!("{}>{}", cwd.display(), text).into()]);
         self.clear_cmdline();
@@ -1309,6 +1335,7 @@ impl App {
                     pty,
                     started: Instant::now(),
                     captured: Vec::new(),
+                    continues: false,
                     auto_switched: self.panels_visible(),
                 });
                 self.set_panels_visible(false);
@@ -1331,13 +1358,17 @@ impl App {
 
     fn on_command_output(&mut self) {
         let Some(run) = &mut self.running else { return };
-        termview::join_wrapped(run.pty.take_scrolled_lines(), &mut run.captured);
+        termview::join_wrapped(
+            run.pty.take_scrolled_lines(),
+            &mut run.captured,
+            &mut run.continues,
+        );
         if !run.pty.has_exited() {
             return;
         }
         let run = self.running.take().unwrap();
-        let mut output = run.captured;
-        output.extend(termview::screen_lines_links(run.pty.parser().screen()));
+        let output =
+            termview::output_lines(&run.captured, run.continues, run.pty.parser().screen());
         // What the agent reads: links with their addresses.
         let text: Vec<String> = output.iter().map(termview::Line::for_agent).collect();
         let _ = std::fs::write(self.journal.output_path(run.id), text.join("\n"));
@@ -1748,21 +1779,32 @@ impl App {
                 let start = self.commands.len().saturating_sub(limit);
                 let mut out = String::new();
                 for c in &self.commands[start..] {
-                    let status = match (
-                        c.exit_code,
-                        self.running.as_ref().is_some_and(|r| r.id == c.id),
-                    ) {
+                    let running = self.running.as_ref().filter(|r| r.id == c.id);
+                    // The running one: its time and lines so far.
+                    let (duration_ms, lines) = match running {
+                        Some(r) => (
+                            r.started.elapsed().as_millis() as u64,
+                            termview::output_lines(
+                                &r.captured,
+                                r.continues,
+                                r.pty.parser().screen(),
+                            )
+                            .len(),
+                        ),
+                        None => (c.duration_ms, c.lines),
+                    };
+                    let status = match (c.exit_code, running.is_some()) {
                         (_, true) => "running".to_string(),
                         (Some(code), _) => format!("exit {}", code as i32),
                         (None, _) => "exit ?".to_string(),
                     };
+                    let by = if c.by_afar { "[afar] " } else { "" };
                     out.push_str(&format!(
-                        "cmd-{}  {}  (cwd {})  {status}, {:.1}s, {} lines\n",
+                        "cmd-{}  {by}{}  (cwd {})  {status}, {:.1}s, {lines} lines\n",
                         c.id,
                         c.text,
                         c.cwd.display(),
-                        c.duration_ms as f64 / 1000.0,
-                        c.lines
+                        duration_ms as f64 / 1000.0,
                     ));
                 }
                 Ok(if out.is_empty() {
@@ -1812,7 +1854,7 @@ impl App {
                 Some(run) => Ok(format!(
                     "[cmd-{} is running]\n{}",
                     run.id,
-                    termview::screen_lines_links(run.pty.parser().screen())
+                    termview::output_lines(&[], false, run.pty.parser().screen())
                         .iter()
                         .map(termview::Line::for_agent)
                         .collect::<Vec<_>>()
@@ -1947,17 +1989,30 @@ impl App {
             } => self.agent_highlight(&path, marks, flash, ttl_s, clear),
             Request::ViewerState => Ok(self.agent_viewer_state()),
             Request::HookSessionStart(input) => {
-                self.on_session_start(&input);
-                Ok(self.session_start_context())
+                let resumed = self.on_session_start(&input);
+                let mut context = self.session_start_context();
+                // Claude Code keeps the system prompt a conversation began
+                // with (its `prompt_snapshot`), even when resumed with a new
+                // --append-system-prompt: afar's current text comes here.
+                if resumed {
+                    context.push_str(
+                        "\n[afar] afar's current instructions (newer than this conversation's \
+                         system prompt where they differ):\n",
+                    );
+                    context.push_str(SYSTEM_PROMPT);
+                }
+                Ok(context)
             }
         }
     }
 
     /// SessionStart: a new conversation id after `/clear` (and on resume).
-    fn on_session_start(&mut self, input: &str) {
+    /// `true`: a conversation resumed.
+    fn on_session_start(&mut self, input: &str) -> bool {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(input) else {
-            return;
+            return false;
         };
+        let resumed = v.get("source").and_then(|s| s.as_str()) == Some("resume");
         if let Some(id) = v.get("session_id").and_then(|i| i.as_str())
             && self.agent.session_id.as_deref() != Some(id)
         {
@@ -1967,6 +2022,7 @@ impl App {
                 self.agent.name = None;
             }
         }
+        resumed
     }
 
     /// What SessionStart tells the agent about afar.
@@ -1999,14 +2055,9 @@ impl App {
 
     fn command_output(&self, id: u64) -> Result<Vec<String>, String> {
         if let Some(run) = self.running.as_ref().filter(|r| r.id == id) {
-            let mut lines: Vec<String> =
-                run.captured.iter().map(termview::Line::for_agent).collect();
-            lines.extend(
-                termview::screen_lines_links(run.pty.parser().screen())
-                    .iter()
-                    .map(termview::Line::for_agent),
-            );
-            return Ok(lines);
+            let lines =
+                termview::output_lines(&run.captured, run.continues, run.pty.parser().screen());
+            return Ok(lines.iter().map(termview::Line::for_agent).collect());
         }
         std::fs::read_to_string(self.journal.output_path(id))
             .map(|s| s.lines().map(str::to_string).collect())
@@ -2781,35 +2832,31 @@ impl App {
             }
             None => self.history.iter().collect(),
         };
+        // The kept lines wrapped as a terminal shows them: the last rows
+        // that fit above the live screen.
         let rows = (area.height - live_rows) as usize;
-        let start = text.len().saturating_sub(rows);
-        let first_y = area.bottom() - live_rows - (text.len() - start) as u16;
-        for (i, line) in text[start..].iter().enumerate() {
-            let y = first_y + i as u16;
-            buf.set_stringn(
-                area.x,
-                y,
-                line.text.as_str(),
-                area.width as usize,
-                theme::COMMAND_LINE,
-            );
-            // Links are underlined and colored (Ctrl+click opens them).
-            if !line.links.is_empty() {
-                for x in 0..area.width {
-                    if line.link_at_column(usize::from(x)).is_some() {
-                        let cell = &mut buf[(area.x + x, y)];
-                        cell.modifier |= ratatui::style::Modifier::UNDERLINED;
-                        cell.fg = theme::LINK_FG;
-                    }
+        let mut shown: Vec<termview::Line> = Vec::new();
+        'fill: for line in text.iter().rev() {
+            for row in termview::wrap_line(line, usize::from(area.width))
+                .into_iter()
+                .rev()
+            {
+                if shown.len() == rows {
+                    break 'fill;
                 }
+                shown.push(row);
             }
         }
-        // Where the kept lines are, for Ctrl+click.
-        self.user_lines = (
-            Rect::new(area.x, first_y, area.width, (text.len() - start) as u16),
-            start,
+        shown.reverse();
+        let first_y = area.bottom() - live_rows - shown.len() as u16;
+        draw_kept_rows(buf, area.x, first_y, area.width, &shown);
+        // Where the kept rows are, for Ctrl+click and the link tooltip.
+        self.user_rows = (
+            Rect::new(area.x, first_y, area.width, shown.len() as u16),
+            shown,
         );
-        self.user_total = text.len() + usize::from(live_rows);
+        // Counted afresh when scrolling back starts.
+        self.user_total = 0;
         cursor
     }
 
@@ -2825,7 +2872,9 @@ impl App {
             MouseEventKind::ScrollDown => false,
             _ => return false,
         };
-        let shift = ev.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+        let shift = ev
+            .modifiers
+            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
         let program_mouse = self.running.as_ref().is_some_and(|r| {
             r.pty.parser().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
         });
@@ -2914,8 +2963,16 @@ impl App {
             .as_ref()
             .map(|r| r.captured.as_slice())
             .unwrap_or(&[]);
-        let text_len = self.history.len() + captured.len();
-        let total = text_len + live.len();
+        // Rows as the terminal shows them: long lines wrapped.
+        let width = usize::from(area.width);
+        let all: Vec<termview::Line> = self
+            .history
+            .iter()
+            .chain(captured)
+            .chain(live.iter())
+            .flat_map(|l| termview::wrap_line(l, width))
+            .collect();
+        let total = all.len();
         // New output while scrolled back does not move the view.
         if total > self.user_total && self.user_total > 0 {
             self.user_scroll = self.user_scroll.saturating_add(total - self.user_total);
@@ -2928,29 +2985,13 @@ impl App {
         }
         let end = total - self.user_scroll;
         let start = end.saturating_sub(rows);
-        let lines = self.history.iter().chain(captured).chain(live.iter());
-        for (i, line) in lines.skip(start).take(end - start).enumerate() {
-            let y = area.y + i as u16;
-            buf.set_stringn(
-                area.x,
-                y,
-                line.text.as_str(),
-                area.width as usize,
-                theme::COMMAND_LINE,
-            );
-            if !line.links.is_empty() {
-                for x in 0..area.width {
-                    if line.link_at_column(usize::from(x)).is_some() {
-                        let cell = &mut buf[(area.x + x, y)];
-                        cell.modifier |= ratatui::style::Modifier::UNDERLINED;
-                        cell.fg = theme::LINK_FG;
-                    }
-                }
-            }
-        }
-        // Ctrl+click on the kept lines; the running program gets no mouse.
-        let kept = text_len.saturating_sub(start).min(end - start);
-        self.user_lines = (Rect::new(area.x, area.y, area.width, kept as u16), start);
+        let shown = all[start..end].to_vec();
+        draw_kept_rows(buf, area.x, area.y, area.width, &shown);
+        // Ctrl+click on the rows shown; the running program gets no mouse.
+        self.user_rows = (
+            Rect::new(area.x, area.y, area.width, shown.len() as u16),
+            shown,
+        );
         self.last_live = Rect::default();
         // Where the view is, at the top right.
         let note = format!(
@@ -2963,7 +3004,33 @@ impl App {
         }
         true
     }
+}
 
+/// Rows of kept output on the user screen; links underlined and colored
+/// (Ctrl+click opens them).
+fn draw_kept_rows(buf: &mut Buffer, x0: u16, y0: u16, width: u16, rows: &[termview::Line]) {
+    for (i, line) in rows.iter().enumerate() {
+        let y = y0 + i as u16;
+        buf.set_stringn(
+            x0,
+            y,
+            line.text.as_str(),
+            usize::from(width),
+            theme::COMMAND_LINE,
+        );
+        if !line.links.is_empty() {
+            for x in 0..width {
+                if line.link_at_column(usize::from(x)).is_some() {
+                    let cell = &mut buf[(x0 + x, y)];
+                    cell.modifier |= ratatui::style::Modifier::UNDERLINED;
+                    cell.fg = theme::LINK_FG;
+                }
+            }
+        }
+    }
+}
+
+impl App {
     /// Far's key bar (keybar.cpp): number, label of at least 6 cells, a
     /// space; at 98 columns and more the labels widen, below that the bar
     /// is cut off at the right edge.

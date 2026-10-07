@@ -43,21 +43,12 @@ impl App {
                 x - self.last_live.x,
             );
         }
-        let (rect, start) = self.user_lines;
+        let (rect, rows) = &self.user_rows;
         if !rect.contains(pos) {
             return None;
         }
-        let captured = self
-            .running
-            .as_ref()
-            .map(|r| r.captured.as_slice())
-            .unwrap_or(&[]);
-        let line = self
-            .history
-            .iter()
-            .chain(captured)
-            .nth(start + usize::from(y - rect.y))?;
-        line.link_at_column(usize::from(x - rect.x))
+        rows.get(usize::from(y - rect.y))?
+            .link_at_column(usize::from(x - rect.x))
             .map(str::to_string)
     }
 
@@ -121,21 +112,15 @@ impl App {
     /// on the user screen: the link.
     pub(super) fn kept_link_click(&mut self, ev: &crossterm::event::MouseEvent) -> Option<String> {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
-        let (rect, start) = self.user_lines;
+        let (rect, rows) = &self.user_rows;
         if ev.kind != MouseEventKind::Down(MouseButton::Left)
             || !ev.modifiers.contains(KeyModifiers::CONTROL)
             || !rect.contains(ratatui::layout::Position::new(ev.column, ev.row))
         {
             return None;
         }
-        let index = start + usize::from(ev.row - rect.y);
-        let captured = self
-            .running
-            .as_ref()
-            .map(|r| r.captured.as_slice())
-            .unwrap_or(&[]);
-        let line = self.history.iter().chain(captured).nth(index)?;
-        let uri = line
+        let uri = rows
+            .get(usize::from(ev.row - rect.y))?
             .link_at_column(usize::from(ev.column - rect.x))?
             .to_string();
         self.link_pressed = true;

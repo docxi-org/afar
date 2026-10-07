@@ -61,6 +61,11 @@ pub fn list(cwd: &Path) -> Vec<SessionInfo> {
 
 /// The text of the start and the end of a file (lines cut at the edges
 /// are dropped by the JSON parsing).
+/// The conversation has a message (`claude --resume` can continue it).
+pub fn has_messages(path: &Path) -> bool {
+    head_and_tail(path).is_some_and(|t| t.contains("\"type\":\"user\""))
+}
+
 fn head_and_tail(path: &Path) -> Option<String> {
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();

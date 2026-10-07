@@ -245,36 +245,133 @@ pub fn screen_lines(screen: &vt100::Screen) -> Vec<String> {
     lines
 }
 
-/// Joins `(text, wrapped, links)` rows into logical lines.
-pub fn join_wrapped(rows: impl IntoIterator<Item = vt100::ScrolledLine>, out: &mut Vec<Line>) {
-    let mut pending = Line::default();
-    let mut continues = false;
+/// Joins `(text, wrapped, links)` rows into logical lines. `continues`:
+/// the last line in `out` is still being wrapped (rows come in batches).
+pub fn join_wrapped(
+    rows: impl IntoIterator<Item = vt100::ScrolledLine>,
+    out: &mut Vec<Line>,
+    continues: &mut bool,
+) {
+    let mut pending = if *continues {
+        out.pop().unwrap_or_default()
+    } else {
+        Line::default()
+    };
     let finish = |mut line: Line| {
         line.text = line.text.trim_end().to_string();
         line
     };
     for (text, wrapped, links) in rows {
-        if !continues {
-            pending = Line::default();
-        }
         let shift = pending.text.chars().count();
         pending
             .links
             .extend(links.into_iter().map(|(a, b, u)| (a + shift, b + shift, u)));
         pending.text.push_str(&text);
-        continues = wrapped;
+        *continues = wrapped;
         if !wrapped {
             out.push(finish(std::mem::take(&mut pending)));
         }
     }
-    if continues {
-        out.push(finish(pending));
+    // A row wrapped at the end: kept as it is (its trailing spaces are
+    // text) until the next batch.
+    if *continues {
+        out.push(pending);
     }
+}
+
+/// A line cut into rows of `width` cells, as a terminal wraps it (an
+/// empty line is one empty row).
+pub fn wrap_line(line: &Line, width: usize) -> Vec<Line> {
+    use unicode_width::UnicodeWidthChar as _;
+    let chars: Vec<char> = line.text.chars().collect();
+    if width == 0 {
+        return vec![line.clone()];
+    }
+    let slice = |a: usize, b: usize| Line {
+        text: chars[a..b].iter().collect(),
+        links: line
+            .links
+            .iter()
+            .filter(|(s, e, _)| *s < b && *e > a)
+            .map(|(s, e, u)| ((*s).max(a) - a, (*e).min(b) - a, u.clone()))
+            .collect(),
+    };
+    let mut rows = Vec::new();
+    let (mut start, mut w) = (0, 0);
+    for (i, c) in chars.iter().enumerate() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > width && i > start {
+            rows.push(slice(start, i));
+            start = i;
+            w = 0;
+        }
+        w += cw;
+    }
+    rows.push(slice(start, chars.len()));
+    rows
+}
+
+/// The screen's rows as `(text, wrapped, links)`, up to the last non-blank
+/// one (or the cursor row), as `screen_lines` cuts them.
+pub fn screen_rows(screen: &vt100::Screen) -> Vec<vt100::ScrolledLine> {
+    let (_, cols) = screen.size();
+    let n = screen_lines(screen).len();
+    let mut links = screen.row_links(0, cols).into_iter();
+    screen
+        .rows(0, cols)
+        .take(n)
+        .enumerate()
+        .map(|(i, text)| {
+            (
+                text,
+                screen.row_wrapped(i as u16),
+                links.next().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// A command's whole output: the lines that scrolled off (`captured`,
+/// `continues` as `join_wrapped` left it) and the screen, wrapped rows
+/// joined into lines.
+pub fn output_lines(captured: &[Line], continues: bool, screen: &vt100::Screen) -> Vec<Line> {
+    let mut out = captured.to_vec();
+    let mut continues = continues;
+    join_wrapped(screen_rows(screen), &mut out, &mut continues);
+    if continues && let Some(last) = out.last_mut() {
+        last.text = last.text.trim_end().to_string();
+    }
+    out
 }
 
 #[cfg(test)]
 mod link_tests {
     use super::*;
+
+    #[test]
+    fn wrapped_rows_join_across_batches_and_the_screen() {
+        // A row wrapped at the end of one batch goes on in the next.
+        let mut out = Vec::new();
+        let mut continues = false;
+        join_wrapped(
+            vec![("abc".to_string(), true, vec![])],
+            &mut out,
+            &mut continues,
+        );
+        join_wrapped(
+            vec![("def".to_string(), false, vec![])],
+            &mut out,
+            &mut continues,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "abcdef");
+        // On the screen: a 25-character line in 10 columns is one line.
+        let mut p = vt100::Parser::new(5, 10, 0);
+        p.process(b"0123456789abcdefghijKLMNO\r\nnext\r\n");
+        let lines = output_lines(&[], false, p.screen());
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["0123456789abcdefghijKLMNO", "next"]);
+    }
 
     #[test]
     fn kept_lines_keep_links() {

@@ -34,18 +34,32 @@ const BASH_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 /// Changes of one folder by one author: folder key, folder, author,
 /// names with their change.
-/// Changes journaled together: folder key, folder, author, the user's
-/// command running meanwhile, the names.
-type Group = (String, PathBuf, Actor, Option<u64>, Vec<(String, Change)>);
+/// Changes journaled together: folder key, folder, author, what ran
+/// meanwhile, the names.
+type Group = (
+    String,
+    PathBuf,
+    Actor,
+    Option<During>,
+    Vec<(String, Change)>,
+);
+
+/// What was running when files changed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum During {
+    /// The user's command.
+    Command(u64),
+    /// The agent's Bash.
+    AgentBash,
+}
 
 struct Pending {
     path: PathBuf,
     change: Change,
     /// Who did it as known when it happened; `None`: afar's own operation.
     actor: Option<Actor>,
-    /// The user's command running when it happened (it may or may not
-    /// be the cause).
-    during: Option<u64>,
+    /// What was running when it happened (it may or may not be the cause).
+    during: Option<During>,
     at: Instant,
 }
 
@@ -61,7 +75,9 @@ pub(super) struct FsState {
     agent_bash: Vec<(String, Instant)>,
     agent_bash_done: Option<Instant>,
     /// afar's own operations finished recently.
-    own_done: Option<Instant>,
+    /// afar's own operations: their id, the paths they touch (keys of
+    /// `path_key`), when they ended.
+    own: Vec<(u64, Vec<String>, Option<Instant>)>,
     /// Files changed by the agent: key, time.
     marks: Vec<(String, Instant)>,
 }
@@ -76,7 +92,7 @@ impl FsState {
             agent_paths: Vec::new(),
             agent_bash: Vec::new(),
             agent_bash_done: None,
-            own_done: None,
+            own: Vec::new(),
             marks: Vec::new(),
         }
     }
@@ -105,32 +121,58 @@ fn parent_key(key: &str) -> &str {
 }
 
 impl App {
-    /// afar's own file operation finished: its late changes are its own.
-    pub(super) fn note_own_change(&mut self) {
-        self.fs.own_done = Some(Instant::now());
+    /// afar's own operation `id` starts: changes of these paths (and of
+    /// what is inside them) are its own.
+    pub(super) fn own_paths(&mut self, id: u64, paths: &[PathBuf]) {
+        let keys = paths.iter().map(|p| path_key(p)).collect();
+        self.fs.own.push((id, keys, None));
+    }
+
+    /// afar's own operation `id` finished: its late changes are its own
+    /// for a moment more.
+    pub(super) fn note_own_change(&mut self, id: u64) {
+        let now = Instant::now();
+        for o in self.fs.own.iter_mut().filter(|o| o.0 == id) {
+            o.2 = Some(now);
+        }
+    }
+
+    /// A change of `path` made by one of afar's own operations: one of its
+    /// paths, inside one, or the folder holding one (its entry changes).
+    fn is_own(&self, path: &Path, change: Change, now: Instant) -> bool {
+        let key = path_key(path);
+        let inside = |root: &str| {
+            key == root
+                || key.strip_prefix(root).is_some_and(|r| r.starts_with('\\'))
+                || change == Change::Modified
+                    && root
+                        .strip_prefix(key.as_str())
+                        .is_some_and(|r| r.starts_with('\\'))
+        };
+        self.fs
+            .own
+            .iter()
+            .filter(|(_, _, done)| done.is_none_or(|t| now.duration_since(t) < AFTERGLOW))
+            .any(|(_, roots, _)| roots.iter().any(|r| inside(r)))
     }
 
     pub(super) fn on_fs(&mut self, ev: FsEvent) {
         let now = Instant::now();
         // afar's own operation first: its journal entry says who did it
-        // (the user's F7 while the agent's command runs is still the user's).
-        let actor = if !self.ops.is_empty()
-            || self
-                .fs
-                .own_done
-                .is_some_and(|t| now.duration_since(t) < AFTERGLOW)
-        {
+        // (the user's F7 while the agent's command runs is still the user's);
+        // only its own paths — others may write meanwhile.
+        let actor = if self.is_own(&ev.path, ev.change, now) {
             None
-        } else if self.fs.agent_bash_running(now) {
-            Some(Actor::Agent)
         } else {
-            // A running command of the user's is not proof: another
-            // process may write meanwhile; the journal says both.
+            // A running command — the user's or the agent's Bash — is not
+            // proof: another process may write meanwhile; the journal says
+            // both.
             Some(Actor::External)
         };
         let during = match actor {
-            Some(Actor::External) => self.running.as_ref().map(|r| r.id),
-            _ => None,
+            Some(_) if self.fs.agent_bash_running(now) => Some(During::AgentBash),
+            Some(_) => self.running.as_ref().map(|r| During::Command(r.id)),
+            None => None,
         };
         self.fs.pending.push(Pending {
             path: ev.path,
@@ -214,6 +256,9 @@ impl App {
         self.fs
             .agent_bash
             .retain(|(_, t)| now.duration_since(*t) < BASH_LIMIT);
+        self.fs
+            .own
+            .retain(|(_, _, done)| done.is_none_or(|t| now.duration_since(t) < AFTERGLOW));
     }
 
     /// One journal entry per folder and author.
@@ -229,7 +274,9 @@ impl App {
             let Some(name) = p.path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
                 continue;
             };
-            if actor == Actor::Agent && p.change != Change::Removed {
+            // Changes while the agent's Bash runs are marked in the panels
+            // as its own (most likely they are).
+            if p.during == Some(During::AgentBash) && p.change != Change::Removed {
                 self.fs.marks.push((key.clone(), now));
             }
             let dir_key = parent_key(&key).to_string();
@@ -274,7 +321,11 @@ impl App {
                     modified: names(Change::Modified),
                     removed: names(Change::Removed),
                     count: changes.len(),
-                    during_cmd: during,
+                    during_cmd: match during {
+                        Some(During::Command(id)) => Some(id),
+                        _ => None,
+                    },
+                    during_agent_bash: during == Some(During::AgentBash),
                 },
             );
         }
@@ -283,7 +334,7 @@ impl App {
     /// PreToolUse (Bash only): the agent's command starts.
     pub(super) fn on_pre_tool(&mut self, input: &str) -> String {
         let v: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
-        if v["tool_name"] == "Bash" {
+        if matches!(v["tool_name"].as_str(), Some("Bash" | "PowerShell")) {
             let id = v["tool_use_id"].as_str().unwrap_or_default().to_string();
             self.fs.agent_bash.push((id, Instant::now()));
         }
@@ -299,7 +350,7 @@ impl App {
         let now = Instant::now();
         let mut paths = Vec::new();
         let summary = match tool.as_str() {
-            "Bash" => {
+            "Bash" | "PowerShell" => {
                 // The command by its id; without one, the oldest.
                 let id = v["tool_use_id"].as_str().unwrap_or_default();
                 let at = self

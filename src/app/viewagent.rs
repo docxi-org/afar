@@ -63,15 +63,10 @@ impl App {
             return Err(format!("no such file: {}", path.display()));
         }
         let shown = self.wm.current_screen();
+        let _ = actor;
         let id = self
             .open_viewer(path, vec![path.to_path_buf()])
             .ok_or_else(|| format!("cannot open {}", path.display()))?;
-        self.journal.push(
-            actor,
-            Event::FileViewed {
-                path: path.to_path_buf(),
-            },
-        );
         // open_viewer shows it; the etiquette may put the user's screen back.
         if !self.agent_may_show(shown) {
             self.wm.switch_to(shown);
@@ -142,11 +137,22 @@ impl App {
         let path = self.resolve_path(path);
         let (i, opened) = self.agent_viewer(&path)?;
         let result = self.agent_view_at(i, &path, line, pattern, highlight);
-        // A failed call leaves no viewer it opened.
-        if result.is_err() && opened {
-            self.close_viewer(i);
+        // A failed call leaves no viewer it opened; a good one is journaled.
+        match (&result, opened) {
+            (Err(_), true) => self.close_viewer(i),
+            (Ok(_), true) => self.journal_viewed(&path),
+            _ => {}
         }
         result
+    }
+
+    fn journal_viewed(&mut self, path: &Path) {
+        self.journal.push(
+            Actor::Agent,
+            Event::FileViewed {
+                path: path.to_path_buf(),
+            },
+        );
     }
 
     /// The viewer of `path` for the agent, and whether it was opened now.
@@ -236,6 +242,9 @@ impl App {
                 }
                 return Err(e);
             }
+        }
+        if opened {
+            self.journal_viewed(&path);
         }
         let total = self.viewers[i].line_count().max(1);
         let v = &mut self.viewers[i];

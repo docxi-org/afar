@@ -474,6 +474,8 @@ impl App {
                 if button == Some(0) {
                     self.mkdir_from_dialog(side, &dialog, actor, reply);
                 } else if let Some(reply) = reply {
+                    let names = vec![PathBuf::from(dialog.input_value(0).trim())];
+                    self.journal_declined(actor, "afar_mkdir", names);
                     let _ = reply.send(Err("the user declined creating the folders".into()));
                 }
             }
@@ -486,6 +488,7 @@ impl App {
                 if button == Some(0) {
                     self.start_delete(targets, mode, actor, reply);
                 } else if let Some(reply) = reply {
+                    self.journal_declined(actor, "afar_delete", targets);
                     let _ = reply.send(Err("the user declined the deletion".into()));
                 }
             }
@@ -498,6 +501,8 @@ impl App {
             } => {
                 if button != Some(0) {
                     if let Some(reply) = reply {
+                        let op = if moving { "afar_move" } else { "afar_copy" };
+                        self.journal_declined(actor, op, sources);
                         let _ = reply.send(Err("the user declined the operation".into()));
                     }
                     return;
@@ -780,10 +785,7 @@ impl App {
             _ => None,
         };
         let result = match link {
-            None => self.mkdir(side, actor, &names).map(|created| {
-                let list: Vec<String> = created.iter().map(|p| p.display().to_string()).collect();
-                format!("created: {}", list.join(", "))
-            }),
+            None => self.mkdir(side, actor, &names),
             Some(junction) => {
                 let target = PathBuf::from(dialog.input_value(1).trim().trim_matches('"'));
                 self.make_links(side, &names, &target, junction)
@@ -825,10 +827,19 @@ impl App {
         side: usize,
         actor: Actor,
         names: &[String],
-    ) -> Result<Vec<PathBuf>, String> {
+    ) -> Result<String, String> {
         let base = self.panels[side].path.clone();
         let (created, report, reasons) = ops::make_dirs(&base, names);
-        self.note_own_change();
+        // Its own changes: the top folder of each new path (`a\b\c` makes
+        // `a` too).
+        let tops: Vec<PathBuf> = created
+            .iter()
+            .filter_map(|p| p.strip_prefix(&base).ok())
+            .filter_map(|rel| rel.components().next())
+            .map(|c| base.join(c.as_os_str()))
+            .collect();
+        self.own_paths(u64::MAX, &tops);
+        self.note_own_change(u64::MAX);
         if created.is_empty() && report.failed.is_empty() {
             return Err(tr!("MIncorrectDirList"));
         }
@@ -881,22 +892,26 @@ impl App {
                     .map(|(p, r)| format!("{}: {r}", p.display()))
                     .collect();
                 let done: Vec<String> = created.iter().map(|p| p.display().to_string()).collect();
-                Err(if done.is_empty() {
-                    format!("not created: {}", failed.join("; "))
+                // Some created: that is a result, with what was not.
+                if done.is_empty() {
+                    Err(format!("not created: {}", failed.join("; ")))
                 } else {
-                    format!(
+                    Ok(format!(
                         "created: {}; not created: {}",
                         done.join(", "),
                         failed.join("; ")
-                    )
-                })
+                    ))
+                }
             }
             Some((path, e)) => Err(format!(
                 "{}\n{}\n{e}",
                 tr!("MCannotCreateFolder"),
                 path.display()
             )),
-            None => Ok(created),
+            None => {
+                let list: Vec<String> = created.iter().map(|p| p.display().to_string()).collect();
+                Ok(format!("created: {}", list.join(", ")))
+            }
         }
     }
 
@@ -1028,6 +1043,7 @@ impl App {
                 dest: None,
             },
         );
+        self.own_paths(id, &targets);
         let control = OpControl::new();
         let tx = self.tx.clone();
         let confirm = ops::Confirmations {
@@ -1214,6 +1230,12 @@ impl App {
             }
             _ => None,
         };
+        // Its own changes: the targets, and the sources when moving.
+        let mut own: Vec<PathBuf> = pairs.iter().map(|(_, t)| t.clone()).collect();
+        if moving {
+            own.extend(job.sources.iter().cloned());
+        }
+        self.own_paths(id, &own);
         let control = OpControl::new();
         let tx = self.tx.clone();
         let started = ops::spawn_copy(id, pairs, moving, overwrite, control.clone(), move |m| {
@@ -1410,7 +1432,7 @@ impl App {
                 let Some(op) = self.ops.remove(&id) else {
                     return;
                 };
-                self.note_own_change();
+                self.note_own_change(id);
                 self.journal_finished(id, op.kind, op.actor, &report);
                 for p in &mut self.panels {
                     p.reload(None);
@@ -1489,16 +1511,49 @@ impl App {
         else {
             return;
         };
+        if let Some(Overlay::Dialog { purpose, .. }) = self.overlays.get(at) {
+            let (what, paths) = match purpose {
+                Purpose::MkDir { .. } => ("afar_mkdir", Vec::new()),
+                Purpose::Delete { targets, .. } => ("afar_delete", targets.clone()),
+                Purpose::Copy {
+                    moving, sources, ..
+                } => (
+                    if *moving { "afar_move" } else { "afar_copy" },
+                    sources.clone(),
+                ),
+                _ => ("afar_copy", Vec::new()),
+            };
+            self.journal.push(
+                Actor::System,
+                Event::AgentRequestClosed {
+                    op: what.to_string(),
+                    paths: limited(&paths),
+                    outcome: "the agent stopped waiting; the dialog was closed".to_string(),
+                },
+            );
+        }
         self.overlays.remove(at);
         self.say(tr!("agent-request-abandoned"));
+    }
+
+    /// The user said no to the agent's request: the journal keeps it.
+    fn journal_declined(&mut self, actor: Actor, op: &str, paths: Vec<PathBuf>) {
+        if actor == Actor::Agent {
+            self.journal.push(
+                Actor::User,
+                Event::AgentRequestClosed {
+                    op: op.to_string(),
+                    paths: limited(&paths),
+                    outcome: "declined".to_string(),
+                },
+            );
+        }
     }
 
     /// `afar_mkdir`: creating is allowed without confirmation.
     pub(super) fn agent_mkdir(&mut self, side: usize, names: &[String]) -> Reply {
         self.set_panels_visible(true);
-        let created = self.mkdir(side, Actor::Agent, names)?;
-        let list: Vec<String> = created.iter().map(|p| p.display().to_string()).collect();
-        Ok(format!("created: {}", list.join(", ")))
+        self.mkdir(side, Actor::Agent, names)
     }
 
     /// Paths of `names` in a panel; those that do not exist go to the error.

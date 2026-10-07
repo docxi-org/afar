@@ -141,6 +141,9 @@ pub struct DevState {
     pub commands: Vec<crate::app::CmdRecord>,
     #[serde(default)]
     pub next_cmd_id: u64,
+    /// The next file operation's number (they go on in the journal).
+    #[serde(default)]
+    pub next_op_id: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

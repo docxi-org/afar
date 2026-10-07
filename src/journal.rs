@@ -85,12 +85,24 @@ pub enum Event {
         /// The user's command running meanwhile (not necessarily the cause).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         during_cmd: Option<u64>,
+        /// The agent's Bash was running meanwhile (not necessarily the cause).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        during_agent_bash: bool,
     },
     /// The agent used one of its own tools (PostToolUse hook).
     AgentToolUsed {
         tool: String,
         summary: String,
         paths: Vec<PathBuf>,
+    },
+    /// The agent's request that waited for the user ended without being
+    /// done: declined, or the agent stopped waiting.
+    AgentRequestClosed {
+        op: String,
+        /// Up to 20 of the paths it was about.
+        #[serde(default)]
+        paths: Vec<PathBuf>,
+        outcome: String,
     },
     /// A file opened in the viewer.
     FileViewed {
@@ -328,6 +340,7 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 removed,
                 count,
                 during_cmd,
+                during_agent_bash,
             } => {
                 let shown = created.len() + modified.len() + removed.len();
                 let mut parts = Vec::new();
@@ -337,14 +350,24 @@ pub fn format_entries(entries: &[Entry]) -> String {
                     }
                 }
                 let more = if *count > shown { ", …" } else { "" };
-                let during = during_cmd
-                    .map(|id| format!("  (while [cmd-{id}] ran)"))
-                    .unwrap_or_default();
+                let during = match (during_cmd, during_agent_bash) {
+                    (_, true) => "  (while your Bash ran)".to_string(),
+                    (Some(id), _) => format!("  (while [cmd-{id}] ran)"),
+                    _ => String::new(),
+                };
                 format!(
                     "fs     {}: {}{more}{during}",
                     dir.display(),
                     parts.join(", ")
                 )
+            }
+            Event::AgentRequestClosed { op, paths, outcome } => {
+                let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+                if names.is_empty() {
+                    format!("ask    {op}: {outcome}")
+                } else {
+                    format!("ask    {op} {}: {outcome}", names.join(", "))
+                }
             }
             Event::FileViewed { path } => format!("view   {}", path.display()),
             Event::ViewerSelection {
