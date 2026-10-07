@@ -19,7 +19,7 @@ pub use delete::{Confirmations, DeleteMode, spawn_delete};
 
 pub type OpId = u64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OpKind {
     #[serde(rename = "mkdir")]
@@ -220,15 +220,22 @@ pub struct OpReport {
     pub done: usize,
     /// Existing files left alone.
     pub skipped: usize,
+    /// Existing files overwritten or appended to (among `done`).
+    pub replaced: usize,
+    /// Files written under a new name beside an existing one (among `done`).
+    pub renamed: usize,
     pub failed: Vec<(PathBuf, String)>,
     pub cancelled: bool,
 }
 
 /// Creates directories `names` (relative to `base` or absolute, nested
 /// paths allowed). Quick enough to run on the caller's thread.
-pub fn make_dirs(base: &Path, names: &[String]) -> (Vec<PathBuf>, OpReport) {
+/// The failures in `report.failed` come with their reasons in English
+/// (for the journal and the agent) in the third value.
+pub fn make_dirs(base: &Path, names: &[String]) -> (Vec<PathBuf>, OpReport, Vec<String>) {
     let mut created = Vec::new();
     let mut report = OpReport::default();
+    let mut reasons = Vec::new();
     for name in names
         .iter()
         .map(|n| n.trim().trim_matches('"'))
@@ -236,15 +243,53 @@ pub fn make_dirs(base: &Path, names: &[String]) -> (Vec<PathBuf>, OpReport) {
     {
         // `a/b` from the agent: use the platform's separator.
         let path = base.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
-        match std::fs::create_dir_all(&path) {
+        // An existing folder is not created again (Far says so too).
+        let result = if path.exists() {
+            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+        } else {
+            std::fs::create_dir_all(&path)
+        };
+        match result {
             Ok(()) => {
                 report.done += 1;
                 created.push(path);
             }
-            Err(e) => report.failed.push((path, e.to_string())),
+            Err(e) => {
+                reasons.push(reason_en(&e));
+                let text = match e.kind() {
+                    std::io::ErrorKind::AlreadyExists => {
+                        std::io::Error::from_raw_os_error(183).to_string()
+                    }
+                    _ => e.to_string(),
+                };
+                report.failed.push((path, text));
+            }
         }
     }
-    (created, report)
+    (created, report, reasons)
+}
+
+/// An error for the model: English, whatever the language of Windows.
+pub fn reason_en(e: &std::io::Error) -> String {
+    let what = match e.raw_os_error() {
+        Some(2) => "not found",
+        Some(3) => "path not found",
+        Some(5) => "access denied",
+        Some(32) => "in use by another process",
+        Some(80 | 183) => "already exists",
+        Some(112) => "not enough space on the disk",
+        Some(123) => "invalid name (characters not allowed)",
+        Some(206) => "name too long",
+        Some(267) => "invalid folder name",
+        _ if e.kind() == std::io::ErrorKind::AlreadyExists => "already exists",
+        _ => "",
+    };
+    match (what, e.raw_os_error()) {
+        ("", Some(code)) => format!("{:?} (os error {code})", e.kind()),
+        ("", None) => format!("{:?}", e.kind()),
+        (w, Some(code)) => format!("{w} (os error {code})"),
+        (w, None) => w.to_string(),
+    }
 }
 
 /// Creates a junction (`junction`) or a directory symbolic link `link`
@@ -490,7 +535,7 @@ pub(crate) mod test_util {
     #[test]
     fn makes_nested_dirs() {
         let base = temp_dir("mkdir");
-        let (created, report) = make_dirs(&base, &["a\\b\\c".into(), " d ".into(), "".into()]);
+        let (created, report, _) = make_dirs(&base, &["a\\b\\c".into(), " d ".into(), "".into()]);
         assert_eq!(report.done, 2);
         assert!(report.failed.is_empty());
         assert_eq!(created, vec![base.join("a\\b\\c"), base.join("d")]);

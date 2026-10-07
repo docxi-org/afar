@@ -203,6 +203,8 @@ impl App {
             | InsertPassivePath => self.insert_for(command),
             HistoryPrev => self.history_step(true),
             HistoryNext => self.history_step(false),
+            ScreenLineUp | ScreenLineDown | ScreenPageUp | ScreenPageDown | ScreenTop
+            | ScreenBottom => return self.scroll_user_screen_by(command),
             QuickView => self.toggle_quick_view(),
             Attributes => self.attributes_dialog(),
             InfoPanel => self.toggle_info_panel(),

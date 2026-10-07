@@ -53,6 +53,12 @@ impl App {
         {
             return Ok(i);
         }
+        if path.is_dir() {
+            return Err(format!(
+                "{} is a directory; afar_navigate shows it in a panel",
+                path.display()
+            ));
+        }
         if !path.is_file() {
             return Err(format!("no such file: {}", path.display()));
         }
@@ -83,18 +89,37 @@ impl App {
     }
 
     /// Brings viewer `i` to the screen if the etiquette allows; otherwise
-    /// says where it is.
-    fn agent_show(&mut self, i: usize, what: &str) {
+    /// tells the user where it is. A note for the agent's answer when the
+    /// file stays behind.
+    fn agent_show(&mut self, i: usize, what: &str) -> &'static str {
         let shown = self.wm.current_screen();
         let id = self.viewers[i].id;
         if shown == ScreenId::Viewer(id) {
-            return;
+            return "";
         }
         if self.agent_may_show(shown) {
             self.wm.switch_to(ScreenId::Viewer(id));
+            ""
         } else {
             self.say(tr!("agent-opened-behind", what = what));
+            " (behind: the user is busy with another screen and was told where it is)"
         }
+    }
+
+    /// Lines `from..=to` must be in the file of viewer `i`: an error names
+    /// the file's length.
+    fn check_lines(&mut self, i: usize, from: u64, to: u64) -> Result<(), String> {
+        let total = self.viewers[i].line_count().max(1);
+        if from == 0 || to < from {
+            return Err(format!("bad line range {from}-{to}: lines count from 1"));
+        }
+        if from > total {
+            return Err(format!(
+                "line {from} is past the end: {} has {total} lines",
+                self.viewers[i].path().display()
+            ));
+        }
+        Ok(())
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
@@ -115,7 +140,37 @@ impl App {
         highlight: Option<MarkSpec>,
     ) -> Result<String, String> {
         let path = self.resolve_path(path);
-        let i = self.viewer_for(&path, Actor::Agent)?;
+        let (i, opened) = self.agent_viewer(&path)?;
+        let result = self.agent_view_at(i, &path, line, pattern, highlight);
+        // A failed call leaves no viewer it opened.
+        if result.is_err() && opened {
+            self.close_viewer(i);
+        }
+        result
+    }
+
+    /// The viewer of `path` for the agent, and whether it was opened now.
+    fn agent_viewer(&mut self, path: &Path) -> Result<(usize, bool), String> {
+        let before = self.viewers.len();
+        let i = self.viewer_for(path, Actor::Agent)?;
+        Ok((i, self.viewers.len() > before))
+    }
+
+    fn agent_view_at(
+        &mut self,
+        i: usize,
+        path: &Path,
+        line: Option<u64>,
+        pattern: Option<String>,
+        highlight: Option<MarkSpec>,
+    ) -> Result<String, String> {
+        if let Some(l) = line {
+            self.check_lines(i, l, l)?;
+        }
+        if let Some(spec) = &highlight {
+            let from = spec.from_line;
+            self.check_lines(i, from, spec.to_line.unwrap_or(from))?;
+        }
         let v = &mut self.viewers[i];
         let target = match (&pattern, line) {
             (Some(p), _) => {
@@ -132,7 +187,8 @@ impl App {
             v.show_line(l);
         }
         if let Some(spec) = highlight {
-            let mark = make_mark(&spec, true);
+            let mut mark = make_mark(&spec, true);
+            mark.to = mark.to.min(v.line_count().max(1));
             v.add_marks(vec![mark], false);
         } else if let Some(l) = target {
             // The place itself, blinking for a moment.
@@ -155,8 +211,10 @@ impl App {
             Some(l) => format!("{}:{l}", path.display()),
             None => path.display().to_string(),
         };
-        self.agent_show(i, &what);
-        Ok(format!("{what} is open in the viewer ({total} lines)"))
+        let behind = self.agent_show(i, &what);
+        Ok(format!(
+            "{what} is open in the viewer ({total} lines){behind}"
+        ))
     }
 
     /// `afar_highlight`.
@@ -169,7 +227,17 @@ impl App {
         clear: bool,
     ) -> Result<String, String> {
         let path = self.resolve_path(path);
-        let i = self.viewer_for(&path, Actor::Agent)?;
+        let (i, opened) = self.agent_viewer(&path)?;
+        for spec in &marks {
+            let from = spec.from_line;
+            if let Err(e) = self.check_lines(i, from, spec.to_line.unwrap_or(from)) {
+                if opened {
+                    self.close_viewer(i);
+                }
+                return Err(e);
+            }
+        }
+        let total = self.viewers[i].line_count().max(1);
         let v = &mut self.viewers[i];
         if clear {
             v.marks.retain(|m| !m.agent);
@@ -179,6 +247,7 @@ impl App {
             .iter()
             .map(|spec| {
                 let mut m = make_mark(spec, flash);
+                m.to = m.to.min(total);
                 m.expires = expires;
                 m
             })
@@ -193,10 +262,8 @@ impl App {
             Some(l) => format!("{}:{l}", path.display()),
             None => path.display().to_string(),
         };
-        if n > 0 {
-            self.agent_show(i, &what);
-        }
-        Ok(format!("{n} place(s) marked in {}", path.display()))
+        let behind = if n > 0 { self.agent_show(i, &what) } else { "" };
+        Ok(format!("{n} place(s) marked in {}{behind}", path.display()))
     }
 
     /// `afar_viewer_state`: the open files, what the user sees and selected.
@@ -205,11 +272,19 @@ impl App {
         let mut out = Vec::new();
         for i in 0..self.viewers.len() {
             let v = &mut self.viewers[i];
-            let (first, last) = v.visible_lines();
+            v.marks_tick();
+            // A viewer never drawn (opened behind) has no rows yet: where
+            // it will start.
+            let visible = match v.visible_lines() {
+                Some((first, last)) => serde_json::json!([first, last]),
+                None => serde_json::Value::Null,
+            };
+            let top_line = v.top_line();
             let mut item = serde_json::json!({
                 "path": v.path().display().to_string(),
                 "on_screen": shown == Some(i),
-                "visible_lines": [first, last],
+                "visible_lines": visible,
+                "top_line": top_line,
                 "marks": v.marks.iter().map(|m| serde_json::json!({
                     "from_line": m.from, "to_line": m.to, "label": m.label,
                     "kind": format!("{:?}", m.kind).to_lowercase(),
@@ -236,11 +311,14 @@ impl App {
     /// changed lines, the agent's edits followed when asked), marks that
     /// blink or expire, the selection for the journal.
     pub(super) fn viewers_tick(&mut self) {
+        // Marks expire in the viewers behind too.
+        for v in &mut self.viewers {
+            v.marks_tick();
+        }
         let Some(i) = self.shown_viewer() else { return };
         if let Some(changes) = self.viewers[i].check_changed() {
             self.mark_changes(i, changes);
         }
-        self.viewers[i].marks_tick();
         // The selection, once it stays a second.
         let sel = self.viewers[i].selection_lines();
         let path = self.viewers[i].path().to_path_buf();

@@ -206,3 +206,6 @@ follow-off = Not following the agent
 agent-menu-follow = &Follow the agent
 ide-diff-counts = Lines added: { $added }, removed: { $removed }
 ide-diff-show = &Show the difference
+agent-resume-failed = Could not continue the agent's conversation { $id } — a new one started (what claude said is in the session's agent-resume.log); the old one can be opened from the agent menu
+agent-request-abandoned = The agent stopped waiting for the answer — its request was closed
+user-scroll = lines { $from }–{ $to } of { $total } · Ctrl+Alt+End — to the end

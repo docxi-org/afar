@@ -827,7 +827,7 @@ impl App {
         names: &[String],
     ) -> Result<Vec<PathBuf>, String> {
         let base = self.panels[side].path.clone();
-        let (created, report) = ops::make_dirs(&base, names);
+        let (created, report, reasons) = ops::make_dirs(&base, names);
         self.note_own_change();
         if created.is_empty() && report.failed.is_empty() {
             return Err(tr!("MIncorrectDirList"));
@@ -839,11 +839,28 @@ impl App {
                 op_id: id,
                 op: OpKind::MkDir,
                 count: created.len() + report.failed.len(),
-                sources: limited(&created),
+                sources: limited(
+                    &created
+                        .iter()
+                        .chain(report.failed.iter().map(|(p, _)| p))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ),
                 dest: None,
             },
         );
-        self.journal_finished(id, OpKind::MkDir, actor, &report);
+        // The journal is read by the model: the reasons in English.
+        let english = ops::OpReport {
+            done: report.done,
+            failed: report
+                .failed
+                .iter()
+                .zip(&reasons)
+                .map(|((p, _), r)| (p.clone(), r.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        self.journal_finished(id, OpKind::MkDir, actor, &english);
         let focus = created
             .first()
             .and_then(|p| p.strip_prefix(&base).ok())
@@ -856,6 +873,24 @@ impl App {
             self.panels[side].set_cursor_by_name(&name);
         }
         match report.failed.first() {
+            // The agent reads it in English, with everything that failed.
+            Some(_) if actor == Actor::Agent => {
+                let failed: Vec<String> = english
+                    .failed
+                    .iter()
+                    .map(|(p, r)| format!("{}: {r}", p.display()))
+                    .collect();
+                let done: Vec<String> = created.iter().map(|p| p.display().to_string()).collect();
+                Err(if done.is_empty() {
+                    format!("not created: {}", failed.join("; "))
+                } else {
+                    format!(
+                        "created: {}; not created: {}",
+                        done.join(", "),
+                        failed.join("; ")
+                    )
+                })
+            }
             Some((path, e)) => Err(format!(
                 "{}\n{}\n{e}",
                 tr!("MCannotCreateFolder"),
@@ -1421,6 +1456,8 @@ impl App {
                 op: kind,
                 done: report.done,
                 skipped: report.skipped,
+                replaced: report.replaced,
+                renamed: report.renamed,
                 failed_count: report.failed.len(),
                 failed: report.failed.iter().take(LIST_LIMIT).cloned().collect(),
                 cancelled: report.cancelled,
@@ -1434,6 +1471,27 @@ impl App {
     }
 
     // ------------------------------------------------------------- agent
+
+    /// The agent stopped waiting for the answer to its request (its
+    /// time-out, or afar's): the dialog closes, so that a late "yes" does
+    /// not do what the agent believes failed.
+    pub(super) fn drop_abandoned_requests(&mut self) {
+        let abandoned = |p: &Purpose| match p {
+            Purpose::MkDir { reply, .. }
+            | Purpose::Delete { reply, .. }
+            | Purpose::Copy { reply, .. } => reply.as_ref().is_some_and(|r| r.is_closed()),
+            _ => false,
+        };
+        let Some(at) = self
+            .overlays
+            .iter()
+            .position(|o| matches!(o, Overlay::Dialog { purpose, .. } if abandoned(purpose)))
+        else {
+            return;
+        };
+        self.overlays.remove(at);
+        self.say(tr!("agent-request-abandoned"));
+    }
 
     /// `afar_mkdir`: creating is allowed without confirmation.
     pub(super) fn agent_mkdir(&mut self, side: usize, names: &[String]) -> Reply {
@@ -1708,6 +1766,18 @@ fn describe_report(kind: OpKind, dest: Option<&Path>, report: &OpReport) -> Stri
     let mut out = format!("{}: {} item(s) done", kind.name(), report.done);
     if let Some(dest) = dest {
         out.push_str(&format!(" → {}", dest.display()));
+    }
+    if report.replaced > 0 {
+        out.push_str(&format!(
+            ", {} existing file(s) overwritten",
+            report.replaced
+        ));
+    }
+    if report.renamed > 0 {
+        out.push_str(&format!(
+            ", {} written under a new name beside an existing one",
+            report.renamed
+        ));
     }
     if report.skipped > 0 {
         out.push_str(&format!(", {} existing file(s) skipped", report.skipped));

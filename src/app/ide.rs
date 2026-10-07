@@ -179,6 +179,24 @@ impl App {
             return;
         }
         let Some(i) = self.shown_viewer() else {
+            // No viewer on the screen: `claude` forgets the file (its
+            // "In <file>" and the note to the next prompt go with
+            // `filePath` absent; a message without `selection` is ignored).
+            if self.agent.ide_sent.take().is_some()
+                && let Some(ide) = &self.agent.ide
+            {
+                ide.notify(
+                    "selection_changed",
+                    json!({
+                        "text": "",
+                        "selection": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 0},
+                            "isEmpty": true,
+                        },
+                    }),
+                );
+            }
             return;
         };
         let v = &mut self.viewers[i];

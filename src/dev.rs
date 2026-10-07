@@ -127,6 +127,20 @@ pub struct DevState {
     /// The viewer shown, if a viewer screen was current.
     #[serde(default)]
     pub viewer_shown: Option<usize>,
+    /// The session folder whose journal the next instance continues
+    /// (a restart only), and how far the agent has read it.
+    #[serde(default)]
+    pub journal_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub seen_seq: u64,
+    /// The user screen's kept lines, the commands and the next command's
+    /// number (a restart only).
+    #[serde(default)]
+    pub user_screen: Vec<crate::termview::Line>,
+    #[serde(default)]
+    pub commands: Vec<crate::app::CmdRecord>,
+    #[serde(default)]
+    pub next_cmd_id: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

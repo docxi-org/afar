@@ -207,3 +207,6 @@ follow-off = Не следую за агентом
 agent-menu-follow = &Следовать за агентом
 ide-diff-counts = Добавлено строк: { $added }, удалено: { $removed }
 ide-diff-show = &Показать разницу
+agent-resume-failed = Не удалось продолжить разговор агента { $id } — начат новый (что ответил claude — в agent-resume.log сессии); прежний можно открыть из меню агента
+agent-request-abandoned = Агент перестал ждать ответа — его запрос закрыт
+user-scroll = строки { $from }–{ $to } из { $total } · Ctrl+Alt+End — вниз

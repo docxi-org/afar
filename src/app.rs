@@ -162,7 +162,8 @@ type ParkedDiff = (
 );
 
 /// Record of a command run from the command line.
-struct CmdRecord {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CmdRecord {
     id: u64,
     text: String,
     cwd: PathBuf,
@@ -244,6 +245,11 @@ pub struct App {
     /// Where the user screen last drew the kept lines, and the first one's
     /// index in history + captured output.
     user_lines: (Rect, usize),
+    /// The user screen scrolled back by this many lines (0: following the
+    /// output), the lines it had then, and its height in the last frame.
+    user_scroll: usize,
+    user_total: usize,
+    user_height: u16,
     /// What afar last told the outer terminal (title, progress).
     outer: outer::Outer,
     /// Ctrl+Q: the quick view in place of a panel.
@@ -400,6 +406,9 @@ impl App {
             link_pressed: false,
             hovered_link: None,
             user_lines: (Rect::default(), 0),
+            user_scroll: 0,
+            user_total: 0,
+            user_height: 0,
             outer: Default::default(),
             quick_view: None,
             info_panel: None,
@@ -499,6 +508,17 @@ impl App {
         self.agent.cwd = state.agent_cwd;
         self.agent.name = state.agent_name;
         self.agent.permission_mode = state.agent_permission_mode;
+        // The journal goes on where it was: the resumed agent's numbers hold.
+        if let Some(dir) = &state.journal_dir {
+            self.journal.carry_over(dir);
+        }
+        self.agent.seen_seq = state.seen_seq;
+        // The user screen and the commands with their output go on too.
+        self.history = state.user_screen;
+        self.commands = state.commands;
+        self.next_cmd_id = state
+            .next_cmd_id
+            .max(self.commands.iter().map(|c| c.id + 1).max().unwrap_or(1));
         self.restored = true;
         self.layout_restored = true;
     }
@@ -538,6 +558,11 @@ impl App {
         state.agent_cwd = None;
         state.agent_name = None;
         state.agent_permission_mode = None;
+        state.journal_dir = None;
+        state.seen_seq = 0;
+        state.user_screen = Vec::new();
+        state.commands = Vec::new();
+        state.next_cmd_id = 0;
         if let Ok(json) = serde_json::to_vec_pretty(&state) {
             let _ = std::fs::create_dir_all(&self.data_dir);
             let _ = std::fs::write(self.data_dir.join("state.json"), json);
@@ -573,6 +598,11 @@ impl App {
             viewers,
             viewer_shown,
             agent_hidden: self.wm.is_hidden(WinId::Agent(0)),
+            journal_dir: Some(self.journal.dir().to_path_buf()),
+            seen_seq: self.agent.seen_seq,
+            user_screen: self.history.clone(),
+            commands: self.commands.clone(),
+            next_cmd_id: self.next_cmd_id,
         }
     }
 
@@ -777,9 +807,7 @@ impl App {
                         .resumed_at
                         .is_some_and(|t| t.elapsed() < Duration::from_secs(15));
                 if quick_exit {
-                    self.restored = false;
-                    let (rows, cols) = self.last_agent_size();
-                    self.start_agent(cols, rows);
+                    self.resume_failed();
                 }
             }
             AppMsg::Input(_) => {}
@@ -844,6 +872,16 @@ impl App {
     /// Periodic work: debounced journal entries, message expiry.
     fn tick(&mut self) {
         self.fs_tick();
+        self.drop_abandoned_requests();
+        if self
+            .agent
+            .resume_retry_at
+            .is_some_and(|t| Instant::now() >= t)
+        {
+            self.agent.resume_retry_at = None;
+            let (rows, cols) = self.last_agent_size();
+            self.start_agent(cols, rows);
+        }
         for side in 0..2 {
             if self.selection_changed[side]
                 .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
@@ -856,7 +894,7 @@ impl App {
                 self.journal.push(
                     Actor::User,
                     Event::SelectionChanged {
-                        panel: side_name(side),
+                        panel: side_name(side).into(),
                         count: names.len(),
                         sample: names.into_iter().take(5).collect(),
                     },
@@ -907,6 +945,10 @@ impl App {
                 "type": "http",
                 "url": format!("http://127.0.0.1:{}/mcp", self.link.port),
                 "headers": { "Authorization": format!("Bearer {}", self.link.token) },
+                // A tool waits for the user's answer to a dialog: Claude Code
+                // would give up after a minute; afar's own limit (600 s)
+                // comes first.
+                "timeout": 660_000,
             }}
         });
         // The channel server; it reaches afar by AFAR_ENDPOINT/AFAR_TOKEN.
@@ -993,6 +1035,42 @@ impl App {
 
     /// Starts the agent: after a dev restart the same conversation in its
     /// folder, otherwise a new one in the active panel's folder.
+    /// `claude --resume` exited at once. What it said goes to
+    /// `agent-resume.log` in the session folder; the first time it is
+    /// tried again in two seconds, then a new conversation starts and
+    /// the user is told.
+    fn resume_failed(&mut self) {
+        self.agent.resumed_at = None;
+        let id = self.agent.session_id.clone().unwrap_or_default();
+        if let Some(pty) = &self.agent.pty {
+            let screen = termview::screen_lines(pty.parser().screen());
+            let text = format!(
+                "{} claude --resume {id} exited with {:?}:\n{}\n\n",
+                chrono::Local::now().format("%H:%M:%S"),
+                pty.exit_code(),
+                screen.join("\n").trim_end()
+            );
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::File::options()
+                .create(true)
+                .append(true)
+                .open(self.journal.dir().join("agent-resume.log"))
+            {
+                let _ = f.write_all(text.as_bytes());
+            }
+        }
+        if !self.agent.resume_retried {
+            self.agent.resume_retried = true;
+            self.agent.resume_retry_at = Some(Instant::now() + Duration::from_secs(2));
+            return;
+        }
+        self.agent.resume_retried = false;
+        self.restored = false;
+        self.say(tr!("agent-resume-failed", id = id));
+        let (rows, cols) = self.last_agent_size();
+        self.start_agent(cols, rows);
+    }
+
     fn start_agent(&mut self, cols: u16, rows: u16) {
         let resume = self.agent.session_id.clone().filter(|_| self.restored);
         let cwd = match (&resume, &self.agent.cwd) {
@@ -1039,8 +1117,12 @@ impl App {
         if let Some(ide) = &self.agent.ide {
             env.push(("CLAUDE_CODE_SSE_PORT".to_string(), ide.port.to_string()));
         }
-        // A new agent session has not seen anything yet.
-        self.agent.seen_seq = 0;
+        // A new agent session has not seen anything yet; the same one
+        // resumed (a development-mode restart) has.
+        let same = matches!(&launch, agent::Launch::Resume(id) if self.agent.session_id.as_deref() == Some(id.as_str()));
+        if !same {
+            self.agent.seen_seq = 0;
+        }
         // Our own session id; after a dev restart: the same conversation.
         // The configured extra arguments go first.
         let mut args: Vec<String> = self
@@ -1221,6 +1303,7 @@ impl App {
             },
         ) {
             Ok(pty) => {
+                self.user_scroll = 0;
                 self.running = Some(RunningCommand {
                     id,
                     pty,
@@ -1255,7 +1338,8 @@ impl App {
         let run = self.running.take().unwrap();
         let mut output = run.captured;
         output.extend(termview::screen_lines_links(run.pty.parser().screen()));
-        let text: Vec<&str> = output.iter().map(|l| l.text.as_str()).collect();
+        // What the agent reads: links with their addresses.
+        let text: Vec<String> = output.iter().map(termview::Line::for_agent).collect();
         let _ = std::fs::write(self.journal.output_path(run.id), text.join("\n"));
         let (exit_code, duration_ms) = (
             run.pty.exit_code(),
@@ -1331,7 +1415,7 @@ impl App {
         self.journal.push(
             actor,
             Event::DirChanged {
-                panel: side_name(side),
+                panel: side_name(side).into(),
                 from,
                 to,
             },
@@ -1438,6 +1522,16 @@ impl App {
         if self.has_overlay() {
             self.overlay_key(key);
             return;
+        }
+        if self.focus != Focus::Agent && self.user_screen_shown() {
+            match Chord::from_event(&key).and_then(|c| self.keymap.panels(&c)) {
+                Some(command) if Self::is_screen_scroll(command) => {
+                    self.scroll_user_screen_by(command);
+                    return;
+                }
+                // Typing returns to the output's end.
+                _ => self.user_scroll = 0,
+            }
         }
         match self.focus {
             Focus::Agent => self.agent_key(key),
@@ -1649,14 +1743,7 @@ impl App {
     fn on_mcp(&mut self, request: Request) -> Reply {
         match request {
             Request::State => Ok(self.state_json().to_string()),
-            Request::Journal { since, limit } => {
-                let entries = self.journal.since(since.unwrap_or(0));
-                let start = entries.len().saturating_sub(limit);
-                if let Some(last) = entries.last() {
-                    self.agent.seen_seq = self.agent.seen_seq.max(last.seq);
-                }
-                Ok(format_entries(&entries[start..]))
-            }
+            Request::Journal { since, limit } => Ok(self.journal_page(since, limit)),
             Request::Commands { limit } => {
                 let start = self.commands.len().saturating_sub(limit);
                 let mut out = String::new();
@@ -1700,16 +1787,24 @@ impl App {
                     let g = g.to_lowercase();
                     numbered.retain(|(_, l)| l.to_lowercase().contains(&g));
                 }
-                if let Some(h) = head {
-                    numbered.truncate(h);
-                }
+                // Both: the beginning and the end with a gap between.
                 let tail = tail.or((head.is_none() && grep.is_none()).then_some(200));
-                if let Some(t) = tail {
-                    numbered.drain(..numbered.len().saturating_sub(t));
-                }
+                let n = numbered.len();
                 let mut out = format!("[cmd-{id}: {} lines total]\n", lines.len());
-                for (n, l) in numbered {
-                    out.push_str(&format!("{n:>5}: {l}\n"));
+                let put = |part: &[(usize, &String)], out: &mut String| {
+                    for (n, l) in part {
+                        out.push_str(&format!("{n:>5}: {l}\n"));
+                    }
+                };
+                match (head, tail) {
+                    (Some(h), Some(t)) if h + t < n => {
+                        put(&numbered[..h], &mut out);
+                        out.push_str(&format!("      … {} lines …\n", n - h - t));
+                        put(&numbered[n - t..], &mut out);
+                    }
+                    (Some(_), Some(_)) | (None, None) => put(&numbered, &mut out),
+                    (Some(h), None) => put(&numbered[..h.min(n)], &mut out),
+                    (None, Some(t)) => put(&numbered[n.saturating_sub(t)..], &mut out),
                 }
                 Ok(out)
             }
@@ -1717,13 +1812,17 @@ impl App {
                 Some(run) => Ok(format!(
                     "[cmd-{} is running]\n{}",
                     run.id,
-                    termview::screen_lines(run.pty.parser().screen()).join("\n")
+                    termview::screen_lines_links(run.pty.parser().screen())
+                        .iter()
+                        .map(termview::Line::for_agent)
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 )),
                 None => {
                     let start = self.history.len().saturating_sub(40);
-                    let text: Vec<&str> = self.history[start..]
+                    let text: Vec<String> = self.history[start..]
                         .iter()
-                        .map(|l| l.text.as_str())
+                        .map(termview::Line::for_agent)
                         .collect();
                     Ok(format!(
                         "[no running command; end of the user screen]\n{}",
@@ -1739,7 +1838,19 @@ impl App {
             Request::Navigate { side, path, cursor } => {
                 let side = self.resolve_side(&side)?;
                 let target = self.panels[side].path.join(&path);
-                self.change_dir_as(Actor::Agent, side, &target)?;
+                // The model reads the error: not translated, with the path.
+                if target.is_file() {
+                    return Err(format!(
+                        "{} is a file; afar_navigate opens its folder with cursor={:?}, afar_view shows it",
+                        target.display(),
+                        target.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+                if !target.is_dir() {
+                    return Err(format!("no such directory: {}", target.display()));
+                }
+                self.change_dir_as(Actor::Agent, side, &target)
+                    .map_err(|e| format!("cannot open {}: {e}", target.display()))?;
                 self.active = side;
                 self.set_panels_visible(true);
                 let mut note = String::new();
@@ -1750,7 +1861,7 @@ impl App {
                 }
                 let panel = &self.panels[side];
                 Ok(format!(
-                    "{} panel: {}, cursor on {}{note}",
+                    "{} panel (now the active one): {}, cursor on {}{note}",
                     side_name(side),
                     panel.path.display(),
                     panel.current().map_or("-", |e| e.name.as_str())
@@ -1767,7 +1878,7 @@ impl App {
                 self.journal.push(
                     Actor::Agent,
                     Event::SelectionChanged {
-                        panel: side_name(side),
+                        panel: side_name(side).into(),
                         count: selected.len(),
                         sample: selected.iter().take(5).cloned().collect(),
                     },
@@ -1888,8 +1999,13 @@ impl App {
 
     fn command_output(&self, id: u64) -> Result<Vec<String>, String> {
         if let Some(run) = self.running.as_ref().filter(|r| r.id == id) {
-            let mut lines: Vec<String> = run.captured.iter().map(|l| l.text.clone()).collect();
-            lines.extend(termview::screen_lines(run.pty.parser().screen()));
+            let mut lines: Vec<String> =
+                run.captured.iter().map(termview::Line::for_agent).collect();
+            lines.extend(
+                termview::screen_lines_links(run.pty.parser().screen())
+                    .iter()
+                    .map(termview::Line::for_agent),
+            );
             return Ok(lines);
         }
         std::fs::read_to_string(self.journal.output_path(id))
@@ -1922,6 +2038,46 @@ impl App {
             "journal_last_seq": self.journal.last_seq(),
             "observe_mode": if self.agent.live { "live" } else { "on-demand" },
         })
+    }
+
+    /// `afar_journal`: with `since`, the first `limit` entries after it
+    /// (pages); without, the last `limit`. What was left out is said, and
+    /// only what was given counts as seen.
+    fn journal_page(&mut self, since: Option<u64>, limit: usize) -> String {
+        let last_seq = self.journal.last_seq();
+        let entries = self.journal.since(since.unwrap_or(0));
+        if entries.is_empty() {
+            return match since {
+                Some(s) => format!("no entries after #{s} (the last is #{last_seq})"),
+                None => "the journal is empty".to_string(),
+            };
+        }
+        let limit = limit.max(1);
+        let (shown, before, after) = if since.is_some() {
+            let n = entries.len().min(limit);
+            (&entries[..n], 0, entries.len() - n)
+        } else {
+            let start = entries.len().saturating_sub(limit);
+            (&entries[start..], start, 0)
+        };
+        let mut out = String::new();
+        if before > 0 {
+            out.push_str(&format!(
+                "({before} earlier entries not shown; afar_journal(since=N) pages from #N)\n"
+            ));
+        }
+        out.push_str(&format_entries(shown));
+        let shown_last = shown.last().map_or(0, |e| e.seq);
+        if after > 0 {
+            out.push_str(&format!(
+                "({after} more entries; call afar_journal(since={shown_last}))\n"
+            ));
+        }
+        // Only what was given counts as seen (pages read in order).
+        if before == 0 && self.agent.seen_seq >= since.unwrap_or(0) {
+            self.agent.seen_seq = self.agent.seen_seq.max(shown_last);
+        }
+        out
     }
 
     /// Text added to the user's prompt by the `UserPromptSubmit` hook.
@@ -2180,6 +2336,9 @@ impl App {
             }
             if self.link_pressed && matches!(ev.kind, MouseEventKind::Up(_)) {
                 self.link_pressed = false;
+                return;
+            }
+            if self.user_wheel(&ev, wheel) {
                 return;
             }
             let Some(run) = &self.running else { return };
@@ -2591,6 +2750,10 @@ impl App {
                 buf[(x, y)].set_symbol(" ");
             }
         }
+        self.user_height = area.height;
+        if self.user_scroll > 0 && self.draw_user_screen_scrolled(area, buf) {
+            return None;
+        }
         let mut live_rows = 0u16;
         let mut cursor = None;
         let text: Vec<&termview::Line> = match &self.running {
@@ -2646,7 +2809,159 @@ impl App {
             Rect::new(area.x, first_y, area.width, (text.len() - start) as u16),
             start,
         );
+        self.user_total = text.len() + usize::from(live_rows);
         cursor
+    }
+
+    /// The wheel over the user screen: Alt+wheel scrolls the output
+    /// (Shift+wheel too where the terminal lets it through: Windows
+    /// Terminal keeps it to scroll its own buffer, which is how Far
+    /// scrolls); the plain wheel too while a command that does not want the
+    /// mouse runs; with nothing running and the panels hidden it goes
+    /// through the command history (Far: Ctrl+E / Ctrl+X). `true`: taken.
+    fn user_wheel(&mut self, ev: &crossterm::event::MouseEvent, wheel: i32) -> bool {
+        let up = match ev.kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            _ => return false,
+        };
+        let shift = ev.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+        let program_mouse = self.running.as_ref().is_some_and(|r| {
+            r.pty.parser().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        });
+        if !shift && program_mouse {
+            return false;
+        }
+        if !shift && self.running.is_none() && !self.panels_visible() {
+            let command = if up {
+                crate::command::Command::HistoryPrev
+            } else {
+                crate::command::Command::HistoryNext
+            };
+            let before = self.cmdline.clone();
+            self.run_command(command);
+            self.cmdline_edited(&before);
+            return true;
+        }
+        let lines = wheel as isize;
+        self.scroll_user_screen(if up { lines } else { -lines });
+        true
+    }
+
+    /// The user screen shown: the panels hidden and no viewer on top.
+    fn user_screen_shown(&self) -> bool {
+        !self.panels_visible() && self.shown_viewer().is_none()
+    }
+
+    fn is_screen_scroll(command: crate::command::Command) -> bool {
+        use crate::command::Command::*;
+        matches!(
+            command,
+            ScreenLineUp
+                | ScreenLineDown
+                | ScreenPageUp
+                | ScreenPageDown
+                | ScreenTop
+                | ScreenBottom
+        )
+    }
+
+    /// A scroll command; `false` when the user screen is not shown (the
+    /// key goes on to the command line).
+    fn scroll_user_screen_by(&mut self, command: crate::command::Command) -> bool {
+        use crate::command::Command::*;
+        if !self.user_screen_shown() {
+            return false;
+        }
+        let page = usize::from(self.user_height.saturating_sub(1)).max(1);
+        match command {
+            ScreenLineUp => self.scroll_user_screen(1),
+            ScreenLineDown => self.scroll_user_screen(-1),
+            ScreenPageUp => self.scroll_user_screen(page as isize),
+            ScreenPageDown => self.scroll_user_screen(-(page as isize)),
+            ScreenTop => self.user_scroll = usize::MAX,
+            ScreenBottom => self.user_scroll = 0,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Scrolls the user screen back (`lines` > 0) or forth; the drawing
+    /// keeps it within the output.
+    fn scroll_user_screen(&mut self, lines: isize) {
+        self.user_scroll = self.user_scroll.saturating_add_signed(lines);
+    }
+
+    /// The user screen scrolled back: the kept lines and the running
+    /// command's screen as text, a note where the view is. `false`: there
+    /// is nothing to scroll (back to the normal drawing).
+    fn draw_user_screen_scrolled(&mut self, area: Rect, buf: &mut Buffer) -> bool {
+        let live: Vec<termview::Line> = match &self.running {
+            Some(run) => {
+                let parser = run.pty.parser();
+                let screen = parser.screen();
+                // A full-screen program has no output to scroll through.
+                if screen.alternate_screen() {
+                    Vec::new()
+                } else {
+                    termview::screen_lines_links(screen)
+                }
+            }
+            None => Vec::new(),
+        };
+        let captured: &[termview::Line] = self
+            .running
+            .as_ref()
+            .map(|r| r.captured.as_slice())
+            .unwrap_or(&[]);
+        let text_len = self.history.len() + captured.len();
+        let total = text_len + live.len();
+        // New output while scrolled back does not move the view.
+        if total > self.user_total && self.user_total > 0 {
+            self.user_scroll = self.user_scroll.saturating_add(total - self.user_total);
+        }
+        self.user_total = total;
+        let rows = usize::from(area.height);
+        self.user_scroll = self.user_scroll.min(total.saturating_sub(rows));
+        if self.user_scroll == 0 {
+            return false;
+        }
+        let end = total - self.user_scroll;
+        let start = end.saturating_sub(rows);
+        let lines = self.history.iter().chain(captured).chain(live.iter());
+        for (i, line) in lines.skip(start).take(end - start).enumerate() {
+            let y = area.y + i as u16;
+            buf.set_stringn(
+                area.x,
+                y,
+                line.text.as_str(),
+                area.width as usize,
+                theme::COMMAND_LINE,
+            );
+            if !line.links.is_empty() {
+                for x in 0..area.width {
+                    if line.link_at_column(usize::from(x)).is_some() {
+                        let cell = &mut buf[(area.x + x, y)];
+                        cell.modifier |= ratatui::style::Modifier::UNDERLINED;
+                        cell.fg = theme::LINK_FG;
+                    }
+                }
+            }
+        }
+        // Ctrl+click on the kept lines; the running program gets no mouse.
+        let kept = text_len.saturating_sub(start).min(end - start);
+        self.user_lines = (Rect::new(area.x, area.y, area.width, kept as u16), start);
+        self.last_live = Rect::default();
+        // Where the view is, at the top right.
+        let note = format!(
+            " {} ",
+            tr!("user-scroll", from = start + 1, to = end, total = total)
+        );
+        let w = note.chars().count() as u16;
+        if w < area.width {
+            buf.set_string(area.right() - w, area.y, &note, theme::MESSAGE);
+        }
+        true
     }
 
     /// Far's key bar (keybar.cpp): number, label of at least 6 cells, a

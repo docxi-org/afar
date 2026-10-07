@@ -627,15 +627,22 @@ impl Viewer {
 
     /// Shows line `n` with a few lines of context above it.
     pub fn show_line(&mut self, n: u64) {
+        // Past the end: the last line, not an empty screen after it.
+        let n = n.min(self.line_count().max(1));
         let pos = self.line_start(n.saturating_sub(3).max(1));
         self.goto(pos, Some(0));
     }
 
     /// The lines shown in the last frame.
-    pub fn visible_lines(&mut self) -> (u64, u64) {
-        let first = self.rows.first().map_or(self.top, |r| r.start);
-        let last = self.rows.last().map_or(self.top, |r| r.start);
-        (self.line_of(first), self.line_of(last))
+    /// `None` before the viewer has been drawn.
+    pub fn visible_lines(&mut self) -> Option<(u64, u64)> {
+        let (first, last) = (self.rows.first()?.start, self.rows.last()?.start);
+        Some((self.line_of(first), self.line_of(last)))
+    }
+
+    /// The line at the top of the screen.
+    pub fn top_line(&mut self) -> u64 {
+        self.line_of(self.top)
     }
 
     /// The selection as lines.

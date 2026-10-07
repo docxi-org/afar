@@ -1,16 +1,17 @@
 //! Journal of what happens in afar: kept in memory and appended to
 //! `journal.jsonl` in the session directory.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ops::OpKind;
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Actor {
     User,
@@ -20,7 +21,7 @@ pub enum Actor {
     External,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     AppStarted {
@@ -28,12 +29,12 @@ pub enum Event {
         right: PathBuf,
     },
     DirChanged {
-        panel: &'static str,
+        panel: Cow<'static, str>,
         from: PathBuf,
         to: PathBuf,
     },
     SelectionChanged {
-        panel: &'static str,
+        panel: Cow<'static, str>,
         count: usize,
         sample: Vec<String>,
     },
@@ -62,6 +63,12 @@ pub enum Event {
         done: usize,
         /// Existing files left alone (copy/move).
         skipped: usize,
+        /// Existing files overwritten or appended to, and files written
+        /// under a new name beside an existing one (copy/move).
+        #[serde(default)]
+        replaced: usize,
+        #[serde(default)]
+        renamed: usize,
         failed_count: usize,
         /// Up to 20 failures.
         failed: Vec<(PathBuf, String)>,
@@ -75,6 +82,9 @@ pub enum Event {
         modified: Vec<String>,
         removed: Vec<String>,
         count: usize,
+        /// The user's command running meanwhile (not necessarily the cause).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        during_cmd: Option<u64>,
     },
     /// The agent used one of its own tools (PostToolUse hook).
     AgentToolUsed {
@@ -94,7 +104,7 @@ pub enum Event {
     },
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
     pub seq: u64,
     pub ts: DateTime<Local>,
@@ -128,6 +138,54 @@ impl Journal {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// A development-mode restart: the previous instance's entries come
+    /// first, with their numbers, so the resumed agent's `since` still
+    /// holds; they are copied into this session's file for the next
+    /// restart. Entries already here are numbered after them.
+    pub fn carry_over(&mut self, old_dir: &Path) {
+        let Ok(text) = std::fs::read_to_string(old_dir.join("journal.jsonl")) else {
+            return;
+        };
+        let mut old: Vec<Entry> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        old.sort_by_key(|e| e.seq);
+        old.dedup_by_key(|e| e.seq);
+        let Some(last) = old.last().map(|e| e.seq) else {
+            return;
+        };
+        // The commands' output goes along (afar_command_output).
+        if let Ok(files) = std::fs::read_dir(old_dir.join("output")) {
+            for f in files.flatten() {
+                let to = self.dir.join("output").join(f.file_name());
+                if !to.exists() {
+                    let _ = std::fs::copy(f.path(), to);
+                }
+            }
+        }
+        let mine = std::mem::take(&mut self.entries);
+        if let Some(f) = &mut self.file {
+            // This session's file starts over with the carried entries.
+            let _ = f.set_len(0);
+            for e in &old {
+                if let Ok(line) = serde_json::to_string(e) {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+        }
+        self.entries = old;
+        for (i, mut e) in mine.into_iter().enumerate() {
+            e.seq = last + 1 + i as u64;
+            if let Some(f) = &mut self.file
+                && let Ok(line) = serde_json::to_string(&e)
+            {
+                let _ = writeln!(f, "{line}");
+            }
+            self.entries.push(e);
+        }
     }
 
     pub fn push(&mut self, actor: Actor, event: Event) -> u64 {
@@ -236,11 +294,19 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 op,
                 done,
                 skipped,
+                replaced,
+                renamed,
                 failed_count,
                 failed,
                 cancelled,
             } => {
                 let mut s = format!("done   [op-{op_id}] {}: {done} ok", op.name());
+                if *replaced > 0 {
+                    s.push_str(&format!(", {replaced} overwritten"));
+                }
+                if *renamed > 0 {
+                    s.push_str(&format!(", {renamed} renamed"));
+                }
                 if *skipped > 0 {
                     s.push_str(&format!(", {skipped} skipped"));
                 }
@@ -261,6 +327,7 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 modified,
                 removed,
                 count,
+                during_cmd,
             } => {
                 let shown = created.len() + modified.len() + removed.len();
                 let mut parts = Vec::new();
@@ -270,7 +337,14 @@ pub fn format_entries(entries: &[Entry]) -> String {
                     }
                 }
                 let more = if *count > shown { ", …" } else { "" };
-                format!("fs     {}: {}{more}", dir.display(), parts.join(", "))
+                let during = during_cmd
+                    .map(|id| format!("  (while [cmd-{id}] ran)"))
+                    .unwrap_or_default();
+                format!(
+                    "fs     {}: {}{more}{during}",
+                    dir.display(),
+                    parts.join(", ")
+                )
             }
             Event::FileViewed { path } => format!("view   {}", path.display()),
             Event::ViewerSelection {
@@ -287,4 +361,40 @@ pub fn format_entries(entries: &[Entry]) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carry_over_keeps_the_numbers() {
+        let base = std::env::temp_dir().join(format!("afar-test-journal-{}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        let mut old = Journal::open(a.clone());
+        for side in ["left", "right", "left"] {
+            old.push(
+                Actor::User,
+                Event::DirChanged {
+                    panel: side.into(),
+                    from: "x".into(),
+                    to: "y".into(),
+                },
+            );
+        }
+        drop(old);
+        let mut new = Journal::open(b.clone());
+        new.push(Actor::System, Event::FileViewed { path: "z".into() });
+        new.carry_over(&a);
+        assert_eq!(new.last_seq(), 4);
+        assert_eq!(new.since(2).len(), 2);
+        // The new file holds everything, for the next restart.
+        let mut next = Journal::open(base.join("c"));
+        next.carry_over(&b);
+        assert_eq!(next.last_seq(), 4);
+        assert!(
+            matches!(&next.since(0)[1].event, Event::DirChanged { panel, .. } if panel == "right")
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

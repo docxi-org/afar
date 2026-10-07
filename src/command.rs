@@ -97,6 +97,13 @@ pub enum Command {
     InsertPassivePath,
     HistoryPrev,
     HistoryNext,
+    // The user screen (commands' output) scrolled back.
+    ScreenLineUp,
+    ScreenLineDown,
+    ScreenPageUp,
+    ScreenPageDown,
+    ScreenTop,
+    ScreenBottom,
     /// Ctrl+Q: the quick view on the passive panel.
     QuickView,
     /// Ctrl+A: the attributes and times of files.
@@ -317,6 +324,14 @@ pub const COMMANDS: &[Def] = &[
     def("history.views", ViewHistory, &["Alt+F11"], true),
     def("history.folders", FolderHistory, &["Alt+F12"], true),
     def("cmdline.history_next", HistoryNext, &["Ctrl+X"], true),
+    // Far scrolls the console with Ctrl+Alt (interf.cpp, ConsoleGlobalKeysHook);
+    // Shift+PgUp/PgDn as in terminals.
+    def("screen.line_up", ScreenLineUp, &["Ctrl+Alt+Up"], true),
+    def("screen.line_down", ScreenLineDown, &["Ctrl+Alt+Down"], true),
+    def("screen.page_up", ScreenPageUp, &["Ctrl+Alt+PgUp", "Shift+PgUp"], true),
+    def("screen.page_down", ScreenPageDown, &["Ctrl+Alt+PgDn", "Shift+PgDn"], true),
+    def("screen.top", ScreenTop, &["Ctrl+Alt+Home"], true),
+    def("screen.bottom", ScreenBottom, &["Ctrl+Alt+End"], true),
     def("fileop.view", ViewFile, &["F3"], false),
     def("fileop.view_alt", ViewFileAlt, &["Alt+F3"], false),
     def("fileop.view_internal", ViewInternal, &["Ctrl+Shift+F3"], false),

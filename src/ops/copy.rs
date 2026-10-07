@@ -283,6 +283,8 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
     fn copy_file_item(&mut self, src: &Path, target: &Path, meta: &std::fs::Metadata) -> Flow {
         let mut target = target.to_path_buf();
         let mut append = false;
+        // What became of an existing file: (replaced, renamed).
+        let mut conflict = (0, 0);
         if let Ok(existing) = std::fs::symlink_metadata(&target) {
             if existing.is_dir() {
                 return self.w.attempt(src, |_| {
@@ -302,15 +304,26 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
                     self.w.report.cancelled = true;
                     return Flow::Stop;
                 }
-                ConflictAction::Rename => target = unique_name(&target),
-                ConflictAction::RenameTo(name) => target = target.with_file_name(name),
-                ConflictAction::Append => append = true,
-                ConflictAction::Replace => {}
+                ConflictAction::Rename => {
+                    target = unique_name(&target);
+                    conflict = (0, 1);
+                }
+                ConflictAction::RenameTo(name) => {
+                    target = target.with_file_name(name);
+                    conflict = (0, 1);
+                }
+                ConflictAction::Append => {
+                    append = true;
+                    conflict = (1, 0);
+                }
+                ConflictAction::Replace => conflict = (1, 0),
             }
         }
         // Moving within a volume, replacing an existing file.
         if self.moving && !append && std::fs::rename(src, &target).is_ok() {
             self.w.report.done += 1;
+            self.w.report.replaced += conflict.0;
+            self.w.report.renamed += conflict.1;
             self.w.bytes_done += meta.len();
             self.w.progress(src);
             return Flow::Continue;
@@ -334,6 +347,8 @@ impl<F: Fn(OpMsg)> Copier<'_, F> {
             }
         }
         self.w.report.done += 1;
+        self.w.report.replaced += conflict.0;
+        self.w.report.renamed += conflict.1;
         if self.moving {
             loop {
                 match remove_file_forced(src) {

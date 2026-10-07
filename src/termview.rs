@@ -154,9 +154,10 @@ pub type Links = Vec<(usize, usize, String)>;
 
 /// A line of a command's output as kept on the user screen: the text and
 /// its hyperlinks (Ctrl+click opens them after the command has ended).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Line {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Links,
 }
 
@@ -170,6 +171,35 @@ impl From<String> for Line {
 }
 
 impl Line {
+    /// The text for the agent: links as `[text](address)` (the address
+    /// alone when it is the text).
+    pub fn for_agent(&self) -> String {
+        if self.links.is_empty() {
+            return self.text.clone();
+        }
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut out = String::new();
+        let mut at = 0;
+        let mut links: Vec<&(usize, usize, String)> = self.links.iter().collect();
+        links.sort_by_key(|l| l.0);
+        for (a, b, uri) in links {
+            let (a, b) = ((*a).max(at).min(chars.len()), (*b).min(chars.len()));
+            if a >= b {
+                continue;
+            }
+            out.extend(&chars[at..a]);
+            let text: String = chars[a..b].iter().collect();
+            if text.trim() == uri {
+                out.push_str(&text);
+            } else {
+                out.push_str(&format!("[{text}]({uri})"));
+            }
+            at = b;
+        }
+        out.extend(&chars[at..]);
+        out
+    }
+
     /// The link at display column `col` (wide characters take two).
     pub fn link_at_column(&self, col: usize) -> Option<&str> {
         use unicode_width::UnicodeWidthChar as _;

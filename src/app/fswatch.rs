@@ -34,13 +34,18 @@ const BASH_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 /// Changes of one folder by one author: folder key, folder, author,
 /// names with their change.
-type Group = (String, PathBuf, Actor, Vec<(String, Change)>);
+/// Changes journaled together: folder key, folder, author, the user's
+/// command running meanwhile, the names.
+type Group = (String, PathBuf, Actor, Option<u64>, Vec<(String, Change)>);
 
 struct Pending {
     path: PathBuf,
     change: Change,
     /// Who did it as known when it happened; `None`: afar's own operation.
     actor: Option<Actor>,
+    /// The user's command running when it happened (it may or may not
+    /// be the cause).
+    during: Option<u64>,
     at: Instant,
 }
 
@@ -118,15 +123,20 @@ impl App {
             None
         } else if self.fs.agent_bash_running(now) {
             Some(Actor::Agent)
-        } else if self.running.is_some() {
-            Some(Actor::User)
         } else {
+            // A running command of the user's is not proof: another
+            // process may write meanwhile; the journal says both.
             Some(Actor::External)
+        };
+        let during = match actor {
+            Some(Actor::External) => self.running.as_ref().map(|r| r.id),
+            _ => None,
         };
         self.fs.pending.push(Pending {
             path: ev.path,
             change: ev.change,
             actor,
+            during,
             at: now,
         });
         self.fs.reload_at = Some(now + RELOAD_DELAY);
@@ -190,6 +200,7 @@ impl App {
                 path: p.path.clone(),
                 change: p.change,
                 actor: p.actor,
+                during: p.during,
                 at: p.at,
             })
             .collect();
@@ -222,17 +233,20 @@ impl App {
                 self.fs.marks.push((key.clone(), now));
             }
             let dir_key = parent_key(&key).to_string();
-            let group = match groups.iter_mut().find(|g| g.0 == dir_key && g.2 == actor) {
+            let group = match groups
+                .iter_mut()
+                .find(|g| g.0 == dir_key && g.2 == actor && g.3 == p.during)
+            {
                 Some(g) => g,
                 None => {
                     let dir = p.path.parent().map(Path::to_path_buf).unwrap_or_default();
-                    groups.push((dir_key, dir, actor, Vec::new()));
+                    groups.push((dir_key, dir, actor, p.during, Vec::new()));
                     groups.last_mut().unwrap()
                 }
             };
             // One change per name: created wins over modified; created and
             // then removed is nothing to report but still a removal.
-            match group.3.iter_mut().find(|(n, _)| *n == name) {
+            match group.4.iter_mut().find(|(n, _)| *n == name) {
                 Some((_, c)) => {
                     *c = match (*c, p.change) {
                         (Change::Created, Change::Modified) => Change::Created,
@@ -240,10 +254,10 @@ impl App {
                         (_, new) => new,
                     }
                 }
-                None => group.3.push((name, p.change)),
+                None => group.4.push((name, p.change)),
             }
         }
-        for (_, dir, actor, changes) in groups {
+        for (_, dir, actor, during, changes) in groups {
             let names = |want: Change| -> Vec<String> {
                 changes
                     .iter()
@@ -260,6 +274,7 @@ impl App {
                     modified: names(Change::Modified),
                     removed: names(Change::Removed),
                     count: changes.len(),
+                    during_cmd: during,
                 },
             );
         }

@@ -44,6 +44,10 @@ pub(super) struct AgentSession {
     /// The agent was started with `--resume` at that time: if it exits
     /// right away (nothing to resume yet), start it afresh.
     pub resumed_at: Option<Instant>,
+    /// `--resume` failed once: tried again at that time (the previous
+    /// afar's `claude` may still hold the conversation).
+    pub resume_retry_at: Option<Instant>,
+    pub resume_retried: bool,
     /// afar as the agent's IDE (`[agent] ide`).
     pub ide: Option<crate::ide::IdeServer>,
     pub ide_connected: bool,
@@ -73,6 +77,8 @@ impl AgentSession {
             live,
             started: Instant::now(),
             resumed_at: None,
+            resume_retry_at: None,
+            resume_retried: false,
             ide: None,
             ide_connected: false,
             ide_sent: None,

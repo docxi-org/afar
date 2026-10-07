@@ -127,7 +127,8 @@ async fn ask_within(tx: &Sender<AppMsg>, request: Request, limit: Duration) -> R
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct JournalParams {
-    /// Return entries after this sequence number.
+    /// Return entries after this sequence number, oldest first (page
+    /// forward with the last number shown). Without it: the newest entries.
     pub since: Option<u64>,
     /// Maximum number of entries (default 100).
     pub limit: Option<usize>,
@@ -145,7 +146,8 @@ pub struct OutputParams {
     pub cmd_id: Option<u64>,
     /// Only the last N lines (default 200 when neither head nor grep is set).
     pub tail_lines: Option<usize>,
-    /// Only the first N lines.
+    /// Only the first N lines (with `tail_lines` too: the beginning and
+    /// the end, the lines between left out).
     pub head_lines: Option<usize>,
     /// Only lines containing this substring (case-insensitive).
     pub grep: Option<String>,
@@ -261,7 +263,11 @@ impl AfarMcp {
         `#seq HH:MM:SS actor kind details`. actor: user, agent (done via afar_* tools) or sys. \
         kinds: cd (panel, from → to), select (panel, size of the selection after the change and \
         sample names, or `selection cleared`), cmd (command line text, cwd, [cmd-N]), done (exit \
-        code, duration, output lines — read them with afar_command_output)."
+        code, duration, output lines — read them with afar_command_output; or a file operation's \
+        result, [op-N]), copy / move / delete / trash / wipe / mkdir (a file operation started, [op-N]), fs (files changed in a panel's folder; \
+        actor ext: outside afar), tool (your own Bash or edit), view (a file opened in the viewer), \
+        vsel (lines the user selected in the viewer), start. With `since`, the first `limit` \
+        entries after it; a last line says how to get the rest."
     )]
     async fn afar_journal(
         &self,
@@ -324,7 +330,9 @@ impl AfarMcp {
 
     #[tool(
         description = "Show the user a directory: open it in an afar panel and optionally put \
-        the cursor on a file. Use it when you refer to a file or folder."
+        the cursor on a file. Use it when you refer to a file or folder. The panel becomes the \
+        active one, so `active` / `passive` in the next call mean the panels after this one; \
+        name them `left` / `right` to be sure."
     )]
     async fn afar_navigate(
         &self,
@@ -416,8 +424,9 @@ impl AfarMcp {
     }
 
     #[tool(
-        description = "Create directories in an afar panel (no confirmation needed); the panel \
-        shows the new directory. Returns the created paths."
+        description = "Create directories in an afar panel (no confirmation needed): names \
+        relative to the panel's folder (nested allowed) or absolute. A directory created in the \
+        panel's folder gets the cursor; the panel does not go elsewhere. Returns the created paths."
     )]
     async fn afar_mkdir(
         &self,
