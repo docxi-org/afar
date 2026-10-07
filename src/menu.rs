@@ -109,6 +109,8 @@ pub struct Menu {
     margin_rows: u16,
     /// Columns kept free left and right of a centred menu.
     margin_cols: u16,
+    /// At most this many items shown at once.
+    max_items: Option<u16>,
 }
 
 impl Menu {
@@ -135,6 +137,7 @@ impl Menu {
             top: 0,
             column: None,
             row: None,
+            max_items: None,
             thin: false,
             outer: Rect::default(),
             list: Rect::default(),
@@ -184,6 +187,12 @@ impl Menu {
         self.column = Some(x);
         self.row = Some(y);
         self.thin = true;
+        self
+    }
+
+    /// At most `n` items shown at once (Far's find-all list: 10).
+    pub fn max_items(mut self, n: u16) -> Self {
+        self.max_items = Some(n);
         self
     }
 
@@ -456,8 +465,9 @@ impl Menu {
         let w = (wn + 2 * mx).min(area.width.saturating_sub(2 * self.margin_cols));
         let wn = w.saturating_sub(2 * mx);
         // Far lets the blank row below go off screen before cutting items.
+        let shown = self.max_items.map_or(n as u16, |m| (n as u16).min(m));
         let h = match self.row {
-            Some(r) => (n as u16 + 2 + 2 * my).min(area.bottom().saturating_sub(area.y + r)),
+            Some(r) => (shown + 2 + 2 * my).min(area.bottom().saturating_sub(area.y + r)),
             None if self.margin_rows > 0 => {
                 (n as u16 + 2 + 2 * my).min(area.height.saturating_sub(2 * self.margin_rows))
             }

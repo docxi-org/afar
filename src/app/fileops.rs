@@ -414,6 +414,7 @@ impl App {
                         self.close_dialog(button);
                     }
                     Outcome::History(request) => self.dialog_history(request),
+                    Outcome::Pressed(n) => self.dialog_pressed(n),
                     Outcome::Pending => self.dialog_edited(before),
                 }
             }
@@ -452,8 +453,21 @@ impl App {
             match dialog.handle_mouse(ev) {
                 Some(Outcome::Closed(button)) => self.close_dialog(button),
                 Some(Outcome::History(request)) => self.dialog_history(request),
+                Some(Outcome::Pressed(n)) => self.dialog_pressed(n),
                 _ => {}
             }
+        }
+    }
+
+    /// A button that leaves the dialog open (`button_at`) was pressed.
+    fn dialog_pressed(&mut self, n: usize) {
+        if let Some(Overlay::Dialog {
+            purpose: Purpose::Editor(super::editors::Ask::Search { id, .. }),
+            ..
+        }) = self.overlays.last()
+        {
+            let id = *id;
+            self.editor_search_pick(id, n);
         }
     }
 

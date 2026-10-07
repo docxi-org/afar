@@ -100,6 +100,15 @@ pub(super) enum Ask {
     Deleted { id: u32, then: After },
     /// The file changed on the disk while edited (afar's): read it again?
     Reload { id: u32 },
+    /// F7 / Ctrl+F7.
+    Search { id: u32, replace: bool },
+    /// Replace this match?
+    Replace {
+        run: super::editsearch::ReplaceRun,
+        found: crate::editor::Found,
+    },
+    /// Alt+F8.
+    Goto { id: u32 },
 }
 
 /// Where a file was left (Far's editor position cache).
@@ -169,7 +178,7 @@ impl App {
         }
     }
 
-    fn editor_index(&self, id: u32) -> Option<usize> {
+    pub(super) fn editor_index(&self, id: u32) -> Option<usize> {
         self.editors.iter().position(|e| e.id == id)
     }
 
@@ -473,6 +482,11 @@ impl App {
             StatusLine => self.editor_status = !self.editor_status,
             KeyBar => self.editor_keybar = !self.editor_keybar,
             UserScreen => self.viewer_peek = true,
+            Search => self.editor_search_dialog(i, false),
+            Replace => self.editor_search_dialog(i, true),
+            SearchNext => self.editor_search_continue(i, false),
+            SearchPrev => self.editor_search_continue(i, true),
+            Goto => self.editor_goto_dialog(i),
             _ => {}
         }
         if let Some(i) = self.shown_editor() {
@@ -944,6 +958,13 @@ impl App {
                     self.editor_write(i, path, then, true, fmt);
                 }
             }
+            Ask::Search { id, replace } => self.editor_search_closed(id, replace, button, dialog),
+            Ask::Replace { run, found } => self.editor_replace_answer(run, found, button),
+            Ask::Goto { id } => {
+                if button == Some(0) {
+                    self.editor_goto_closed(id, dialog);
+                }
+            }
             Ask::Reload { id } => {
                 let Some(i) = self.editor_index(id) else {
                     return;
@@ -1141,16 +1162,11 @@ impl App {
     pub(super) fn editor_keybar_labels(&self, i: usize, group: &str) -> Vec<String> {
         let t = |id: &str| crate::i18n::plain(&tr!(id));
         let not_yet: &[(&str, u8)] = &[
-            ("", 7),
             ("", 8),
             ("", 11),
-            ("Shift", 7),
             ("Shift", 8),
-            ("Alt", 7),
-            ("Alt", 8),
             ("Alt", 9),
             ("Alt", 11),
-            ("Ctrl", 7),
             ("AltShift", 9),
         ];
         (1..=12u8)

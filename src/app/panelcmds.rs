@@ -153,6 +153,11 @@ pub(super) enum MenuPurpose {
         dir: std::path::PathBuf,
         ids: Vec<String>,
     },
+    /// "Find all" in an editor: the matches in menu order.
+    EditorFound {
+        id: u32,
+        found: Vec<crate::editor::Found>,
+    },
 }
 
 /// Items of the sort menu after the modes: separator, then these.
@@ -374,6 +379,11 @@ impl App {
             MenuPurpose::Sessions { dir, ids } => {
                 if let Some(id) = ids.get(i) {
                     self.resume_session(dir, id.clone());
+                }
+            }
+            MenuPurpose::EditorFound { id, found } => {
+                if let Some(m) = found.get(i) {
+                    self.editor_found_chosen(id, *m);
                 }
             }
         }

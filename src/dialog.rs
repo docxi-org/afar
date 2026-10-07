@@ -70,6 +70,9 @@ pub enum Kind {
         width: u16,
         disabled: bool,
     },
+    /// A button among the items that does not close the dialog (Far's
+    /// DIF_BTNNOCLOSE): pressing it gives `Outcome::Pressed`.
+    Button { label: String, disabled: bool },
 }
 
 pub struct Elem {
@@ -109,6 +112,9 @@ pub enum Outcome {
     Closed(Option<usize>),
     /// The focused field's history is needed (the owner keeps it).
     History(HistoryRequest),
+    /// An item button (`button_at`) was pressed: its number among the
+    /// item buttons; the dialog stays open.
+    Pressed(usize),
 }
 
 /// The focused input field (see `Dialog::focused_field`).
@@ -842,7 +848,45 @@ impl Dialog {
         }
     }
 
-    /// Text of the `n`-th input field.
+    /// Puts `text` into the `n`-th input field at its cursor (untouched
+    /// text is replaced, as typing would) and focuses the field.
+    pub fn insert_input(&mut self, n: usize, text: &str) {
+        let mut k = 0;
+        let mut at = None;
+        'rows: for (r, row) in self.rows.iter_mut().enumerate() {
+            let Row::Items(elems) = row else { continue };
+            for (ei, e) in elems.iter_mut().enumerate() {
+                if let Kind::Input {
+                    value,
+                    cursor,
+                    unchanged,
+                    ..
+                } = &mut e.kind
+                {
+                    if k == n {
+                        if *unchanged {
+                            value.clear();
+                            *cursor = 0;
+                        }
+                        let b = value
+                            .char_indices()
+                            .nth(*cursor)
+                            .map_or(value.len(), |(i, _)| i);
+                        value.insert_str(b, text);
+                        *cursor += text.chars().count();
+                        *unchanged = false;
+                        at = Some((r, ei));
+                        break 'rows;
+                    }
+                    k += 1;
+                }
+            }
+        }
+        if let Some((r, e)) = at {
+            self.set_focus(Target::Elem(r, e));
+        }
+    }
+
     /// Sets the `n`-th input field's text (the cursor at its end).
     pub fn set_input_value(&mut self, n: usize, text: &str) {
         let mut k = 0;
@@ -960,7 +1004,8 @@ impl Dialog {
                             } => !disabled && !readonly,
                             Kind::Check { disabled, .. }
                             | Kind::Radio { disabled, .. }
-                            | Kind::Combo { disabled, .. } => !disabled,
+                            | Kind::Combo { disabled, .. }
+                            | Kind::Button { disabled, .. } => !disabled,
                         };
                         if focusable {
                             out.push(Target::Elem(r, e));
@@ -979,6 +1024,28 @@ impl Dialog {
             }
         }
         out
+    }
+
+    /// The number of the item button at row `r`, element `e` (counted
+    /// among the item buttons), if it is one.
+    fn item_button(&self, r: usize, e: usize) -> Option<usize> {
+        if !matches!(self.elem(r, e)?.kind, Kind::Button { .. }) {
+            return None;
+        }
+        let mut n = 0;
+        for (ri, row) in self.rows.iter().enumerate() {
+            if let Row::Items(elems) = row {
+                for (ei, elem) in elems.iter().enumerate() {
+                    if (ri, ei) == (r, e) {
+                        return Some(n);
+                    }
+                    if matches!(elem.kind, Kind::Button { .. }) {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn default_button(&self) -> Option<usize> {
@@ -1094,6 +1161,10 @@ impl Dialog {
                                 label,
                                 disabled: false,
                                 ..
+                            }
+                            | Kind::Button {
+                                label,
+                                disabled: false,
                             } => (label, false),
                             _ => continue,
                         };
@@ -1124,6 +1195,9 @@ impl Dialog {
                 self.focus = Some(next);
             }
             return Some(Outcome::Pending);
+        }
+        if let Some(n) = self.item_button(r, e) {
+            return Some(Outcome::Pressed(n));
         }
         self.set_focus(Target::Elem(r, e));
         if matches!(self.elem(r, e).map(|e| &e.kind), Some(Kind::Radio { .. })) {
@@ -1217,6 +1291,12 @@ impl Dialog {
             KeyCode::Up => {
                 self.move_focus(-1);
                 return Outcome::Pending;
+            }
+            KeyCode::Enter | KeyCode::Char(' ')
+                if let Some(Target::Elem(r, e)) = focus
+                    && let Some(n) = self.item_button(r, e) =>
+            {
+                return Outcome::Pressed(n);
             }
             KeyCode::Enter => {
                 return Outcome::Closed(match focus {
@@ -1631,6 +1711,9 @@ impl Dialog {
                 }
             }
             Target::Elem(r, e) => {
+                if let Some(n) = self.item_button(r, e) {
+                    return Outcome::Pressed(n);
+                }
                 match self.elem(r, e).map(|e| &e.kind) {
                     Some(Kind::Radio { .. }) => self.select_radio(r, e),
                     Some(Kind::Combo { .. }) => self.open_list(r, e),
@@ -1956,6 +2039,21 @@ impl Dialog {
                 self.hits.push((Rect::new(at, y, *width + 1, 1), target));
                 focused.then(|| Position::new(at, y))
             }
+            Kind::Button { label, disabled } => {
+                let t = format!("[ {label} ]");
+                let len = width_of(&visible(&t));
+                let at = x(len);
+                let (style, hot) = if *disabled {
+                    (c.disabled, c.disabled)
+                } else if focused {
+                    (c.button_focused, c.button_focused_highlight)
+                } else {
+                    (c.body, c.highlight)
+                };
+                put_label(buf, at, y, len, &t, style, hot);
+                self.hits.push((Rect::new(at, y, len, 1), target));
+                focused.then(|| Position::new(at + 2, y))
+            }
         }
     }
 
@@ -2242,6 +2340,23 @@ pub fn radio_at(x: u16, label: impl Into<String>, selected: bool, group: u16) ->
     }
 }
 
+/// A button among the items that leaves the dialog open
+/// (`Outcome::Pressed`).
+pub fn button_at(x: u16, label: impl Into<String>) -> Elem {
+    Elem {
+        x: X::At(x),
+        kind: Kind::Button {
+            label: label.into(),
+            disabled: false,
+        },
+    }
+}
+
+/// The width of an item button with this label.
+pub fn button_width(label: &str) -> u16 {
+    width_of(&visible(label)) + 4
+}
+
 pub fn combo_at(x: u16, width: u16, items: Vec<Option<String>>, selected: usize) -> Elem {
     Elem {
         x: X::At(x),
@@ -2269,7 +2384,8 @@ impl Elem {
             Kind::Input { disabled, .. }
             | Kind::Check { disabled, .. }
             | Kind::Radio { disabled, .. }
-            | Kind::Combo { disabled, .. } => *disabled = true,
+            | Kind::Combo { disabled, .. }
+            | Kind::Button { disabled, .. } => *disabled = true,
             Kind::Text { .. } => {}
         }
         self

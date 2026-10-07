@@ -216,6 +216,12 @@ pub enum EditorCmd {
     StatusLine,
     KeyBar,
     UserScreen,
+    // Search.
+    Search,
+    Replace,
+    SearchNext,
+    SearchPrev,
+    Goto,
 }
 
 /// Commands of the viewer (Far's viewer.cpp / fileview.cpp keys).
@@ -506,6 +512,11 @@ pub const COMMANDS: &[Def] = &[
     edef("editor.status_line", E::StatusLine, &["Ctrl+Shift+B"]),
     edef("editor.keybar", E::KeyBar, &["Ctrl+B"]),
     edef("editor.user_screen", E::UserScreen, &["Ctrl+O"]),
+    edef("editor.search", E::Search, &["F7"]),
+    edef("editor.replace", E::Replace, &["Ctrl+F7"]),
+    edef("editor.search_next", E::SearchNext, &["Shift+F7"]),
+    edef("editor.search_prev", E::SearchPrev, &["Alt+F7"]),
+    edef("editor.goto", E::Goto, &["Alt+F8"]),
     vdef("viewer.close", V::Close, &["F3", "F10", "Esc"]),
     vdef("viewer.wrap", V::Wrap, &["F2"]),
     vdef("viewer.word_wrap", V::WordWrap, &["Shift+F2"]),

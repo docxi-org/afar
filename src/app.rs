@@ -36,6 +36,7 @@ mod editagent;
 mod testtools;
 pub use testtools::PNG_MARK;
 mod editors;
+mod editsearch;
 mod farimport;
 mod fileops;
 mod findfiles;
@@ -350,6 +351,9 @@ pub struct App {
     hiding_mode: u8,
     /// The last search of the viewers (Far shares it).
     viewer_query: crate::viewer::search::Query,
+    /// The last editor search was a replace with this text (Shift+F7
+    /// repeats it).
+    editor_replace: Option<String>,
     /// A search running in the background.
     viewer_search: Option<viewers::RunningSearch>,
     /// The last input of Alt+F8 and its Hex box (Far keeps them).
@@ -488,6 +492,7 @@ impl App {
             hiding_pressed: None,
             hiding_mode: 1,
             viewer_query: Default::default(),
+            editor_replace: None,
             viewer_search: None,
             viewer_goto: (String::new(), None),
             overlays: Vec::new(),

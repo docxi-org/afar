@@ -52,16 +52,31 @@ impl Query {
                 .map(Matcher::Bytes)
                 .ok_or_else(|| "bad hex".to_string());
         }
-        let pattern = if self.regex {
-            self.text.clone()
+        self.regex().map(Matcher::Text)
+    }
+
+    /// The text query compiled. A regular expression in Perl's form
+    /// `/pattern/flags` (Far: a leading `/`) takes the flags `i`, `m`,
+    /// `s`, `x`; "case" off adds `i`.
+    pub fn regex(&self) -> Result<Regex, String> {
+        let (pattern, flags) = if self.regex {
+            match self
+                .text
+                .strip_prefix('/')
+                .and_then(|rest| rest.rfind('/').map(|i| (&rest[..i], &rest[i + 1..])))
+            {
+                Some((p, f)) if f.chars().all(|c| "imsx".contains(c)) => (p.to_string(), f),
+                _ => (self.text.clone(), ""),
+            }
         } else {
-            regex::escape(&self.text)
+            (regex::escape(&self.text), "")
         };
         regex::RegexBuilder::new(&pattern)
-            .case_insensitive(!self.case)
+            .case_insensitive(!self.case || flags.contains('i'))
             .multi_line(true)
+            .dot_matches_new_line(flags.contains('s'))
+            .ignore_whitespace(flags.contains('x'))
             .build()
-            .map(Matcher::Text)
             .map_err(|e| e.to_string())
     }
 }

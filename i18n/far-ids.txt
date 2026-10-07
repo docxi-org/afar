@@ -799,3 +799,21 @@ MScreensEdit
 MEditROOpen
 MEditFileLong
 MEditFileLong2
+
+# Editor search
+MSearchReplaceReplaceTitle
+MSearchReplaceReplaceWith
+MSearchReplacePickWord
+MSearchReplacePickSelection
+MSearchReplaceAll
+MSearchReplaceReplacePrev
+MSearchReplaceReplaceNext
+MSearchReplacePreserveStyle
+MEditNotFound
+MEditAskReplace
+MEditAskReplaceWith
+MEditReplace
+MEditReplaceAll
+MEditSkip
+MEditCancel
+MEditSearchStatistics

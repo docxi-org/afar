@@ -6,6 +6,7 @@
 //! The window around it (status line, key bar, dialogs) is in
 //! `app/editors.rs`.
 
+mod search;
 pub mod text;
 mod undo;
 
@@ -18,6 +19,7 @@ use unicode_width::UnicodeWidthChar as _;
 
 use crate::command::EditorCmd;
 use crate::theme;
+pub use search::{Finder, Found};
 pub use text::{Eol, Line};
 use undo::{Change, History};
 
@@ -45,6 +47,10 @@ pub struct Settings {
     pub persistent_blocks: bool,
     pub del_removes_blocks: bool,
     pub word_div: String,
+    /// Far's `SearchCursorAtEnd`: the cursor after a match, not on it.
+    pub search_cursor_at_end: bool,
+    /// Far's `SearchSelFound`: a match is selected.
+    pub search_select_found: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +62,8 @@ impl Default for Settings {
             persistent_blocks: false,
             del_removes_blocks: true,
             word_div: "~!%^&*()+|{}:\"<>?`-=\\[];',./".to_string(),
+            search_cursor_at_end: false,
+            search_select_found: false,
         }
     }
 }
@@ -119,6 +127,14 @@ pub struct Editor {
     /// and the user kept the buffer.
     pub disk_changed: bool,
     pub opened: Instant,
+    /// Where the last search found its match (Shift+F7 goes on past it
+    /// when the cursor is still there).
+    pub last_found: Option<Found>,
+    /// A match shown in the selection's colour while the replace question
+    /// is open.
+    pub highlight: Option<Found>,
+    /// The Hex box of Alt+F8 (Far's `m_GotoHex`, per window).
+    pub goto_hex: bool,
 }
 
 impl Editor {
@@ -155,6 +171,9 @@ impl Editor {
             agent_seen: Vec::new(),
             disk_changed: false,
             opened: Instant::now(),
+            last_found: None,
+            highlight: None,
+            goto_hex: false,
         }
     }
 
@@ -1216,7 +1235,10 @@ impl Editor {
         let nw = self.number_width();
         let text_x = area.x + nw;
         let text_w = area.width.saturating_sub(nw);
-        let sel = self.selection();
+        let sel = self
+            .highlight
+            .map(|h| (h.start, h.end))
+            .or_else(|| self.selection());
         for row in 0..area.height {
             let y = area.y + row;
             for x in area.left()..area.right() {
