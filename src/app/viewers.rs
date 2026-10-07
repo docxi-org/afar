@@ -284,7 +284,7 @@ impl App {
             Goto => self.viewer_goto_dialog(i),
             Copy => {
                 if let Some(text) = self.viewers[i].selected_text()
-                    && let Err(e) = crate::clipboard::set_text(&text)
+                    && let Err(e) = self.clip_set(&text)
                 {
                     self.say(e);
                 }

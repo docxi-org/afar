@@ -18,6 +18,9 @@ struct Step {
     changes: Vec<Change>,
     before: Pos,
     after: Pos,
+    /// The agent's step: which lines are its own afterwards (redo puts
+    /// them back as they were, not as the changes wrote them).
+    marks: Option<Vec<bool>>,
 }
 
 pub struct History {
@@ -63,6 +66,7 @@ impl History {
                 changes: Vec::new(),
                 before,
                 after: before,
+                marks: None,
             });
         }
     }
@@ -106,6 +110,16 @@ impl History {
             last.new = change.new;
         } else {
             step.changes.push(change);
+        }
+    }
+
+    /// The last step was the agent's: where it changed the text (undo and
+    /// redo take the cursor there) and which lines it left as its own.
+    pub fn agent_step(&mut self, at: Pos, marks: Vec<bool>) {
+        if let Some(step) = self.steps.last_mut() {
+            step.before = at;
+            step.after = at;
+            step.marks = Some(marks);
         }
     }
 
@@ -156,6 +170,13 @@ impl History {
         let step = &self.steps[self.pos];
         for c in &step.changes {
             lines.splice(c.at..c.at + c.old.len(), c.new.iter().cloned());
+        }
+        if let Some(marks) = &step.marks
+            && marks.len() == lines.len()
+        {
+            for (l, m) in lines.iter_mut().zip(marks) {
+                l.by_agent = *m;
+            }
         }
         self.pos += 1;
         Some(step.after)

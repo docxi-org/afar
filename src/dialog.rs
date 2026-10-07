@@ -446,6 +446,10 @@ pub struct Dialog {
 
 impl Dialog {
     /// A dialog of Far's width W (e.g. 76 for copy and make-folder).
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     pub fn far(title: impl Into<String>, width: u16) -> Self {
         Self {
             title: title.into(),

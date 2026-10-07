@@ -12,8 +12,6 @@ use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
-use ratatui::buffer::Buffer;
-use ratatui::layout::Position;
 use tokio::sync::oneshot;
 
 use super::{App, AppMsg, Focus};
@@ -32,12 +30,18 @@ const SETTLE: Duration = Duration::from_millis(250);
 enum Action {
     Event(TermEvent),
     Wait(Duration),
+    /// The text must come on the screen within the time, else the run
+    /// stops (a dialog that did not open would get the keys meant for it).
+    Expect(String, Duration),
 }
 
 pub(super) struct TestRun {
     actions: VecDeque<Action>,
     wait_until: Option<Instant>,
+    /// An `expect:` waiting: its text and deadline.
+    expecting: Option<(String, Instant)>,
     screen: ScreenFormat,
+    region: Option<String>,
     reply: Option<oneshot::Sender<Reply>>,
 }
 
@@ -90,6 +94,22 @@ fn parse(action: &str) -> Result<Vec<Action>, String> {
                 c => ev(key_event(KeyCode::Char(c), none)),
             })
             .collect());
+    }
+    if let Some(rest) = action.strip_prefix("expect:") {
+        // `expect:<text>` or `expect:<text>@<ms>` (3 s by default).
+        let (text, ms) = match rest.rsplit_once('@') {
+            Some((t, ms)) if ms.trim().parse::<u64>().is_ok() => {
+                (t, ms.trim().parse().unwrap_or(3000))
+            }
+            _ => (rest, 3000),
+        };
+        if text.is_empty() {
+            return Err("expect: needs the text to wait for".into());
+        }
+        return Ok(vec![Action::Expect(
+            text.to_string(),
+            Duration::from_millis(ms.min(30_000)),
+        )]);
     }
     if let Some(ms) = action.strip_prefix("wait:") {
         let ms: u64 = ms
@@ -157,7 +177,8 @@ fn parse(action: &str) -> Result<Vec<Action>, String> {
     let chord = Chord::parse(action).ok_or_else(|| {
         format!(
             "unknown action {action:?}: a key (F4, Ctrl+Z, Shift+F2, Enter, Esc, Up, …), text:…, \
-             click:x,y, rclick:x,y, dclick:x,y, drag:x1,y1,x2,y2, wheel:x,y,n or wait:ms"
+             click:x,y, rclick:x,y, dclick:x,y, drag:x1,y1,x2,y2, wheel:x,y,n, wait:ms or \
+             expect:text[@ms]"
         )
     })?;
     let mut m = KeyModifiers::NONE;
@@ -206,27 +227,6 @@ fn parse(action: &str) -> Result<Vec<Action>, String> {
     }))])
 }
 
-/// The screen answer of the last frame.
-pub(super) fn screen_answer(frame: Option<&(Buffer, Option<Position>)>, format: &str) -> Reply {
-    let Some((buf, cursor)) = frame else {
-        return Err("no frame drawn yet".into());
-    };
-    let text = || crate::shot::text(buf, *cursor);
-    match format {
-        "none" => Ok("done".into()),
-        "png" | "both" => {
-            let png = crate::shot::png(buf, *cursor)?;
-            let rest = if format == "both" {
-                text()
-            } else {
-                String::new()
-            };
-            Ok(format!("{PNG_MARK}{}\0{rest}", crate::shot::base64(&png)))
-        }
-        _ => Ok(text()),
-    }
-}
-
 impl App {
     /// `afar_test_input`: the actions are queued and played in the main
     /// loop; the answer (with the screen) comes after the last one.
@@ -234,6 +234,7 @@ impl App {
         &mut self,
         actions: Vec<String>,
         screen: Option<String>,
+        region: Option<String>,
         reply: oneshot::Sender<Reply>,
     ) {
         if !self.config.agent.test_tools {
@@ -261,7 +262,18 @@ impl App {
                 actions: actions.iter().take(40).cloned().collect(),
             },
         );
-        let shown: Vec<&str> = actions.iter().take(6).map(String::as_str).collect();
+        // An `expect:` text is not shown: it would be on the screen itself.
+        let shown: Vec<&str> = actions
+            .iter()
+            .take(6)
+            .map(|a| {
+                if a.starts_with("expect:") {
+                    "expect"
+                } else {
+                    a.as_str()
+                }
+            })
+            .collect();
         self.say(tr!("test-input", what = shown.join(", ")));
         // The keys are for afar, not for the agent's own pane.
         if self.focus == Focus::Agent {
@@ -270,9 +282,134 @@ impl App {
         self.test_run = Some(TestRun {
             actions: queue,
             wait_until: None,
+            expecting: None,
             screen: screen.unwrap_or_else(|| "text".into()),
+            region,
             reply: Some(reply),
         });
+    }
+
+    /// The text is on the last frame.
+    /// (Only afar's own cells: the agent's pane is not looked at, except
+    /// where a dialog or menu covers it.)
+    fn frame_has(&self, text: &str) -> bool {
+        let Some((buf, _)) = &self.last_frame else {
+            return false;
+        };
+        let a = buf.area;
+        let pane = self.last_layout.as_ref().map(|l| l.agent_frame);
+        let over = self.overlay_area;
+        (a.top()..a.bottom()).any(|y| {
+            let row: String = (a.left()..a.right())
+                .map(|x| {
+                    let p = ratatui::layout::Position::new(x, y);
+                    let in_pane = pane.is_some_and(|r| r.contains(p));
+                    let in_over = over.is_some_and(|r| r.contains(p));
+                    if in_pane && !in_over {
+                        " "
+                    } else {
+                        buf[(x, y)].symbol()
+                    }
+                })
+                .collect();
+            row.contains(text)
+        })
+    }
+
+    /// The rows of afar without the agent's pane (`region` "afar", the
+    /// default), or all of them ("all").
+    fn shot_rows(&self, region: Option<&str>) -> std::ops::Range<u16> {
+        let Some((buf, _)) = &self.last_frame else {
+            return 0..0;
+        };
+        let all = buf.area.top()..buf.area.bottom();
+        if region == Some("all") {
+            return all;
+        }
+        let Some(l) = &self.last_layout else {
+            return all;
+        };
+        let f = l.agent_frame;
+        let mut rows = if f.height == 0 {
+            all.clone()
+        } else if f.y <= all.start {
+            f.bottom()..all.end
+        } else {
+            all.start..f.y
+        };
+        // A dialog over the agent's pane is shown whole.
+        if let Some(o) = self.overlay_area {
+            rows = rows.start.min(o.top())..rows.end.max(o.bottom());
+        }
+        rows
+    }
+
+    /// What is on the screen in a line (for `screen: "none"`).
+    fn screen_summary(&self) -> String {
+        use crate::wm::ScreenId;
+        let screen = match self.wm.current_screen() {
+            ScreenId::Panels => "the panels".to_string(),
+            ScreenId::UserScreen => "the user screen (commands' output)".to_string(),
+            ScreenId::Viewer(id) => match self.viewers.iter().find(|v| v.id == id) {
+                Some(v) => format!("the viewer: {}", v.path().display()),
+                None => "a viewer".to_string(),
+            },
+            ScreenId::Editor(id) => match self.editors.iter().find(|e| e.id == id) {
+                Some(e) => format!("the editor: {}", e.path().display()),
+                None => "an editor".to_string(),
+            },
+        };
+        let overlay = match self.overlays.last() {
+            Some(super::fileops::Overlay::Dialog { dialog, .. }) => {
+                format!("; a dialog is open: \"{}\"", dialog.title())
+            }
+            Some(_) => "; a menu or window is open over it".to_string(),
+            None => String::new(),
+        };
+        format!("done; on the screen: {screen}{overlay}")
+    }
+
+    /// The screen answer of the last frame.
+    pub(super) fn screen_reply(&self, format: &str, region: Option<&str>) -> Reply {
+        if format == "none" {
+            return Ok(self.screen_summary());
+        }
+        let Some((buf, cursor)) = &self.last_frame else {
+            return Err("no frame drawn yet".into());
+        };
+        let rows = self.shot_rows(region);
+        let text = || crate::shot::text(buf, *cursor, rows.clone());
+        match format {
+            "png" | "both" => {
+                let png = crate::shot::png(buf, *cursor, rows.clone())?;
+                let rest = if format == "both" {
+                    text()
+                } else {
+                    String::new()
+                };
+                Ok(format!("{PNG_MARK}{}\0{rest}", crate::shot::base64(&png)))
+            }
+            _ => Ok(text()),
+        }
+    }
+
+    /// The clipboard: while a test runs, afar's own (the user's stays
+    /// untouched).
+    pub(super) fn clip_set(&mut self, text: &str) -> Result<(), String> {
+        if self.test_run.is_some() {
+            self.test_clipboard = Some(text.to_string());
+            Ok(())
+        } else {
+            crate::clipboard::set_text(text)
+        }
+    }
+
+    pub(super) fn clip_get(&self) -> Option<String> {
+        if self.test_run.is_some() {
+            self.test_clipboard.clone()
+        } else {
+            crate::clipboard::get_text()
+        }
     }
 
     /// After a frame: the next queued action, or the answer once all are
@@ -287,18 +424,50 @@ impl App {
             }
             run.wait_until = None;
         }
+        if let Some((text, until)) = &run.expecting {
+            let (text, until) = (text.clone(), *until);
+            if self.frame_has(&text) {
+                if let Some(run) = &mut self.test_run {
+                    run.expecting = None;
+                }
+            } else if Instant::now() < until {
+                return true;
+            } else {
+                // Stopped: the rest is not played.
+                let run = self.test_run.take().expect("checked above");
+                self.say(tr!("test-input-stopped"));
+                let screen = self.screen_reply("text", run.region.as_deref());
+                if let Some(reply) = run.reply {
+                    let _ = reply.send(Err(format!(
+                        "expect: {text:?} did not come on the screen; the rest of the actions \
+                         were not played. The screen:\n{}",
+                        screen.unwrap_or_else(|e| e)
+                    )));
+                }
+                return false;
+            }
+        }
+        let Some(run) = &mut self.test_run else {
+            return false;
+        };
         match run.actions.pop_front() {
             Some(Action::Wait(d)) => {
                 run.wait_until = Some(Instant::now() + d);
                 true
             }
+            Some(Action::Expect(text, d)) => {
+                run.expecting = Some((text, Instant::now() + d));
+                true
+            }
             Some(Action::Event(ev)) => {
                 self.handle(AppMsg::Input(ev));
+                // The keys are let go (the key bar leaves the modifier's layer).
+                self.held = KeyModifiers::NONE;
                 true
             }
             None => {
                 let run = self.test_run.take().expect("checked above");
-                let answer = screen_answer(self.last_frame.as_ref(), &run.screen);
+                let answer = self.screen_reply(&run.screen, run.region.as_deref());
                 if let Some(reply) = run.reply {
                     let _ = reply.send(answer);
                 }

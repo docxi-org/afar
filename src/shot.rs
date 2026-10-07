@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use std::ops::Range;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier};
@@ -56,17 +58,21 @@ fn style_name(fg: Color, bg: Color, m: Modifier) -> String {
     s
 }
 
-/// The screen as text: numbered rows, then for each row its runs of colors
-/// (`fg/bg` by columns), and the cursor.
-pub fn text(buf: &Buffer, cursor: Option<Position>) -> String {
+/// The screen's `rows` as text: numbered rows (numbers of the whole
+/// screen), then for each row its runs of colors (`fg/bg` by columns), and
+/// the cursor.
+pub fn text(buf: &Buffer, cursor: Option<Position>, rows: Range<u16>) -> String {
     let a = buf.area;
+    let rows = rows.start.max(a.top())..rows.end.min(a.bottom());
     let mut out = format!(
-        "[afar screen {}×{}; rows and columns from 0; cursor {}]\n",
+        "[afar screen {}×{}, rows {}-{} shown; rows and columns from 0; cursor {}]\n",
         a.width,
         a.height,
+        rows.start,
+        rows.end.saturating_sub(1),
         cursor.map_or("hidden".to_string(), |p| format!("{},{}", p.y, p.x)),
     );
-    for y in a.top()..a.bottom() {
+    for y in rows.clone() {
         let mut line = String::new();
         for x in a.left()..a.right() {
             line.push_str(buf[(x, y)].symbol());
@@ -74,7 +80,7 @@ pub fn text(buf: &Buffer, cursor: Option<Position>) -> String {
         out.push_str(&format!("{y:>3}|{}\n", line.trim_end()));
     }
     out.push_str("colors (columns fg/bg):\n");
-    for y in a.top()..a.bottom() {
+    for y in rows {
         let mut runs: Vec<(u16, u16, String)> = Vec::new();
         for x in a.left()..a.right() {
             let c = &buf[(x, y)];
@@ -329,8 +335,8 @@ fn draw_box(cv: &mut Canvas, x: usize, y: usize, w: usize, h: usize, arms: [u8; 
     }
 }
 
-/// The screen as a PNG picture.
-pub fn png(buf: &Buffer, cursor: Option<Position>) -> Result<Vec<u8>, String> {
+/// The screen's `rows` as a PNG picture.
+pub fn png(buf: &Buffer, cursor: Option<Position>, rows: Range<u16>) -> Result<Vec<u8>, String> {
     let f = fonts()?;
     let cell_w = f.regular.metrics('M', PX).advance_width.ceil() as usize;
     let lm = f
@@ -339,7 +345,9 @@ pub fn png(buf: &Buffer, cursor: Option<Position>) -> Result<Vec<u8>, String> {
         .ok_or("the font has no line metrics")?;
     let cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil() as usize;
     let baseline = lm.ascent.round() as isize;
-    let a = buf.area;
+    let full = buf.area;
+    let rows = rows.start.max(full.top())..rows.end.min(full.bottom());
+    let a = ratatui::layout::Rect::new(full.x, rows.start, full.width, rows.end - rows.start);
     let mut cv = Canvas {
         w: usize::from(a.width) * cell_w,
         h: usize::from(a.height) * cell_h,
@@ -461,7 +469,7 @@ mod tests {
             "ab",
             Style::new().fg(Color::LightCyan).bg(Color::Blue),
         );
-        let t = text(&buf, Some(Position::new(1, 0)));
+        let t = text(&buf, Some(Position::new(1, 0)), 0..2);
         assert!(t.contains("  0|ab"));
         assert!(t.contains("0-1 lightcyan/blue; 2-5 default/default"));
         assert!(t.contains("cursor 0,1"));

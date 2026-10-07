@@ -321,6 +321,10 @@ pub struct App {
     /// only while the tools are on).
     test_run: Option<testtools::TestRun>,
     last_frame: Option<(Buffer, Option<Position>)>,
+    /// The cells the overlays covered in the last frame (the test tools).
+    overlay_area: Option<Rect>,
+    /// The clipboard of a test run (the user's is left alone).
+    test_clipboard: Option<String>,
     /// The last left click in an editor (double click: a word).
     editor_last_click: Option<(Instant, u16, u16)>,
     /// Wrapping and bars carried to the next viewer (Far's
@@ -469,6 +473,8 @@ impl App {
             editor_last_click: None,
             test_run: None,
             last_frame: None,
+            test_clipboard: None,
+            overlay_area: None,
             viewer_defaults: crate::viewer::Defaults {
                 scrollbar: config.viewer.scrollbar,
                 ..Default::default()
@@ -885,9 +891,14 @@ impl App {
                 reply,
             }) => self.channel_wait(reply),
             AppMsg::Mcp(McpMsg {
-                request: Request::TestInput { actions, screen },
+                request:
+                    Request::TestInput {
+                        actions,
+                        screen,
+                        region,
+                    },
                 reply,
-            }) => self.test_input(actions, screen, reply),
+            }) => self.test_input(actions, screen, region, reply),
             AppMsg::Mcp(McpMsg { request, reply }) => match request {
                 // Answered later: after the user's confirmation.
                 Request::Delete {
@@ -2005,8 +2016,8 @@ impl App {
                 Ok(out)
             }
             Request::TestInput { .. } => Err("answered in handle".into()),
-            Request::TestScreen { format } if self.config.agent.test_tools => {
-                testtools::screen_answer(self.last_frame.as_ref(), &format)
+            Request::TestScreen { format, region } if self.config.agent.test_tools => {
+                self.screen_reply(&format, region.as_deref())
             }
             Request::TestScreen { .. } => Err("the test tools are off ([agent] test_tools)".into()),
             Request::Delete { .. } | Request::Copy { .. } | Request::MkDir { .. } => {
@@ -2901,7 +2912,15 @@ impl App {
                 l.cmdline.y.saturating_sub(l.agent_frame.y),
             );
             self.fill_dialogs_from_history();
+            // The test tools: where the dialogs and menus are (the cells
+            // they changed), so a screenshot or `expect:` includes them.
+            let before = self.config.agent.test_tools.then(|| buf.clone());
             cursor = self.draw_overlays(over, bar, agent_bar, buf);
+            if let Some(before) = before {
+                self.overlay_area = changed_area(&before, buf);
+            }
+        } else {
+            self.overlay_area = None;
         }
         // The completion list, over everything.
         let prompt = format!("{}>", self.panels[self.active].path.display())
@@ -3338,4 +3357,25 @@ fn windows_wheel_lines() -> i32 {
     } else {
         lines as i32
     }
+}
+
+/// The smallest rectangle holding every cell that differs between two
+/// frames of the same size.
+fn changed_area(a: &Buffer, b: &Buffer) -> Option<Rect> {
+    let area = b.area;
+    if a.area != area {
+        return Some(area);
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (u16::MAX, u16::MAX, 0, 0);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if a[(x, y)] != b[(x, y)] {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    (x0 <= x1).then(|| Rect::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1))
 }

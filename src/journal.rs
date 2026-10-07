@@ -405,15 +405,17 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 version,
             } => {
                 let lines: Vec<String> = changed.iter().map(u64::to_string).collect();
-                let removed = if *removed > 0 {
-                    format!(", {removed} removed")
-                } else {
-                    String::new()
-                };
+                let mut what = Vec::new();
+                if !lines.is_empty() {
+                    what.push(format!("lines {} changed", lines.join(",")));
+                }
+                if *removed > 0 {
+                    what.push(format!("{removed} removed"));
+                }
                 format!(
-                    "buffer {} lines {}{removed} (editor buffer v{version}, not saved)",
+                    "buffer {}: {} (editor buffer v{version}, not saved)",
                     path.display(),
-                    lines.join(",")
+                    what.join(", ")
                 )
             }
             Event::TestInput { actions } => format!("test   {}", actions.join(", ")),

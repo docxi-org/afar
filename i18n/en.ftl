@@ -221,3 +221,4 @@ dev-blocker-editor = an editor has unsaved changes
 agent-edited-behind = The agent is editing { $what } in the editor — F12 to go there
 test-tools-on = The agent's test tools are on ([agent] test_tools): it can press keys in afar and take screenshots
 test-input = The agent presses: { $what }
+test-input-stopped = The agent's run stopped: the expected text is not on the screen

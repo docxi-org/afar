@@ -5,7 +5,9 @@
 # Example: tools/mcp_call.sh "$(ls -td "$LOCALAPPDATA"/afar/sessions/* | head -1)" afar_state '{}'
 # curl here is the Windows binary: keep temporary files under %TEMP%.
 
-d="$1"; tool="$2"; args="$3"
+d="$1"; tool="$2"
+# Windows curl garbles non-ASCII arguments: the JSON goes with \u escapes.
+args=$(python -I -c "import json,sys;print(json.dumps(json.loads(sys.argv[1])))" "$3")
 cfg=$(python -I -c "import json,sys;c=json.load(open(sys.argv[1]))['mcpServers']['afar'];sys.stdout.write(c['url']+' '+c['headers']['Authorization'])" "$d/mcp.json")
 URL=${cfg%% *}
 TOK=${cfg#* }
@@ -20,6 +22,7 @@ curl -s -X POST "$URL" "${H[@]}" -H "Mcp-Session-Id: $SID" \
   | python -I -c "
 import json, sys, base64, os
 sys.stdout.reconfigure(encoding='utf-8')
+sys.stdin.reconfigure(encoding='utf-8')
 r = json.loads(sys.stdin.read())['result']
 if r.get('isError'):
     print('ERROR: ', end='')

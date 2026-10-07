@@ -29,6 +29,36 @@ const F4_GRACE: Duration = Duration::from_millis(500);
 /// Files from this size are opened in the editor only when asked to.
 const LARGE_FILE: u64 = 64 * 1024 * 1024;
 
+/// "Save as" with another code page, byte order mark or line endings:
+/// they become the window's only once the file is written (Far).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SaveFormat {
+    cp: u32,
+    bom: bool,
+    eol: Option<Eol>,
+}
+
+/// The code pages offered: UTF-8 and UTF-16 first, then the system's
+/// (ANSI, OEM and the installed ones), the file's own always among them.
+fn codepage_list(current: u32) -> Vec<u32> {
+    let mut list = vec![
+        codepage::UTF8,
+        codepage::UTF16LE,
+        codepage::UTF16BE,
+        codepage::ansi(),
+        codepage::oem(),
+    ];
+    for cp in codepage::installed() {
+        if !list.contains(&cp) {
+            list.push(cp);
+        }
+    }
+    if current != 0 && !list.contains(&current) {
+        list.insert(0, current);
+    }
+    list
+}
+
 /// What to do once a save (or the question about it) is done.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum After {
@@ -53,9 +83,19 @@ pub(super) enum Ask {
     /// The file changed on the disk since it was read (on save).
     External { id: u32, then: After },
     /// The file is read-only: overwrite?
-    ReadOnly { id: u32, then: After, path: PathBuf },
+    ReadOnly {
+        id: u32,
+        then: After,
+        path: PathBuf,
+        fmt: Option<SaveFormat>,
+    },
     /// "Save as" onto another existing file.
-    Overwrite { id: u32, then: After, path: PathBuf },
+    Overwrite {
+        id: u32,
+        then: After,
+        path: PathBuf,
+        fmt: Option<SaveFormat>,
+    },
     /// The file (or its folder) is gone: save?
     Deleted { id: u32, then: After },
     /// The file changed on the disk while edited (afar's): read it again?
@@ -218,7 +258,13 @@ impl App {
         let id = self.next_editor_id;
         let mut editor = match std::fs::read(path) {
             Ok(data) => {
-                let want = cp.or(remembered.as_ref().map(|r| r.cp).filter(|cp| *cp != 0));
+                // A page asked for wins; a remembered one only when the file
+                // has no byte order mark of its own (a mark is proof).
+                let remembered_cp = remembered
+                    .as_ref()
+                    .map(|r| r.cp)
+                    .filter(|cp| *cp != 0 && codepage::bom(&data).is_none());
+                let want = cp.or(remembered_cp);
                 let l = text::load(
                     &data,
                     want,
@@ -381,21 +427,19 @@ impl App {
         use EditorCmd::*;
         match cmd {
             Copy => {
-                let e = &mut self.editors[i];
-                // Far: without a block, the current line is copied (with
-                // its ending) and stays selected.
-                if e.selection().is_none() {
-                    e.select_line();
-                }
-                if let Some(text) = e.selected_text()
-                    && let Err(err) = crate::clipboard::set_text(&text)
-                {
+                let e = &self.editors[i];
+                // Far: without a block, the current line with its ending
+                // (the cursor stays).
+                let text = e
+                    .selected_text()
+                    .unwrap_or_else(|| e.line_with_eol(e.cursor.line));
+                if let Err(err) = self.clip_set(&text) {
                     self.say(err);
                 }
             }
             Cut => {
                 if let Some(text) = self.editors[i].selected_text() {
-                    match crate::clipboard::set_text(&text) {
+                    match self.clip_set(&text) {
                         Ok(()) => {
                             self.editors[i].delete_selection();
                         }
@@ -404,7 +448,7 @@ impl App {
                 }
             }
             Paste => {
-                if let Some(text) = crate::clipboard::get_text() {
+                if let Some(text) = self.clip_get() {
                     self.editors[i].insert_text(&text);
                 }
             }
@@ -440,7 +484,7 @@ impl App {
 
     /// Shift+F4: Far's "Open/create file" dialog (`dlgOpenEditor`).
     pub(super) fn editor_open_dialog(&mut self) {
-        let cps = codepage::installed();
+        let cps = codepage_list(0);
         let mut items = vec![Some(tr!("MDefaultCP")), Some(tr!("MEditOpenAutoDetect"))];
         items.extend(cps.iter().map(|cp| Some(codepage::long_name(*cp))));
         let dialog = Dialog::far(tr!("MEditTitle"), 76)
@@ -500,11 +544,19 @@ impl App {
             });
             return;
         }
-        self.editor_write(i, path, then, false);
+        self.editor_write(i, path, then, false, None);
     }
 
-    /// Writes the text to `path` (read-only asked about unless `force`).
-    fn editor_write(&mut self, i: usize, path: PathBuf, then: After, force: bool) {
+    /// Writes the text to `path` (read-only asked about unless `force`);
+    /// `fmt`: "Save as" settings, the window's after a successful write.
+    fn editor_write(
+        &mut self,
+        i: usize,
+        path: PathBuf,
+        then: After,
+        force: bool,
+        fmt: Option<SaveFormat>,
+    ) {
         let id = self.editors[i].id;
         let readonly = std::fs::metadata(&path).is_ok_and(|m| m.permissions().readonly());
         if readonly && !force {
@@ -516,15 +568,39 @@ impl App {
             );
             self.overlays.push(Overlay::Dialog {
                 dialog,
-                purpose: Purpose::Editor(Ask::ReadOnly { id, then, path }),
+                purpose: Purpose::Editor(Ask::ReadOnly {
+                    id,
+                    then,
+                    path,
+                    fmt,
+                }),
             });
             return;
         }
         let e = &self.editors[i];
-        let data = match text::encode(e.lines(), e.cp, e.bom) {
+        let (cp, bom) = fmt.map_or((e.cp, e.bom), |f| (f.cp, f.bom));
+        let converted: Vec<crate::editor::Line>;
+        let lines = match fmt.and_then(|f| f.eol) {
+            Some(eol) => {
+                converted = e
+                    .lines()
+                    .iter()
+                    .map(|l| {
+                        let mut l = l.clone();
+                        if l.eol != Eol::None {
+                            l.eol = eol;
+                        }
+                        l
+                    })
+                    .collect();
+                &converted[..]
+            }
+            None => e.lines(),
+        };
+        let data = match text::encode(lines, cp, bom) {
             Ok(d) => d,
             Err(c) => {
-                let cp = codepage::long_name(e.cp);
+                let cp = codepage::long_name(cp);
                 self.message(
                     &tr!("MEditTitle"),
                     &[tr!("editor-cannot-encode", ch = c.to_string(), cp = cp)],
@@ -565,6 +641,13 @@ impl App {
             return;
         }
         let e = &mut self.editors[i];
+        if let Some(f) = fmt {
+            e.cp = f.cp;
+            e.bom = f.bom;
+            if let Some(eol) = f.eol {
+                e.set_all_eols(eol);
+            }
+        }
         e.set_path(&path);
         e.saved();
         e.stamp = stamp(&path);
@@ -615,7 +698,7 @@ impl App {
         } else {
             path.display().to_string()
         };
-        let cps = codepage::installed();
+        let cps = codepage_list(e.cp);
         let selected = cps.iter().position(|cp| *cp == e.cp).unwrap_or(0);
         let items: Vec<Option<String>> = cps
             .iter()
@@ -770,23 +853,21 @@ impl App {
                 }
                 let base = self.panels[self.active].path.clone();
                 let path = base.join(crate::complete::expand_env(&name));
-                let e = &mut self.editors[i];
-                if let Some(cp) = cps.get(dialog.combo(0)) {
-                    e.cp = *cp;
-                }
-                let utf = matches!(e.cp, codepage::UTF8 | codepage::UTF16LE | codepage::UTF16BE);
-                e.bom = utf && dialog.checked(0);
+                let e = &self.editors[i];
+                let cp = cps.get(dialog.combo(0)).copied().unwrap_or(e.cp);
+                let utf = matches!(cp, codepage::UTF8 | codepage::UTF16LE | codepage::UTF16BE);
                 let eol = match dialog.radio(0) {
                     1 => Some(Eol::CrLf),
                     2 => Some(Eol::Lf),
                     3 => Some(Eol::Cr),
                     _ => None,
                 };
-                if let Some(eol) = eol {
-                    e.set_all_eols(eol);
-                }
+                let fmt = Some(SaveFormat {
+                    cp,
+                    bom: utf && dialog.checked(0),
+                    eol,
+                });
                 let same = place_key(&path) == place_key(e.path());
-                e.new_file = false;
                 if !same && path.exists() {
                     let dialog = Dialog::message(
                         &tr!("MEditTitle"),
@@ -800,7 +881,12 @@ impl App {
                     );
                     self.overlays.push(Overlay::Dialog {
                         dialog,
-                        purpose: Purpose::Editor(Ask::Overwrite { id, then, path }),
+                        purpose: Purpose::Editor(Ask::Overwrite {
+                            id,
+                            then,
+                            path,
+                            fmt,
+                        }),
                     });
                     return;
                 }
@@ -808,14 +894,19 @@ impl App {
                 if !same {
                     self.editors[i].stamp = None;
                 }
-                self.editor_write(i, path, then, false);
+                self.editor_write(i, path, then, false, fmt);
             }
-            Ask::Overwrite { id, then, path } => {
+            Ask::Overwrite {
+                id,
+                then,
+                path,
+                fmt,
+            } => {
                 if let Some(i) = self.editor_index(id)
                     && button == Some(0)
                 {
                     self.editors[i].stamp = None;
-                    self.editor_write(i, path, then, false);
+                    self.editor_write(i, path, then, false, fmt);
                 }
             }
             Ask::Save { id, then } | Ask::Deleted { id, then } => {
@@ -835,17 +926,22 @@ impl App {
                 match button {
                     Some(0) => {
                         let path = self.editors[i].path().to_path_buf();
-                        self.editor_write(i, path, then, false);
+                        self.editor_write(i, path, then, false, None);
                     }
                     Some(1) => self.editor_save_as_dialog(i, then),
                     _ => {}
                 }
             }
-            Ask::ReadOnly { id, then, path } => {
+            Ask::ReadOnly {
+                id,
+                then,
+                path,
+                fmt,
+            } => {
                 if let Some(i) = self.editor_index(id)
                     && button == Some(0)
                 {
-                    self.editor_write(i, path, then, true);
+                    self.editor_write(i, path, then, true, fmt);
                 }
             }
             Ask::Reload { id } => {
@@ -921,6 +1017,7 @@ impl App {
             tr!("editor-changed-on-disk"),
         ];
         self.editors[i].ignored_stamp = Some(now);
+        self.editors[i].disk_changed = true;
         let dialog = Dialog::message(
             &tr!("MEditTitle"),
             &lines,

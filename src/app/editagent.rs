@@ -12,22 +12,13 @@ use std::path::{Path, PathBuf};
 use super::App;
 use super::policy::AgentAction;
 use crate::config::Level;
-use crate::editor::{AgentEdit, Eol, Pos};
+use crate::editor::{AgentEdit, Pos};
 use crate::journal::{Actor, Event};
 use crate::tr;
 use crate::wm::ScreenId;
 
 /// Lines `afar_buffer_read` gives at most without a range (as `Read`).
 const READ_LIMIT: usize = 2000;
-
-fn eol_name(eol: Eol) -> &'static str {
-    match eol {
-        Eol::Lf => "LF",
-        Eol::Cr => "CR",
-        Eol::CrCrLf => "CR CR LF",
-        _ => "CR LF",
-    }
-}
 
 /// `2, 5, 7-9`.
 fn line_list(lines: &[u64]) -> String {
@@ -190,11 +181,16 @@ impl App {
                     "modified": e.modified(),
                     "lines": e.line_count(),
                     "cursor": {"line": e.cursor.line + 1, "col": e.cursor.col + 1},
-                    "visible_lines": [e.top + 1, (e.top + h).min(e.line_count())],
+                    "visible_lines": if e.area.height == 0 {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::json!([e.top + 1, (e.top + h).min(e.line_count())])
+                    },
+                    "top_line": e.top + 1,
                     "you_last_read_version": e.agent_last_read(),
                     "codepage": crate::viewer::codepage::long_name(e.cp),
                     "bom": e.bom,
-                    "line_endings": eol_name(e.default_eol),
+                    "line_endings": e.eol_summary(),
                     "locked": e.locked,
                     "disk_changed": e.disk_changed,
                 });

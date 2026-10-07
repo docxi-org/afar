@@ -103,9 +103,11 @@ pub enum Request {
     TestInput {
         actions: Vec<String>,
         screen: Option<String>,
+        region: Option<String>,
     },
     TestScreen {
         format: String,
+        region: Option<String>,
     },
     Edit {
         path: String,
@@ -337,18 +339,27 @@ pub struct TestInputParams {
     /// Played in order, one per frame: a key in afar's key map notation
     /// ("F4", "Ctrl+Z", "Shift+F2", "Alt+F7", "Enter", "Esc", "Up", "Gray+"),
     /// "text:<characters>" (\n is Enter), "click:x,y", "rclick:x,y",
-    /// "dclick:x,y", "drag:x1,y1,x2,y2", "wheel:x,y,n" (n > 0: down) or
-    /// "wait:ms". Screen cells count from 0 (column x, row y).
+    /// "dclick:x,y", "drag:x1,y1,x2,y2", "wheel:x,y,n" (n > 0: down),
+    /// "wait:ms" or "expect:<text>[@ms]" (wait until the text is on the
+    /// screen, 3 s by default; if it does not come, the run stops there).
+    /// Screen cells count from 0 (column x, row y). Ctrl+C / Ctrl+X / Ctrl+V
+    /// use a clipboard of the run, not the user's.
     pub actions: Vec<String>,
     /// The screen afterwards: "text" (default: rows and their colors),
-    /// "png" (a picture), "both" or "none".
+    /// "png" (a picture), "both" or "none" (a line: which screen and
+    /// dialog are up).
     pub screen: Option<String>,
+    /// "afar" (default: without your own pane) or "all".
+    pub region: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct TestScreenParams {
-    /// "text" (default: rows and their colors), "png" (a picture) or "both".
+    /// "text" (default: rows and their colors), "png" (a picture), "both"
+    /// or "none" (a line: which screen and dialog are up).
     pub format: Option<String>,
+    /// "afar" (default: without your own pane) or "all".
+    pub region: Option<String>,
 }
 
 #[tool_router]
@@ -379,6 +390,7 @@ impl AfarMcp {
                 Request::TestInput {
                     actions: p.actions,
                     screen: p.screen,
+                    region: p.region,
                 },
                 Duration::from_secs(120),
             )
@@ -400,6 +412,7 @@ impl AfarMcp {
                 &self.tx,
                 Request::TestScreen {
                     format: p.format.unwrap_or_else(|| "text".into()),
+                    region: p.region,
                 },
             )
             .await,

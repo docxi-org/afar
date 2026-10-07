@@ -284,6 +284,12 @@ impl Editor {
         } else if self.cursor.line >= self.top + h {
             self.top = self.cursor.line + 1 - h;
         }
+        // Far (AllowEmptySpaceAfterEof off): no empty rows under the last
+        // line while the file is longer than the screen.
+        let max_top = self.lines.len().saturating_sub(h);
+        if self.top > max_top {
+            self.top = max_top;
+        }
         let w = usize::from(self.area.width.saturating_sub(self.number_width()).max(1));
         let v = self.vcol(self.cursor.line, self.cursor.col);
         if v < self.left {
@@ -835,7 +841,53 @@ impl Editor {
                 }
             }
         }
+        // Undo and redo go to the change, as for the user's own; redo
+        // marks just these lines again.
+        let first = edit.changed.first().copied().unwrap_or_else(|| {
+            similar::capture_diff_slices(similar::Algorithm::Myers, &a, &b)
+                .iter()
+                .find(|op| !matches!(op, DiffOp::Equal { .. }))
+                .map_or(0, |op| op.new_range().start)
+        });
+        let at = Pos::new(first.min(self.lines.len() - 1), 0);
+        // (A portion that changed nothing left no step of its own.)
+        if !edit.changed.is_empty() || edit.removed > 0 {
+            let marks = self.lines.iter().map(|l| l.by_agent).collect();
+            self.history.agent_step(at, marks);
+        }
         edit
+    }
+
+    /// Line `n` with its ending (Ctrl+C without a block).
+    pub fn line_with_eol(&self, n: usize) -> String {
+        self.lines
+            .get(n)
+            .map(|l| format!("{}{}", l.text, l.eol.as_str()))
+            .unwrap_or_default()
+    }
+
+    /// The line endings in use: one name, or `mixed: …`.
+    pub fn eol_summary(&self) -> String {
+        let name = |e: Eol| match e {
+            Eol::Lf => "LF",
+            Eol::Cr => "CR",
+            Eol::CrCrLf => "CR CR LF",
+            _ => "CR LF",
+        };
+        let mut seen: Vec<Eol> = Vec::new();
+        for l in &self.lines {
+            if l.eol != Eol::None && !seen.contains(&l.eol) {
+                seen.push(l.eol);
+            }
+        }
+        match seen.as_slice() {
+            [] => name(self.default_eol).to_string(),
+            [one] => name(*one).to_string(),
+            many => {
+                let names: Vec<&str> = many.iter().map(|e| name(*e)).collect();
+                format!("mixed: {}", names.join(", "))
+            }
+        }
     }
 
     /// `afar_buffer_edit`: `old` (lines joined with `\n`) replaced by
