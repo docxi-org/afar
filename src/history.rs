@@ -15,6 +15,9 @@ pub enum Kind {
     /// A dialog's input field; the list is the field's history name.
     Dialog,
     Command,
+    /// Folders the panels went to (a source for path fields; later
+    /// Alt+F12).
+    Folder,
 }
 
 impl Kind {
@@ -22,8 +25,60 @@ impl Kind {
         match self {
             Kind::Dialog => "dialog",
             Kind::Command => "command",
+            Kind::Folder => "folder",
         }
     }
+}
+
+/// How a list is ordered (docs/15, improvements 1 and 7).
+#[derive(Clone, Debug, Default)]
+pub struct Order {
+    /// By how often and how lately, with more weight for uses in `folder`
+    /// (or inside it); otherwise the newest first (Far).
+    pub frecency: bool,
+    pub folder: String,
+    /// The agent's entries after the user's.
+    pub agent_last: bool,
+}
+
+/// `inner` is `outer` or inside it (case-insensitive, `\` or `/`).
+fn same_or_inside(inner: &str, outer: &str) -> bool {
+    if outer.is_empty() {
+        return false;
+    }
+    let norm = |s: &str| {
+        s.to_lowercase()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_string()
+    };
+    let (i, o) = (norm(inner), norm(outer));
+    i == o || i.starts_with(&format!("{o}\\"))
+}
+
+/// Secrets in a command or a field are replaced by `***` before it goes
+/// into the history (docs/15, improvement 6).
+pub fn redact(text: &str) -> String {
+    use std::sync::OnceLock;
+    static RULES: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+    let rules = RULES.get_or_init(|| {
+        [
+            // password=…, --token …, api_key: …
+            r"(?i)((?:--?)?(?:password|passwd|pwd|token|secret|api[_-]?key)\s*[=:\s]\s*)(\S+)",
+            // Authorization: Bearer …
+            r"(?i)(authorization:\s*(?:bearer|basic)?\s*)(\S+)",
+            // Keys by their look: sk-…, ghp_…, xoxb-…
+            r"()\b((?:sk|pk|rk)-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,})",
+        ]
+        .iter()
+        .filter_map(|r| regex::Regex::new(r).ok())
+        .collect()
+    });
+    let mut out = text.to_string();
+    for re in rules {
+        out = re.replace_all(&out, "${1}***").into_owned();
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +90,8 @@ pub struct Entry {
     pub last_used: i64,
     pub folder: String,
     pub actor: String,
+    /// More about the entry (JSON): a command's exit code and duration.
+    pub data: Option<String>,
 }
 
 pub struct History {
@@ -141,7 +198,7 @@ impl History {
     /// A list: locked entries first, then the newest (Far's order).
     pub fn list(&self, kind: Kind, list: &str) -> Vec<Entry> {
         let Ok(mut stmt) = self.db.prepare(
-            "SELECT id, text, locked, last_used, folder, actor FROM entry
+            "SELECT id, text, locked, last_used, folder, actor, data FROM entry
              WHERE kind = ?1 AND list = ?2 ORDER BY locked DESC, last_used DESC, id DESC",
         ) else {
             return Vec::new();
@@ -154,10 +211,84 @@ impl History {
                 last_used: r.get(3)?,
                 folder: r.get(4)?,
                 actor: r.get(5)?,
+                data: r.get(6)?,
             })
         })
         .map(|rows| rows.flatten().collect())
         .unwrap_or_default()
+    }
+
+    /// A list in the given order: locked first; then (if asked) the user's
+    /// before the agent's; then by weight — each of the last uses counts
+    /// `1 / (1 + days / 7)`, twice in the current folder or inside it — or
+    /// the newest first.
+    pub fn ordered(&self, kind: Kind, list: &str, order: &Order) -> Vec<Entry> {
+        let mut entries = self.list(kind, list);
+        let weight = |e: &Entry| -> f64 {
+            if !order.frecency {
+                return 0.0;
+            }
+            let Ok(mut stmt) = self
+                .db
+                .prepare_cached("SELECT time, folder FROM use WHERE entry_id = ?1")
+            else {
+                return 0.0;
+            };
+            let t = now();
+            stmt.query_map(params![e.id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .map(|rows| {
+                rows.flatten()
+                    .map(|(time, folder)| {
+                        let days = (t - time).max(0) as f64 / 86_400_000.0;
+                        let here = if same_or_inside(&folder, &order.folder) {
+                            2.0
+                        } else {
+                            1.0
+                        };
+                        here / (1.0 + days / 7.0)
+                    })
+                    .sum()
+            })
+            .unwrap_or(0.0)
+        };
+        let mut keyed: Vec<(f64, Entry)> = entries.drain(..).map(|e| (weight(&e), e)).collect();
+        keyed.sort_by(|(wa, a), (wb, b)| {
+            b.locked
+                .cmp(&a.locked)
+                .then_with(|| {
+                    if order.agent_last {
+                        (a.actor == "agent").cmp(&(b.actor == "agent"))
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then_with(|| wb.partial_cmp(wa).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| b.last_used.cmp(&a.last_used))
+        });
+        keyed.into_iter().map(|(_, e)| e).collect()
+    }
+
+    /// The newest entry the user made (not the agent).
+    pub fn last_by_user(&self, kind: Kind, list: &str) -> Option<String> {
+        self.db
+            .query_row(
+                "SELECT text FROM entry WHERE kind = ?1 AND list = ?2 AND actor = 'user'
+                 ORDER BY last_used DESC, id DESC LIMIT 1",
+                params![kind.as_str(), list],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None)
+    }
+
+    /// More about an entry (a command's result): JSON in `data`.
+    pub fn set_data(&self, kind: Kind, list: &str, text: &str, data: &str) {
+        let _ = self.db.execute(
+            "UPDATE entry SET data = ?4 WHERE kind = ?1 AND list = ?2 AND text = ?3 COLLATE NOCASE",
+            params![kind.as_str(), list, text, data],
+        );
     }
 
     /// A list's texts by time, oldest first (the command line's Ctrl+E).
@@ -345,6 +476,52 @@ mod tests {
         h.clear(Kind::Dialog, "Copy");
         assert_eq!(texts(&h, "Copy"), ["docs"]);
         assert_eq!(h.last(Kind::Dialog, "Copy").as_deref(), Some("docs"));
+    }
+
+    #[test]
+    fn orders_by_use_and_folder() {
+        let h = History::in_memory();
+        h.add(Kind::Dialog, "Copy", "d:\\a", "c:\\work", "user");
+        h.add(Kind::Dialog, "Copy", "d:\\b", "c:\\other", "user");
+        h.add(Kind::Dialog, "Copy", "d:\\b", "c:\\other", "user");
+        h.add(Kind::Dialog, "Copy", "d:\\x", "c:\\work", "agent");
+        let order = |folder: &str| Order {
+            frecency: true,
+            folder: folder.into(),
+            agent_last: true,
+        };
+        let texts = |o: Order| -> Vec<String> {
+            h.ordered(Kind::Dialog, "Copy", &o)
+                .into_iter()
+                .map(|e| e.text)
+                .collect()
+        };
+        // Twice used wins elsewhere; the agent's entry is last.
+        assert_eq!(texts(order("c:\\none")), ["d:\\b", "d:\\a", "d:\\x"]);
+        // In c:\work (or inside it) its entry weighs twice: a tie with "b",
+        // broken by the newest use.
+        assert_eq!(texts(order("C:\\Work\\sub"))[2], "d:\\x");
+        assert!(same_or_inside("c:\\work\\sub", "C:\\Work"));
+        assert!(!same_or_inside("c:\\workshop", "c:\\work"));
+        assert_eq!(
+            h.last_by_user(Kind::Dialog, "Copy").as_deref(),
+            Some("d:\\b")
+        );
+    }
+
+    #[test]
+    fn redacts_secrets() {
+        assert_eq!(
+            redact("curl -u x --password hunter2 y"),
+            "curl -u x --password *** y"
+        );
+        assert_eq!(redact("set TOKEN=abc123"), "set TOKEN=***");
+        assert_eq!(
+            redact("curl -H \"Authorization: Bearer xyz\" u"),
+            "curl -H \"Authorization: Bearer *** u"
+        );
+        assert_eq!(redact("use sk-abcdefghijklmnopqrstu now"), "use *** now");
+        assert_eq!(redact("cargo build"), "cargo build");
     }
 
     #[test]

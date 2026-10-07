@@ -105,8 +105,9 @@ impl App {
         };
         let list = history.clone().unwrap_or_default();
         let entries: Vec<(String, bool)> = if sources.history {
+            let order = self.history_order();
             self.store
-                .list(kind, &list)
+                .ordered(kind, &list, &order)
                 .into_iter()
                 .map(|e| (e.text, e.locked))
                 .collect()

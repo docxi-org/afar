@@ -152,3 +152,6 @@ ac-source-programs = Программы из PATH:
 ac-use-always = всегда
 ac-use-ctrl-space = только по Ctrl+Space
 ac-use-never = никогда
+history-filter = фильтр: { $filter }
+history-passive-panel = Пассивная панель
+history-folders = Папки

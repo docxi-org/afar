@@ -151,3 +151,6 @@ ac-source-programs = Programs on PATH:
 ac-use-always = always
 ac-use-ctrl-space = only on Ctrl+Space
 ac-use-never = never
+history-filter = filter: { $filter }
+history-passive-panel = Passive panel
+history-folders = Folders

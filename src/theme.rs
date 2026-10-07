@@ -87,6 +87,8 @@ pub const COMBO_SELECTED: Style = c(con::WHITE, con::BLACK);
 pub const COMBO_HIGHLIGHT: Style = c(con::YELLOW, con::CYAN);
 pub const COMBO_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::BLACK);
 pub const COMBO_BOX: Style = c(con::WHITE, con::CYAN);
+/// A history entry whose path does not exist now.
+pub const COMBO_DISABLED: Style = c(con::DARKGRAY, con::CYAN);
 pub const WARN_HIGHLIGHT: Style = c(con::YELLOW, con::RED);
 pub const WARN_BUTTON_SELECTED_HIGHLIGHT: Style = c(con::YELLOW, con::LIGHTGRAY);
 pub const WARN_DISABLED: Style = c(con::DARKGRAY, con::RED);

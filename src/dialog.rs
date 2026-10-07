@@ -159,8 +159,99 @@ struct OpenList {
     current: usize,
     /// First item shown (the list scrolls).
     top: usize,
-    /// A field's history: texts and whether they are locked.
-    history: Option<Vec<(String, bool)>>,
+    /// A field's history.
+    history: Option<HistoryView>,
+}
+
+/// A line of a field's history list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HistLine {
+    Entry {
+        text: String,
+        locked: bool,
+        /// Made by the agent (marked in the list).
+        agent: bool,
+        /// A path that does not exist now (greyed).
+        missing: bool,
+        /// When and where, shown on the right.
+        detail: String,
+    },
+    /// A group's title: another source (the passive panel, folders).
+    Title(String),
+}
+
+/// History lines as shown, with the characters the filter matched.
+type ShownLines = Vec<(HistLine, Vec<usize>)>;
+
+/// A history list as shown: the lines, the filter typed in the list, and
+/// the lines it lets through with the matched characters.
+struct HistoryView {
+    lines: Vec<HistLine>,
+    filter: String,
+    shown: Vec<(usize, Vec<usize>)>,
+}
+
+impl HistoryView {
+    fn new(lines: Vec<HistLine>, filter: String) -> Self {
+        let mut v = Self {
+            lines,
+            filter,
+            shown: Vec::new(),
+        };
+        v.apply();
+        v
+    }
+
+    /// Without a filter: everything; with one — the entries matching it
+    /// (characters in order, anywhere), the closest matches first.
+    fn apply(&mut self) {
+        if self.filter.is_empty() {
+            self.shown = (0..self.lines.len()).map(|i| (i, Vec::new())).collect();
+            return;
+        }
+        let mut found: Vec<(usize, usize, Vec<usize>)> = self
+            .lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| match l {
+                HistLine::Entry { text, .. } => {
+                    fuzzy(text, &self.filter).map(|(score, marks)| (score, i, marks))
+                }
+                HistLine::Title(_) => None,
+            })
+            .collect();
+        found.sort_by_key(|(score, i, _)| (*score, *i));
+        self.shown = found.into_iter().map(|(_, i, m)| (i, m)).collect();
+    }
+
+    fn entry(&self, k: usize) -> Option<(String, bool)> {
+        match &self.lines[self.shown.get(k)?.0] {
+            HistLine::Entry { text, locked, .. } => Some((text.clone(), *locked)),
+            HistLine::Title(_) => None,
+        }
+    }
+
+    fn first_entry(&self) -> usize {
+        (0..self.shown.len())
+            .find(|k| self.entry(*k).is_some())
+            .unwrap_or(0)
+    }
+}
+
+/// `pattern`'s characters in `text` in order (case-insensitive): a score
+/// (lower is closer: an early start, few gaps) and the matched positions.
+fn fuzzy(text: &str, pattern: &str) -> Option<(usize, Vec<usize>)> {
+    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    let mut marks = Vec::new();
+    let mut from = 0;
+    for pc in pattern.chars().flat_map(char::to_lowercase) {
+        let i = (from..t.len()).find(|&i| t[i] == pc)?;
+        marks.push(i);
+        from = i + 1;
+    }
+    let first = *marks.first().unwrap_or(&0);
+    let gaps: usize = marks.windows(2).map(|w| w[1] - w[0] - 1).sum();
+    Some((first + gaps * 2, marks))
 }
 
 /// Far's combo and history lists show at most this many items.
@@ -615,46 +706,43 @@ impl Dialog {
         }
     }
 
-    /// Opens the focused field's history list with `entries` (texts and
-    /// locks, in the list's order); nothing to show — nothing opens.
-    pub fn show_history(&mut self, entries: Vec<(String, bool)>) {
+    /// Opens the focused field's history list with `lines` (in the
+    /// list's order); nothing to show — nothing opens.
+    pub fn show_history(&mut self, lines: Vec<HistLine>) {
         let Some((r, e, _)) = self.focused_history() else {
             return;
         };
-        if entries.is_empty() {
+        if !lines.iter().any(|l| matches!(l, HistLine::Entry { .. })) {
             return;
         }
+        let view = HistoryView::new(lines, String::new());
         self.list = Some(OpenList {
             row: r,
             elem: e,
-            current: 0,
+            current: view.first_entry(),
             top: 0,
-            history: Some(entries),
+            history: Some(view),
         });
     }
 
-    /// The open history list after a change (lock, delete): the cursor
-    /// stays where it was.
-    pub fn refresh_history(&mut self, entries: Vec<(String, bool)>) {
+    /// The open history list after a change (lock, delete): the filter
+    /// stays, the cursor follows its entry (a locked one moves up) or
+    /// stays at its row when the entry is gone.
+    pub fn refresh_history(&mut self, lines: Vec<HistLine>) {
         let Some(list) = &mut self.list else { return };
-        if list.history.is_none() {
-            return;
-        }
-        if entries.is_empty() {
+        let Some(old) = &list.history else { return };
+        let text = old.entry(list.current).map(|(t, _)| t);
+        let view = HistoryView::new(lines, old.filter.clone());
+        if view.shown.is_empty() && view.filter.is_empty() {
             self.list = None;
             return;
         }
-        // The cursor follows its entry (a locked one moves to the top),
-        // or stays at its row when the entry is gone.
-        let text = list
-            .history
-            .as_ref()
-            .and_then(|h| h.get(list.current))
-            .map(|(t, _)| t.clone());
         list.current = text
-            .and_then(|t| entries.iter().position(|(e, _)| *e == t))
-            .unwrap_or(list.current.min(entries.len() - 1));
-        list.history = Some(entries);
+            .and_then(|t| {
+                (0..view.shown.len()).find(|k| view.entry(*k).is_some_and(|(e, _)| e == t))
+            })
+            .unwrap_or(list.current.min(view.shown.len().saturating_sub(1)));
+        list.history = Some(view);
     }
 
     /// The focused input field, for autocompletion: its text, history
@@ -1155,8 +1243,12 @@ impl Dialog {
 
     fn list_items(&self) -> Option<Vec<Option<String>>> {
         let list = self.list.as_ref()?;
-        if let Some(history) = &list.history {
-            return Some(history.iter().map(|(t, _)| Some(t.clone())).collect());
+        if let Some(view) = &list.history {
+            return Some(
+                (0..view.shown.len())
+                    .map(|k| view.entry(k).map(|(t, _)| t))
+                    .collect(),
+            );
         }
         match &self.elem(list.row, list.elem)?.kind {
             Kind::Combo { items, .. } => Some(items.clone()),
@@ -1170,8 +1262,8 @@ impl Dialog {
             .list
             .as_ref()
             .and_then(|l| l.history.as_ref())
-            .and_then(|h| h.get(index))
-            .map(|(t, _)| t.clone())
+            .and_then(|h| h.entry(index))
+            .map(|(t, _)| t)
         {
             self.list = None;
             self.set_focused_input(&text);
@@ -1205,8 +1297,12 @@ impl Dialog {
             from
         };
         // The history list's own keys (Far's history menu).
-        let history = self.list.as_ref().and_then(|l| l.history.clone());
-        if let Some(entries) = &history {
+        let history = self
+            .list
+            .as_ref()
+            .and_then(|l| l.history.as_ref())
+            .map(|v| (v.entry(current), v.shown.len()));
+        if let Some((entry, count)) = history {
             let list = match &self.elem(r, e).map(|e| &e.kind) {
                 Some(Kind::Input {
                     history: Some(l), ..
@@ -1215,7 +1311,31 @@ impl Dialog {
             };
             let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            let (text, locked) = entries.get(current).cloned().unwrap_or_default();
+            let (text, locked) = entry.unwrap_or_default();
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            // Typing filters the list; Backspace takes a character back.
+            let filter_edit = match key.code {
+                KeyCode::Char(c) if !(ctrl ^ alt) => Some(Some(c)),
+                KeyCode::Backspace => Some(None),
+                _ => None,
+            };
+            if let Some(edit) = filter_edit {
+                if let Some(view) = self.list.as_mut().and_then(|l| l.history.as_mut()) {
+                    match edit {
+                        Some(c) => view.filter.push(c),
+                        None => {
+                            view.filter.pop();
+                        }
+                    }
+                    view.apply();
+                    let first = view.first_entry();
+                    if let Some(l) = &mut self.list {
+                        l.current = first;
+                        l.top = 0;
+                    }
+                }
+                return Outcome::Pending;
+            }
             match key.code {
                 KeyCode::Tab => {
                     self.choose(r, e, current);
@@ -1240,7 +1360,7 @@ impl Dialog {
                     return Outcome::Pending;
                 }
                 KeyCode::PageUp | KeyCode::PageDown => {
-                    let n = entries.len();
+                    let n = count.max(1);
                     let moved = if key.code == KeyCode::PageUp {
                         current.saturating_sub(LIST_ROWS - 1)
                     } else {
@@ -1251,8 +1371,6 @@ impl Dialog {
                     }
                     return Outcome::Pending;
                 }
-                // No hotkeys in a history.
-                KeyCode::Char(_) => return Outcome::Pending,
                 _ => {}
             }
         }
@@ -1726,11 +1844,16 @@ impl Dialog {
             return false;
         };
         let (r, e, current, top) = (list.row, list.elem, list.current, list.top);
-        let locks: Vec<bool> = list
-            .history
-            .as_ref()
-            .map(|h| h.iter().map(|(_, l)| *l).collect())
-            .unwrap_or_default();
+        // A history's lines as shown (marks, details, titles, filter).
+        let view: Option<(ShownLines, String)> = list.history.as_ref().map(|v| {
+            (
+                v.shown
+                    .iter()
+                    .map(|(i, m)| (v.lines[*i].clone(), m.clone()))
+                    .collect(),
+                v.filter.clone(),
+            )
+        });
         // A combo's list is as wide as the combo; a history's, as the field
         // and the arrow, but at least 21 (Far).
         let (fx, list_w) = match self.elem(r, e) {
@@ -1803,15 +1926,23 @@ impl Dialog {
             if y + 1 >= rect.bottom() {
                 break;
             }
-            match item {
-                None => {
+            let line = view.as_ref().and_then(|(lines, _)| lines.get(k));
+            match (item, line) {
+                (None, _) => {
                     buf[(rect.left(), y)].set_symbol("├");
                     buf[(rect.right() - 1, y)].set_symbol("┤");
                     for xx in rect.left() + 1..rect.right() - 1 {
                         buf[(xx, y)].set_symbol("─");
                     }
+                    // A group's title in the middle of the separator.
+                    if let Some((HistLine::Title(title), _)) = line {
+                        let t = format!(" {title} ");
+                        let w = (t.chars().count() as u16).min(inner);
+                        let x = rect.x + 1 + (inner - w) / 2;
+                        buf.set_stringn(x, y, &t, usize::from(w), theme::COMBO_TEXT);
+                    }
                 }
-                Some(text) => {
+                (Some(text), None) => {
                     let (style, hot) = if k == current {
                         (theme::COMBO_SELECTED, theme::COMBO_SELECTED_HIGHLIGHT)
                     } else {
@@ -1820,25 +1951,78 @@ impl Dialog {
                     for xx in rect.left() + 1..rect.right() - 1 {
                         buf[(xx, y)].set_symbol(" ").set_style(style);
                     }
-                    if locks.get(k).copied().unwrap_or(false) {
-                        buf[(rect.x + 1, y)].set_symbol("√");
+                    put_label(
+                        buf,
+                        rect.x + 2,
+                        y,
+                        inner.saturating_sub(1),
+                        text,
+                        style,
+                        hot,
+                    );
+                }
+                (Some(_), Some((entry, marks))) => {
+                    let HistLine::Entry {
+                        text,
+                        locked,
+                        agent,
+                        missing,
+                        detail,
+                    } = entry
+                    else {
+                        continue;
+                    };
+                    let selected = k == current;
+                    let (style, hot) = match (selected, missing) {
+                        (true, _) => (theme::COMBO_SELECTED, theme::COMBO_SELECTED_HIGHLIGHT),
+                        (false, true) => (theme::COMBO_DISABLED, theme::COMBO_HIGHLIGHT),
+                        (false, false) => (theme::COMBO_TEXT, theme::COMBO_HIGHLIGHT),
+                    };
+                    for xx in rect.left() + 1..rect.right() - 1 {
+                        buf[(xx, y)].set_symbol(" ").set_style(style);
                     }
-                    if locks.is_empty() {
-                        put_label(
-                            buf,
-                            rect.x + 2,
-                            y,
-                            inner.saturating_sub(1),
-                            text,
-                            style,
-                            hot,
-                        );
+                    // Marks: locked, made by the agent.
+                    if *locked {
+                        buf[(rect.x + 1, y)].set_symbol("√");
+                    } else if *agent {
+                        buf[(rect.x + 1, y)].set_symbol("•");
+                    }
+                    // The detail on the right, when there is room.
+                    let room = usize::from(inner.saturating_sub(2));
+                    let dw = detail.chars().count();
+                    let text_room = if dw > 0 && room > dw + 12 {
+                        let dx = rect.right() - 2 - dw as u16;
+                        buf.set_stringn(dx, y, detail, dw, style);
+                        room - dw - 1
                     } else {
-                        // History texts are shown as they are (no hotkeys).
-                        put_plain(buf, rect.x + 2, y, inner.saturating_sub(1), text, style);
+                        room
+                    };
+                    // The text with the filter's characters highlighted.
+                    for (i, ch) in text.chars().enumerate().take(text_room) {
+                        let st = if marks.contains(&i) { hot } else { style };
+                        buf[(rect.x + 2 + i as u16, y)]
+                            .set_symbol(&ch.to_string())
+                            .set_style(st);
                     }
                 }
             }
+        }
+        // The filter typed in the list, on its bottom frame.
+        if let Some((_, filter)) = &view
+            && !filter.is_empty()
+        {
+            let t = format!(
+                " {} ",
+                crate::tr!("history-filter", filter = filter.clone())
+            );
+            let w = (t.chars().count() as u16).min(inner);
+            buf.set_stringn(
+                rect.x + 1,
+                rect.bottom() - 1,
+                &t,
+                usize::from(w),
+                theme::COMBO_TEXT,
+            );
         }
         // A scroll bar on the right frame when not all items fit.
         if items.len() > shown && shown >= 2 {

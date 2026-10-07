@@ -962,14 +962,21 @@ impl App {
     // ------------------------------------------------------------- commands
 
     fn execute(&mut self, text: String) {
+        // A blank in front: not kept in the history (bash's ignorespace).
+        let private = text.starts_with(' ') && self.config.history.skip_leading_space;
         let text = text.trim().to_string();
         if text.is_empty() {
             return;
         }
-        self.cmd_history.add(&text);
-        let folder = self.panels[self.active].path.display().to_string();
-        self.store
-            .add(crate::history::Kind::Command, "", &text, &folder, "user");
+        if !private && self.config.history.commands {
+            // This session recalls the command as typed; the database keeps
+            // it without secrets.
+            self.cmd_history.add(&text);
+            let folder = self.panels[self.active].path.display().to_string();
+            let kept = self.history_text(&text);
+            self.store
+                .add(crate::history::Kind::Command, "", &kept, &folder, "user");
+        }
         // Built-ins handled by afar itself, like Far does.
         let lower = text.to_lowercase();
         if lower == "cd"
@@ -1116,6 +1123,18 @@ impl App {
             rec.duration_ms = duration_ms;
             rec.lines = output.len();
         }
+        // The command's result in its history entry (docs/15, improvement 3).
+        if let Some(text) = self
+            .commands
+            .iter()
+            .find(|c| c.id == run.id)
+            .map(|c| c.text.clone())
+        {
+            let kept = self.history_text(&text);
+            let data = serde_json::json!({ "exit": exit_code, "ms": duration_ms }).to_string();
+            self.store
+                .set_data(crate::history::Kind::Command, "", &kept, &data);
+        }
         self.journal.push(
             Actor::User,
             Event::CommandFinished {
@@ -1158,6 +1177,14 @@ impl App {
             self.drive_paths.insert(letter, from.clone());
         }
         let to = self.panels[side].path.clone();
+        // The folders history: a source for path fields (later Alt+F12).
+        let who = match actor {
+            Actor::Agent => "agent",
+            _ => "user",
+        };
+        let folder = to.display().to_string();
+        self.store
+            .add(crate::history::Kind::Folder, "", &folder, &folder, who);
         self.journal.push(
             actor,
             Event::DirChanged {

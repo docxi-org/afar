@@ -92,3 +92,11 @@ history = "always"        # история поля или команд
 files = "always"          # файлы и папки
 variables = "always"      # %ПЕРЕМЕННЫЕ%
 programs = "always"       # программы из PATH (командная строка)
+
+[history]
+dialogs = true            # история полей диалогов
+commands = true           # история команд
+skip_leading_space = true # команда с пробелом в начале не запоминается
+redact_secrets = true     # пароли, токены, ключи — как *** в истории
+order = "frecency"        # "frecency" — по частоте и свежести, выше записи этой папки; "recent" — новые сверху (как в Far)
+agent_entries = "marked"  # записи агента: "marked" — помечены и ниже ваших; "mixed" — наравне

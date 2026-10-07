@@ -1646,13 +1646,7 @@ impl App {
     pub(super) fn dialog_history(&mut self, request: crate::dialog::HistoryRequest) {
         use crate::dialog::HistoryRequest as R;
         use crate::history::Kind;
-        let entries = |store: &crate::history::History, list: &str| -> Vec<(String, bool)> {
-            store
-                .list(Kind::Dialog, list)
-                .into_iter()
-                .map(|e| (e.text, e.locked))
-                .collect()
-        };
+
         let refresh = match &request {
             R::Lock { list, text, locked } => {
                 self.store.set_locked(Kind::Dialog, list, text, *locked);
@@ -1666,7 +1660,7 @@ impl App {
         };
         match request {
             R::Open { list } => {
-                let items = entries(&self.store, &list);
+                let items = self.history_lines(&list);
                 if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
                     dialog.show_history(items);
                 }
@@ -1700,10 +1694,88 @@ impl App {
             R::Lock { .. } | R::Delete { .. } => {}
         }
         if let Some(list) = refresh {
-            let items = entries(&self.store, &list);
+            let items = self.history_lines(&list);
             if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
                 dialog.refresh_history(items);
             }
+        }
+    }
+
+    /// The focused field's history list (docs/15): its entries in the
+    /// set order, with when / where, the agent's marked, missing paths
+    /// grey; a path field also offers the passive panel and the folders the
+    /// panels went to.
+    fn history_lines(&mut self, list: &str) -> Vec<crate::dialog::HistLine> {
+        use crate::dialog::HistLine;
+        use crate::history::Kind;
+        let path_field = match self.overlays.last_mut() {
+            Some(Overlay::Dialog { dialog, .. }) => dialog.focused_field().is_some_and(|f| f.path),
+            _ => false,
+        };
+        let order = self.history_order();
+        let base = self.panels[self.active].path.clone();
+        let line = |e: &crate::history::Entry, missing_check: bool| HistLine::Entry {
+            text: e.text.clone(),
+            locked: e.locked,
+            agent: e.actor == "agent",
+            missing: missing_check && path_missing(&e.text, &base),
+            detail: entry_detail(e.last_used, &e.folder),
+        };
+        let mut lines: Vec<HistLine> = self
+            .store
+            .ordered(Kind::Dialog, list, &order)
+            .iter()
+            .map(|e| line(e, path_field))
+            .collect();
+        if path_field {
+            let shown = |lines: &[HistLine], t: &str| {
+                lines.iter().any(
+                    |l| matches!(l, HistLine::Entry { text, .. } if text.eq_ignore_ascii_case(t)),
+                )
+            };
+            let passive = self.panels[1 - self.active].path.display().to_string();
+            if !shown(&lines, &passive) {
+                lines.push(HistLine::Title(tr!("history-passive-panel")));
+                lines.push(HistLine::Entry {
+                    text: passive,
+                    locked: false,
+                    agent: false,
+                    missing: false,
+                    detail: String::new(),
+                });
+            }
+            let folders: Vec<HistLine> = self
+                .store
+                .ordered(Kind::Folder, "", &order)
+                .iter()
+                .filter(|e| !shown(&lines, &e.text))
+                .take(15)
+                .map(|e| line(e, true))
+                .collect();
+            if !folders.is_empty() {
+                lines.push(HistLine::Title(tr!("history-folders")));
+                lines.extend(folders);
+            }
+        }
+        lines
+    }
+
+    /// The order of history lists by the settings, for the active panel's
+    /// folder.
+    pub(super) fn history_order(&self) -> crate::history::Order {
+        crate::history::Order {
+            frecency: self.config.history.order == crate::config::HistoryOrder::Frecency,
+            folder: self.panels[self.active].path.display().to_string(),
+            agent_last: self.config.history.agent_entries == crate::config::AgentEntries::Marked,
+        }
+    }
+
+    /// The text to keep in a history: secrets replaced (by the setting).
+    pub(super) fn history_text(&self, text: &str) -> String {
+        if self.config.history.redact_secrets {
+            crate::history::redact(text)
+        } else {
+            text.to_string()
         }
     }
 
@@ -1718,14 +1790,18 @@ impl App {
         {
             return;
         }
+        if !self.config.history.dialogs {
+            return;
+        }
         let folder = self.panels[self.active].path.display().to_string();
         let actor = match actor {
             Actor::Agent => "agent",
             _ => "user",
         };
         for (list, value) in dialog.history_values() {
+            let kept = self.history_text(&value);
             self.store
-                .add(crate::history::Kind::Dialog, &list, &value, &folder, actor);
+                .add(crate::history::Kind::Dialog, &list, &kept, &folder, actor);
         }
     }
 
@@ -1737,10 +1813,57 @@ impl App {
                 && !dialog.history_filled()
             {
                 let store = &self.store;
-                dialog.fill_last(|list| store.last(crate::history::Kind::Dialog, list));
+                // The agent's entries do not fill fields (unless mixed).
+                let users_only =
+                    self.config.history.agent_entries == crate::config::AgentEntries::Marked;
+                dialog.fill_last(|list| {
+                    if users_only {
+                        store.last_by_user(crate::history::Kind::Dialog, list)
+                    } else {
+                        store.last(crate::history::Kind::Dialog, list)
+                    }
+                });
             }
         }
     }
+}
+
+/// "07.10 14:32 · far": when an entry was last used and in which folder.
+fn entry_detail(last_used_ms: i64, folder: &str) -> String {
+    use chrono::TimeZone;
+    let time = chrono::Local
+        .timestamp_millis_opt(last_used_ms)
+        .single()
+        .map(|t| t.format("%d.%m %H:%M").to_string())
+        .unwrap_or_default();
+    let place: String = std::path::Path::new(folder)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| folder.to_string())
+        .chars()
+        .take(16)
+        .collect();
+    if place.is_empty() {
+        time
+    } else {
+        format!("{time} · {place}")
+    }
+}
+
+/// A path entry that does not exist now (relative to `base`); network
+/// paths are not checked (they can hang).
+fn path_missing(text: &str, base: &Path) -> bool {
+    let t = text.trim().trim_matches('"');
+    if t.is_empty() || t.starts_with("\\\\") || t.contains(';') {
+        return false;
+    }
+    let p = Path::new(t);
+    let full = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    };
+    !full.exists()
 }
 
 #[cfg(test)]

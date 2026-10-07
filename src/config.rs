@@ -17,6 +17,56 @@ pub struct Config {
     pub agent: Agent,
     pub viewer: Viewer,
     pub autocomplete: Autocomplete,
+    pub history: History,
+}
+
+/// How a history list is ordered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryOrder {
+    /// By how often and how lately, more weight in the current folder.
+    #[default]
+    Frecency,
+    /// The newest first (Far).
+    Recent,
+}
+
+/// What to do with the entries the agent made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEntries {
+    /// Marked, after the user's, never put into an empty field.
+    #[default]
+    Marked,
+    /// Like the user's.
+    Mixed,
+}
+
+/// Histories (docs/15).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct History {
+    pub dialogs: bool,
+    pub commands: bool,
+    /// A command starting with a blank is not kept (bash's ignorespace).
+    pub skip_leading_space: bool,
+    /// Passwords, tokens and keys become `***` in the history.
+    pub redact_secrets: bool,
+    pub order: HistoryOrder,
+    pub agent_entries: AgentEntries,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            dialogs: true,
+            commands: true,
+            skip_leading_space: true,
+            redact_secrets: true,
+            order: HistoryOrder::Frecency,
+            agent_entries: AgentEntries::Marked,
+        }
+    }
 }
 
 /// When a completion source is used (Far's three states).

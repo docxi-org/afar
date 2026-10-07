@@ -92,3 +92,11 @@ history = "always"        # the field's or the commands' history
 files = "always"          # files and folders
 variables = "always"      # %VARIABLES%
 programs = "always"       # programs on PATH (the command line)
+
+[history]
+dialogs = true            # history of dialogs' fields
+commands = true           # history of commands
+skip_leading_space = true # a command starting with a blank is not kept
+redact_secrets = true     # passwords, tokens, keys become *** in the history
+order = "frecency"        # "frecency": by how often and how lately, this folder's first; "recent": the newest first (Far)
+agent_entries = "marked"  # the agent's entries: "marked" (marked, after yours) or "mixed"
