@@ -137,6 +137,9 @@ pub fn draw_rows_links(
             let mut modifier = cell.modifier;
             if show_links && cell.link {
                 modifier |= Modifier::UNDERLINED;
+                if cell.fg == Color::Reset && !cell.inverse {
+                    fg = crate::theme::LINK_FG;
+                }
             }
             target.set_style(Style::default().fg(fg).bg(bg).add_modifier(modifier));
         }

@@ -184,3 +184,4 @@ link-failed = Не удалось открыть ссылку: { $error }
 link-unsupported = afar не открывает такие ссылки: { $uri }
 note-from-agent = Агент
 note-from-command = Команда
+link-tooltip = { $uri } · Ctrl+щелчок — открыть

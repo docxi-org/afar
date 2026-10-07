@@ -183,3 +183,4 @@ link-failed = Cannot open the link: { $error }
 link-unsupported = afar does not open such links: { $uri }
 note-from-agent = Agent
 note-from-command = Command
+link-tooltip = { $uri } · Ctrl+click opens

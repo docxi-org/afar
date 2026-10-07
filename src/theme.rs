@@ -112,6 +112,11 @@ pub const COMMAND_LINE: Style = Style::new().fg(Color::Reset).bg(Color::Reset);
 /// The ghost suggestion after the typed text (afar's).
 pub const GHOST_COMMAND_LINE: Style = Style::new().fg(con::DARKGRAY).bg(Color::Reset);
 pub const GHOST_EDIT: Style = c(con::DARKGRAY, con::CYAN);
+/// Hyperlinks in program output (docs/16): this color where the program
+/// left the default one; underlined in any case.
+pub const LINK_FG: Color = con::LIGHTBLUE;
+/// The address of the link under the mouse.
+pub const LINK_TOOLTIP: Style = c(con::BLACK, con::CYAN);
 /// afar's status messages (Far shows them as dialogs): like the clock.
 pub const MESSAGE: Style = c(con::BLACK, con::CYAN);
 

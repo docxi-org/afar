@@ -207,6 +207,9 @@ pub struct App {
     last_live: Rect,
     /// A Ctrl+click opened a link: its release is not passed on.
     link_pressed: bool,
+    /// The link the mouse is over and where: its address is shown next to
+    /// the mouse.
+    hovered_link: Option<(String, u16, u16)>,
     /// Where the user screen last drew the kept lines, and the first one's
     /// index in history + captured output.
     user_lines: (Rect, usize),
@@ -345,6 +348,7 @@ impl App {
             last_layout: None,
             last_live: Rect::default(),
             link_pressed: false,
+            hovered_link: None,
             user_lines: (Rect::default(), 0),
             outer: Default::default(),
             window_focused: true,
@@ -1302,6 +1306,8 @@ impl App {
     // --------------------------------------------------------------- keys
 
     fn on_key(&mut self, key: KeyEvent) {
+        // A key takes the link's tooltip away (the text may move).
+        self.hovered_link = None;
         if std::env::var_os("AFAR_DEBUG_KEYS").is_some() {
             use std::io::Write as _;
             if let Ok(mut f) = std::fs::File::options()
@@ -1899,6 +1905,11 @@ impl App {
             return;
         }
 
+        // A link under the mouse: its address in the message line.
+        if ev.kind == MouseEventKind::Moved && !self.has_overlay() {
+            self.hover_link(&ev, &l);
+        }
+
         // Menus and dialogs take the mouse everywhere, the agent pane
         // included: a click over it must not move the focus there.
         if self.has_overlay() {
@@ -2352,7 +2363,6 @@ impl App {
         // Only the frame is blue: inside, the program keeps the terminal's
         // own colors.
         buf.set_style(l.agent, Style::reset());
-        let show_links = self.held.contains(KeyModifiers::CONTROL);
         if let Some(agent) = &self.agent.pty {
             let c = termview::draw_rows_links(
                 &crate::term::view(&agent.parser()),
@@ -2360,7 +2370,7 @@ impl App {
                 l.agent,
                 buf,
                 Style::reset(),
-                show_links,
+                true,
             );
             if agent_focused {
                 cursor = c;
@@ -2452,6 +2462,7 @@ impl App {
             .chars()
             .count() as u16;
         self.draw_completion(area, l.cmdline, prompt, buf);
+        self.draw_link_tooltip(area, buf);
         cursor
     }
 
@@ -2484,7 +2495,7 @@ impl App {
                     live,
                     buf,
                     Style::reset(),
-                    self.held.contains(KeyModifiers::CONTROL),
+                    true,
                 );
                 self.history.iter().chain(run.captured.iter()).collect()
             }
@@ -2493,7 +2504,6 @@ impl App {
         let rows = (area.height - live_rows) as usize;
         let start = text.len().saturating_sub(rows);
         let first_y = area.bottom() - live_rows - (text.len() - start) as u16;
-        let show_links = self.held.contains(KeyModifiers::CONTROL);
         for (i, line) in text[start..].iter().enumerate() {
             let y = first_y + i as u16;
             buf.set_stringn(
@@ -2503,11 +2513,13 @@ impl App {
                 area.width as usize,
                 theme::COMMAND_LINE,
             );
-            // While Ctrl is held, links are underlined (Ctrl+click opens).
-            if show_links && !line.links.is_empty() {
+            // Links are underlined and colored (Ctrl+click opens them).
+            if !line.links.is_empty() {
                 for x in 0..area.width {
                     if line.link_at_column(usize::from(x)).is_some() {
-                        buf[(area.x + x, y)].modifier |= ratatui::style::Modifier::UNDERLINED;
+                        let cell = &mut buf[(area.x + x, y)];
+                        cell.modifier |= ratatui::style::Modifier::UNDERLINED;
+                        cell.fg = theme::LINK_FG;
                     }
                 }
             }
