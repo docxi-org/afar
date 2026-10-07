@@ -111,7 +111,7 @@ fn files_menu() -> Vec<Entry> {
         ("MMenuExtract", Some("Shift+F2"), None),
         ("MMenuArchiveCommands", Some("Shift+F3"), None),
         SEP,
-        ("MMenuAttributes", Some("Ctrl+A"), None),
+        ("MMenuAttributes", Some("Ctrl+A"), Some(Run(Attributes))),
         ("MMenuApplyCommand", Some("Ctrl+G"), None),
         ("MMenuDescribe", Some("Ctrl+Z"), None),
         SEP,
@@ -138,7 +138,7 @@ fn commands_menu() -> Vec<Entry> {
     use Command::*;
     use MainAction::Run;
     vec![
-        ("MMenuFindFile", Some("Alt+F7"), None),
+        ("MMenuFindFile", Some("Alt+F7"), Some(Run(FindFile))),
         ("MMenuHistory", Some("Alt+F8"), Some(Run(CommandHistory))),
         ("MMenuVideoMode", Some("Alt+F9"), None),
         ("MMenuFindFolder", Some("Alt+F10"), None),

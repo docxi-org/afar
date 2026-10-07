@@ -60,6 +60,8 @@ pub(super) enum Overlay {
     MenuBar(crate::menubar::MenuBar<super::mainmenu::MainAction>),
     /// F9 on the agent pane.
     AgentMenu(crate::menubar::MenuBar<super::agentmenu::AgentAction>),
+    /// Alt+F7's results.
+    Find(Box<super::findfiles::FindView>),
 }
 
 /// What a dialog was opened for, i.e. what to do when it closes.
@@ -128,6 +130,15 @@ pub(super) enum Purpose {
     },
     /// The agent menu's "Rename…" and "Other model…".
     AgentRename,
+    /// Alt+F7: what and where to look.
+    FindAsk,
+    /// Its "Advanced" options; the mask and text to come back with.
+    FindAdvanced {
+        mask: String,
+        text: String,
+    },
+    /// Ctrl+A: the attributes dialog and what it started from.
+    Attributes(Box<super::attributes::AttrState>),
     /// Del in a history menu (Alt+F8, Alt+F11, Alt+F12): "clear it?".
     HistoryMenuClear {
         which: super::historymenu::HistoryMenu,
@@ -402,6 +413,7 @@ impl App {
             Some(Overlay::Menu { .. }) => self.menu_key(key),
             Some(Overlay::MenuBar(_)) => self.menubar_key(key),
             Some(Overlay::AgentMenu(_)) => self.agent_menu_key(key),
+            Some(Overlay::Find(_)) => self.find_key(&key),
             None => {}
         }
     }
@@ -418,6 +430,10 @@ impl App {
         }
         if let Some(Overlay::AgentMenu(_)) = self.overlays.last() {
             self.agent_menu_mouse(ev);
+            return;
+        }
+        if let Some(Overlay::Find(_)) = self.overlays.last() {
+            self.find_mouse(ev);
             return;
         }
         if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
@@ -575,6 +591,11 @@ impl App {
                     let _ = reply.send(answer);
                 }
             }
+            Purpose::FindAsk => self.find_ask_closed(&dialog, button),
+            Purpose::FindAdvanced { mask, text } => {
+                self.find_advanced_closed(&dialog, button, mask, text)
+            }
+            Purpose::Attributes(state) => self.attributes_button(state, dialog, button),
             Purpose::HistoryMenuClear { which } => {
                 if button == Some(0) {
                     self.store.clear(which_kind(which), "");
@@ -660,6 +681,10 @@ impl App {
                 }
                 Overlay::AgentMenu(menubar) => {
                     menubar.draw(agent_bar, buf);
+                    None
+                }
+                Overlay::Find(v) => {
+                    super::findfiles::draw_find(v, area, buf);
                     None
                 }
             };

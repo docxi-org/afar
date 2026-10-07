@@ -202,6 +202,8 @@ impl App {
         self.remember(i);
         let v = self.viewers.remove(i);
         self.wm.remove_screen(ScreenId::Viewer(v.id));
+        // A viewer opened from Alt+F7's results: back to them.
+        self.find_unpark();
     }
 
     /// Saves the positions of all open viewers (on quit).

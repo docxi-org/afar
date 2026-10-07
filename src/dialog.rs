@@ -53,6 +53,9 @@ pub enum Kind {
         label: String,
         checked: bool,
         disabled: bool,
+        /// A three-state box (Far's BSTATE_3STATE): `Some(true)` — "?",
+        /// neither (several files that differ); `None` — two states.
+        mixed: Option<bool>,
     },
     Radio {
         label: String,
@@ -836,6 +839,31 @@ impl Dialog {
     }
 
     /// Text of the `n`-th input field.
+    /// Sets the `n`-th input field's text (the cursor at its end).
+    pub fn set_input_value(&mut self, n: usize, text: &str) {
+        let mut k = 0;
+        for row in &mut self.rows {
+            let Row::Items(elems) = row else { continue };
+            for e in elems {
+                if let Kind::Input {
+                    value,
+                    cursor,
+                    unchanged,
+                    ..
+                } = &mut e.kind
+                {
+                    if k == n {
+                        *value = text.to_string();
+                        *cursor = value.chars().count();
+                        *unchanged = false;
+                        return;
+                    }
+                    k += 1;
+                }
+            }
+        }
+    }
+
     pub fn input_value(&self, n: usize) -> String {
         self.kinds()
             .into_iter()
@@ -845,6 +873,20 @@ impl Dialog {
             })
             .nth(n)
             .unwrap_or_default()
+    }
+
+    /// The `n`-th check box: on, off, or `None` — "?" (three-state).
+    pub fn check_state(&self, n: usize) -> Option<bool> {
+        self.kinds()
+            .into_iter()
+            .filter_map(|k| match k {
+                Kind::Check { checked, mixed, .. } => {
+                    Some((mixed != &Some(true)).then_some(*checked))
+                }
+                _ => None,
+            })
+            .nth(n)
+            .flatten()
     }
 
     /// State of the `n`-th check box.
@@ -1083,11 +1125,11 @@ impl Dialog {
         if matches!(self.elem(r, e).map(|e| &e.kind), Some(Kind::Radio { .. })) {
             self.select_radio(r, e);
         } else if let Some(Elem {
-            kind: Kind::Check { checked, .. },
+            kind: Kind::Check { checked, mixed, .. },
             ..
         }) = self.elem_mut(r, e)
         {
-            *checked = !*checked;
+            toggle_check(checked, mixed);
         }
         Some(Outcome::Pending)
     }
@@ -1218,9 +1260,9 @@ impl Dialog {
             return;
         };
         match &mut elem.kind {
-            Kind::Check { checked, .. } => {
+            Kind::Check { checked, mixed, .. } => {
                 if key.code == KeyCode::Char(' ') {
-                    *checked = !*checked;
+                    toggle_check(checked, mixed);
                 }
             }
             Kind::Input {
@@ -1590,11 +1632,11 @@ impl Dialog {
                     Some(Kind::Combo { .. }) => self.open_list(r, e),
                     Some(Kind::Check { .. }) => {
                         if let Some(Elem {
-                            kind: Kind::Check { checked, .. },
+                            kind: Kind::Check { checked, mixed, .. },
                             ..
                         }) = self.elem_mut(r, e)
                         {
-                            *checked = !*checked;
+                            toggle_check(checked, mixed);
                         }
                     }
                     _ => {}
@@ -1840,6 +1882,7 @@ impl Dialog {
                 label,
                 checked,
                 disabled,
+                ..
             }
             | Kind::Radio {
                 label,
@@ -1848,7 +1891,15 @@ impl Dialog {
                 ..
             } => {
                 let radio = matches!(elem.kind, Kind::Radio { .. });
+                let unknown = matches!(
+                    elem.kind,
+                    Kind::Check {
+                        mixed: Some(true),
+                        ..
+                    }
+                );
                 let mark = match (radio, *checked) {
+                    _ if unknown => "[?] ",
                     (false, true) => "[x] ",
                     (false, false) => "[ ] ",
                     (true, true) => "(•) ",
@@ -2156,7 +2207,22 @@ pub fn check_at(x: u16, label: impl Into<String>, checked: bool) -> Elem {
             label: label.into(),
             checked,
             disabled: false,
+            mixed: None,
         },
+    }
+}
+
+/// Space or a click on a check box: a three-state one goes
+/// "?" → on → off → "?" (Far's order), a two-state one flips.
+fn toggle_check(checked: &mut bool, mixed: &mut Option<bool>) {
+    match mixed {
+        Some(true) => {
+            *mixed = Some(false);
+            *checked = true;
+        }
+        Some(false) if *checked => *checked = false,
+        Some(false) => *mixed = Some(true),
+        None => *checked = !*checked,
     }
 }
 
@@ -2186,6 +2252,14 @@ pub fn combo_at(x: u16, width: u16, items: Vec<Option<String>>, selected: usize)
 
 impl Elem {
     /// Greyed out and not focusable.
+    /// A three-state check box, showing "?" when `unknown`.
+    pub fn three_state(mut self, unknown: bool) -> Self {
+        if let Kind::Check { mixed, .. } = &mut self.kind {
+            *mixed = Some(unknown);
+        }
+        self
+    }
+
     pub fn disabled(mut self) -> Self {
         match &mut self.kind {
             Kind::Input { disabled, .. }

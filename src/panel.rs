@@ -129,6 +129,9 @@ pub struct FilePanel {
     /// Cells at the right of the top border taken by the clock: the title
     /// moves left of it.
     pub clock_cells: u16,
+    /// Found files shown instead of the folder (Far's temporary panel,
+    /// Alt+F7 → "Panel"): full paths, and the title.
+    pub list: Option<(Vec<PathBuf>, String)>,
     /// Geometry of the last drawing, for the mouse and paging.
     columns: Vec<Placed>,
     list_top: u16,
@@ -148,6 +151,7 @@ impl FilePanel {
             sort: Sort::default(),
             agent_marked: Default::default(),
             clock_cells: 0,
+            list: None,
             columns: Vec::new(),
             list_top: 0,
             rows: 1,
@@ -171,18 +175,30 @@ impl FilePanel {
             .collect();
         let mut entries = Vec::new();
         self.error = None;
-        match std::fs::read_dir(&self.path) {
-            Ok(rd) => {
-                for de in rd.flatten() {
-                    let link = de.file_type().is_ok_and(|t| t.is_symlink());
+        let listing: Result<Vec<(String, PathBuf)>, std::io::Error> = match &self.list {
+            // The found files: names are full paths.
+            Some((paths, _)) => Ok(paths
+                .iter()
+                .filter(|p| p.exists())
+                .map(|p| (p.display().to_string(), p.clone()))
+                .collect()),
+            None => std::fs::read_dir(&self.path).map(|rd| {
+                rd.flatten()
+                    .map(|de| (de.file_name().to_string_lossy().into_owned(), de.path()))
+                    .collect()
+            }),
+        };
+        match listing {
+            Ok(items) => {
+                for (name, path) in items {
+                    let own = std::fs::symlink_metadata(&path).ok();
+                    let link = own.as_ref().is_some_and(|m| m.file_type().is_symlink());
                     // A link's kind is what it points to.
                     let meta = if link {
-                        std::fs::metadata(de.path()).ok()
+                        std::fs::metadata(&path).ok()
                     } else {
-                        de.metadata().ok()
+                        own.clone()
                     };
-                    let own = de.metadata().ok();
-                    let name = de.file_name().to_string_lossy().into_owned();
                     let (hidden, system) = hidden_system(&name, own.as_ref());
                     entries.push(Entry {
                         hidden,
@@ -203,7 +219,7 @@ impl FilePanel {
             }
             Err(e) => self.error = Some(e.to_string()),
         }
-        if self.path.parent().is_some() {
+        if self.path.parent().is_some() || self.list.is_some() {
             entries.insert(
                 0,
                 Entry {
@@ -254,7 +270,24 @@ impl FilePanel {
     }
 
     /// Changes directory; returns the previous path on success.
+    /// Shows `paths` (found files) instead of the folder, under `title`.
+    pub fn show_list(&mut self, paths: Vec<PathBuf>, title: String) {
+        self.list = Some((paths, title));
+        self.cursor = 0;
+        self.top = 0;
+        self.reload(None);
+    }
+
+    /// Back from the found files to the folder.
+    pub fn leave_list(&mut self) {
+        self.list = None;
+        self.cursor = 0;
+        self.top = 0;
+        self.reload(None);
+    }
+
     pub fn change_dir(&mut self, path: &Path) -> Result<PathBuf, String> {
+        self.list = None;
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
         let path = strip_verbatim(path);
         if !path.is_dir() {
@@ -594,10 +627,11 @@ impl FilePanel {
 
         // Title: " path " with the middle cut, centred on the top border.
         let max = usize::from(area.width.saturating_sub(1)).saturating_sub(2);
-        let title = format!(
-            " {} ",
-            truncate_path(&self.path.display().to_string(), max.saturating_sub(2))
-        );
+        let shown = match &self.list {
+            Some((_, title)) => title.clone(),
+            None => self.path.display().to_string(),
+        };
+        let title = format!(" {} ", truncate_path(&shown, max.saturating_sub(2)));
         let len = title.chars().count() as u16;
         let mut tx = x0 + 1 + (area.width - 2).saturating_sub(len) / 2;
         if self.clock_cells > 0 {
@@ -692,8 +726,10 @@ impl FilePanel {
 /// for it; a name that does not fit is cut and `}` put in the separator.
 fn draw_name(buf: &mut Buffer, c: &Placed, y: u16, e: &Entry, align_ext: bool, style: Style) {
     let w = usize::from(c.width);
-    let split = (align_ext && !e.is_dir && !e.name.starts_with('.'))
-        .then(|| e.name.rsplit_once('.'))
+    // Found files (full paths): the name only; the status line has all.
+    let name = e.name.rsplit(['\\', '/']).next().unwrap_or(&e.name);
+    let split = (align_ext && !e.is_dir && !name.starts_with('.'))
+        .then(|| name.rsplit_once('.'))
         .flatten()
         .filter(|(_, ext)| !ext.is_empty() && !ext.contains(' '));
     let (text, long) = match split {
@@ -705,8 +741,8 @@ fn draw_name(buf: &mut Buffer, c: &Placed, y: u16, e: &Entry, align_ext: bool, s
             (format!("{stem:<stem_room$} {ext:>ext_w$}"), long)
         }
         None => {
-            let long = e.name.chars().count() > w;
-            (e.name.chars().take(w).collect(), long)
+            let long = name.chars().count() > w;
+            (name.chars().take(w).collect(), long)
         }
     };
     put(buf, c.x, y, c.width, &text, style);

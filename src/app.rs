@@ -28,11 +28,13 @@ use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
 mod agent;
 mod agentmenu;
+mod attributes;
 mod autocomplete;
 mod cmdline;
 mod commands;
 mod farimport;
 mod fileops;
+mod findfiles;
 mod fswatch;
 mod historymenu;
 mod ide;
@@ -43,6 +45,7 @@ mod panelcmds;
 mod paste;
 mod policy;
 mod quicksearch;
+mod quickview;
 mod settings;
 mod viewers;
 use crate::{keys, termview, theme, tr};
@@ -64,6 +67,12 @@ pub enum AppMsg {
     /// Folder sizes counted in the background (F3 on a folder): the
     /// panel's folder and (name, size) pairs.
     DirSizes(PathBuf, Vec<(String, u64)>),
+    /// Ctrl+A's "Set" finished: how many, what failed.
+    AttributesDone(usize, Vec<String>),
+    /// What the file search (Alt+F7) found or where it is.
+    Find(crate::find::Event),
+    /// The quick view's count of a folder (partial, then final).
+    QuickViewStats(PathBuf, quickview::DirStats),
 }
 
 /// The state to start from.
@@ -217,6 +226,13 @@ pub struct App {
     user_lines: (Rect, usize),
     /// What afar last told the outer terminal (title, progress).
     outer: outer::Outer,
+    /// Ctrl+Q: the quick view in place of a panel.
+    quick_view: Option<quickview::QuickView>,
+    /// Alt+F7: the dialog's options; the results window while a viewer
+    /// opened from it is shown; the last click in it.
+    find_options: findfiles::FindOptions,
+    find_parked: Option<Box<findfiles::FindView>>,
+    find_last_click: Option<Instant>,
     /// The terminal window has the focus (focus events, `?1004`).
     window_focused: bool,
     /// Last left click (time, panel, item) to detect double clicks.
@@ -353,6 +369,10 @@ impl App {
             hovered_link: None,
             user_lines: (Rect::default(), 0),
             outer: Default::default(),
+            quick_view: None,
+            find_options: Default::default(),
+            find_parked: None,
+            find_last_click: None,
             window_focused: true,
             last_click: None,
             keybar_pressed: None,
@@ -730,6 +750,9 @@ impl App {
             AppMsg::ViewerFound(done) => self.viewer_found(done),
             AppMsg::Ide(msg) => self.on_ide(msg),
             AppMsg::DirSizes(dir, sizes) => self.dir_sizes(&dir, sizes),
+            AppMsg::QuickViewStats(dir, stats) => self.quick_view_stats(dir, stats),
+            AppMsg::Find(e) => self.find_event(e),
+            AppMsg::AttributesDone(n, failed) => self.attributes_done(n, failed),
             AppMsg::CommandOutput => self.on_command_output(),
             AppMsg::Mcp(McpMsg {
                 request: Request::ChannelWait,
@@ -816,6 +839,15 @@ impl App {
             self.agent.refresh_name();
         }
         self.maybe_restart();
+    }
+
+    /// Lines a wheel notch moves: the setting, else Windows' (Far's
+    /// get_wheel_scroll_lines); a "page" setting counts as 3.
+    pub(super) fn wheel_lines(&self) -> i32 {
+        match self.config.panels.wheel_lines {
+            0 => windows_wheel_lines(),
+            n => n.min(100) as i32,
+        }
     }
 
     fn say(&mut self, text: impl Into<String>) {
@@ -1272,7 +1304,11 @@ impl App {
         let Some(e) = panel.current().cloned() else {
             return;
         };
-        if e.name == ".." {
+        if e.name == ".." && panel.list.is_some() {
+            // Out of the found files: back to the panel's folder.
+            let side = self.active;
+            self.panels[side].leave_list();
+        } else if e.name == ".." {
             if let Some(parent) = panel.path.parent().map(Path::to_path_buf) {
                 self.change_dir(self.active, &parent);
             }
@@ -1417,7 +1453,8 @@ impl App {
     fn panels_key(&mut self, key: KeyEvent) {
         // The command line's completion list takes keys first; an edit of
         // the line recomputes it.
-        if self.completion_key(autocomplete::Owner::Cmdline, &key)
+        if self.quick_view_key(&key)
+            || self.completion_key(autocomplete::Owner::Cmdline, &key)
             || self.ghost_key(autocomplete::Owner::Cmdline, &key)
         {
             return;
@@ -1895,6 +1932,7 @@ impl App {
             return;
         };
         let pos = Position::new(ev.column, ev.row);
+        let wheel = self.wheel_lines();
         // The completion list is over everything.
         if self.completion_mouse(&ev) {
             return;
@@ -2011,8 +2049,10 @@ impl App {
             // The program does not want the mouse: the wheel scrolls back.
             let offset = screen.scrollback();
             match ev.kind {
-                MouseEventKind::ScrollUp => screen.set_scrollback(offset + 3),
-                MouseEventKind::ScrollDown => screen.set_scrollback(offset.saturating_sub(3)),
+                MouseEventKind::ScrollUp => screen.set_scrollback(offset + wheel as usize),
+                MouseEventKind::ScrollDown => {
+                    screen.set_scrollback(offset.saturating_sub(wheel as usize))
+                }
                 _ => {}
             }
             return;
@@ -2055,8 +2095,8 @@ impl App {
         if let Some(i) = self.shown_viewer().filter(|_| !self.viewer_peek) {
             let v = &mut self.viewers[i];
             match ev.kind {
-                MouseEventKind::ScrollUp => v.scroll(-3),
-                MouseEventKind::ScrollDown => v.scroll(3),
+                MouseEventKind::ScrollUp => v.scroll(-wheel),
+                MouseEventKind::ScrollDown => v.scroll(wheel),
                 MouseEventKind::Down(MouseButton::Left) => {
                     let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
                     v.mouse_down(ev.column, ev.row, shift);
@@ -2152,8 +2192,10 @@ impl App {
                     MouseButton::Middle => {}
                 }
             }
-            MouseEventKind::ScrollUp => self.panels[side].move_cursor(-3),
-            MouseEventKind::ScrollDown => self.panels[side].move_cursor(3),
+            MouseEventKind::ScrollUp if self.quick_view_scroll(ev.column, ev.row, -wheel) => {}
+            MouseEventKind::ScrollDown if self.quick_view_scroll(ev.column, ev.row, wheel) => {}
+            MouseEventKind::ScrollUp => self.panels[side].move_cursor(-(wheel as isize)),
+            MouseEventKind::ScrollDown => self.panels[side].move_cursor(wheel as isize),
             _ => {}
         }
     }
@@ -2278,7 +2320,11 @@ impl App {
                 self.draw_user_screen(l.user, buf);
             }
             for side in 0..2 {
-                if !self.panel_hidden(side) {
+                if self.quick_view.as_ref().is_some_and(|q| q.side == side)
+                    && !self.panel_hidden(side)
+                {
+                    self.draw_quick_view(l.panels[side], buf);
+                } else if !self.panel_hidden(side) {
                     self.panels[side].draw(
                         l.panels[side],
                         buf,
@@ -2697,4 +2743,27 @@ fn quote(name: &str) -> String {
 
 fn char_to_byte(s: &str, chars: usize) -> usize {
     s.char_indices().nth(chars).map_or(s.len(), |(i, _)| i)
+}
+
+/// Windows' "lines per wheel notch" (SPI_GETWHEELSCROLLLINES); 3 when it
+/// cannot be read or is "a page".
+fn windows_wheel_lines() -> i32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETWHEELSCROLLLINES, SystemParametersInfoW,
+    };
+    let mut lines: u32 = 3;
+    // SAFETY: the out pointer is a valid u32.
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            (&mut lines as *mut u32).cast(),
+            0,
+        )
+    };
+    if ok == 0 || lines == 0 || lines > 100 {
+        3
+    } else {
+        lines as i32
+    }
 }

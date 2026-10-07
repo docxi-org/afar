@@ -122,6 +122,12 @@ fn literal_brackets(s: &str) -> String {
 
 /// What a menu was opened for.
 pub(super) enum MenuPurpose {
+    /// Alt+F7's "Drive": the drives' roots; the dialog's mask and text.
+    FindDrive {
+        roots: Vec<std::path::PathBuf>,
+        mask: String,
+        text: String,
+    },
     /// Alt+F8 / Alt+F11 / Alt+F12: the entries, and for each menu row the
     /// entry it shows (`None`: a date's separator).
     History {
@@ -293,8 +299,15 @@ impl App {
         let Some(Overlay::Menu { purpose, .. }) = self.overlays.pop() else {
             return;
         };
+        // Back to the find dialog, chosen or not.
+        if let MenuPurpose::FindDrive { roots, mask, text } = purpose {
+            let root = choice.and_then(|i| roots.get(i).cloned());
+            self.find_drive_chosen(root, &mask, &text);
+            return;
+        }
         let Some(i) = choice else { return };
         match purpose {
+            MenuPurpose::FindDrive { .. } => {}
             // A click on an entry: as Enter.
             MenuPurpose::History {
                 which,

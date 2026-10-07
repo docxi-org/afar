@@ -56,6 +56,12 @@ impl App {
             SplitterRight if cmdline_empty => self.move_splitter(wm::PANELS_SPLIT, 1),
             SplitterLeft | SplitterRight => return false,
             DevRestart => self.request_restart(),
+            // Tab to the quick view: the keys go to it.
+            NextPanel if self.quick_view.as_ref().is_some_and(|q| q.side == 1 - a) => {
+                if let Some(q) = &mut self.quick_view {
+                    q.focused = !q.focused;
+                }
+            }
             NextPanel => {
                 if !self.panel_hidden(1 - a) {
                     self.active = 1 - a;
@@ -197,6 +203,9 @@ impl App {
             | InsertPassivePath => self.insert_for(command),
             HistoryPrev => self.history_step(true),
             HistoryNext => self.history_step(false),
+            QuickView => self.toggle_quick_view(),
+            Attributes => self.attributes_dialog(),
+            FindFile => self.find_dialog("", ""),
             CommandHistory => self.history_menu(super::historymenu::HistoryMenu::Commands, None),
             ViewHistory => self.history_menu(super::historymenu::HistoryMenu::Views, None),
             FolderHistory => self.history_menu(super::historymenu::HistoryMenu::Folders, None),

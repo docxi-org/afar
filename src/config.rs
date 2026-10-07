@@ -211,6 +211,9 @@ pub struct General {
 pub struct Panels {
     /// Gray + and Gray * select folders too (Far's "Select folders").
     pub select_folders: bool,
+    /// Lines a mouse wheel notch moves in panels and lists; 0: as set in
+    /// Windows (Far's System.MsWheelDelta).
+    pub wheel_lines: u32,
 }
 
 /// Far's confirmations (Options → Confirmations).

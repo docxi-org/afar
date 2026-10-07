@@ -97,6 +97,12 @@ pub enum Command {
     InsertPassivePath,
     HistoryPrev,
     HistoryNext,
+    /// Ctrl+Q: the quick view on the passive panel.
+    QuickView,
+    /// Ctrl+A: the attributes and times of files.
+    Attributes,
+    /// Alt+F7: find files.
+    FindFile,
     // History menus.
     CommandHistory,
     ViewHistory,
@@ -295,6 +301,9 @@ pub const COMMANDS: &[Def] = &[
     def("cmdline.insert_active_path", InsertActivePath, &["Ctrl+Shift+["], true),
     def("cmdline.insert_passive_path", InsertPassivePath, &["Ctrl+Shift+]"], true),
     def("cmdline.history_prev", HistoryPrev, &["Ctrl+E"], true),
+    def("panel.quick_view", QuickView, &["Ctrl+Q"], false),
+    def("file.attributes", Attributes, &["Ctrl+A"], false),
+    def("file.find", FindFile, &["Alt+F7"], true),
     def("history.commands", CommandHistory, &["Alt+F8"], true),
     def("history.views", ViewHistory, &["Alt+F11"], true),
     def("history.folders", FolderHistory, &["Alt+F12"], true),
