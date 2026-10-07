@@ -512,3 +512,23 @@ MViewCtrlAltShiftF9
 MViewCtrlAltShiftF10
 MViewCtrlAltShiftF11
 MViewCtrlAltShiftF12
+
+# Viewer settings
+MViewConfigTitle
+MViewConfigExternalF3
+MViewConfigExternalCommand
+MViewConfigInternal
+MViewConfigPersistentSelection
+MViewConfigTabSize
+MViewConfigArrows
+MViewConfigVisible0x00
+MViewConfigScrollbar
+MViewConfigSavePos
+MViewConfigSaveCodepage
+MViewConfigSaveShortPos
+MViewConfigMaxLineSize
+MViewConfigSaveViewMode
+MViewConfigSaveWrapMode
+MViewConfigDetectDumpMode
+MViewAutoDetectCodePage
+MViewConfigDefaultCodePage

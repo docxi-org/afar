@@ -56,3 +56,24 @@ run_command = "confirm"     # run a command in the command line
 # The command line stays visible in the viewer (F3); Far hides it.
 # The agent pane then keeps its place when a viewer opens.
 command_line = true
+# The rest is Far's "Options → Viewer settings".
+# The external viewer: on F3 instead of Alt+F3; !.! is the file name,
+# without it the name goes at the end.
+external_f3 = false
+external_command = ""
+persistent_selection = true   # keys do not drop the selection
+tab_size = 8
+show_arrows = true            # scrolling arrows at the ends of lines
+show_zero = false             # the zero character as "·"
+scrollbar = false
+# What to remember about a file: position, code page, bookmarks, mode
+# (text, hex, dump), wrapping.
+save_position = true
+save_codepage = true
+save_bookmarks = true
+save_mode = true
+save_wrap = false
+max_line = 10000              # maximum line width
+detect_dump = true            # open binary files as a dump
+autodetect_codepage = true
+default_codepage = 0          # 0: the Windows ANSI code page, else a number (866, 65001…)

@@ -20,6 +20,7 @@ pub(super) enum MainAction {
     OnSide(usize, Command),
     Confirmations,
     AgentSettings,
+    ViewerSettings,
 }
 
 /// An item: Far's text id, the key shown, what it does (`None`: disabled).
@@ -159,7 +160,7 @@ fn commands_menu() -> Vec<Entry> {
 }
 
 fn options_menu() -> Vec<Entry> {
-    use MainAction::{AgentSettings, Confirmations};
+    use MainAction::{AgentSettings, Confirmations, ViewerSettings};
     vec![
         ("MMenuSystemSettings", None, None),
         ("MMenuPanelSettings", None, None),
@@ -180,7 +181,7 @@ fn options_menu() -> Vec<Entry> {
         ("MMenuFileDescriptions", None, None),
         ("MMenuFolderInfoFiles", None, None),
         SEP,
-        ("MMenuViewer", None, None),
+        ("MMenuViewer", None, Some(ViewerSettings)),
         ("MMenuEditor", None, None),
         ("MMenuCodePages", None, None),
         SEP,
@@ -265,6 +266,9 @@ impl App {
         }
         self.main_menu();
         let pos = ratatui::layout::Position::new(ev.column, ev.row);
+        if let Some(Overlay::MenuBar(bar)) = self.overlays.last_mut() {
+            bar.set_row(ev.row);
+        }
         if let Some(Overlay::MenuBar(bar)) = self.overlays.last_mut()
             && bar.has_title_at(pos)
         {
@@ -309,6 +313,7 @@ impl App {
             }
             Some(MainAction::Confirmations) => self.confirmations_dialog(),
             Some(MainAction::AgentSettings) => self.agent_settings_dialog(),
+            Some(MainAction::ViewerSettings) => self.viewer_settings_dialog(),
             None => {}
         }
     }

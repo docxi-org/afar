@@ -200,7 +200,9 @@ impl App {
             Screens => self.screens_menu(),
             NextScreen => self.cycle_screens(true),
             PrevScreen => self.cycle_screens(false),
-            ViewFile => return self.view_current(),
+            ViewFile => return self.view_current(Some(self.config.viewer.external_f3)),
+            ViewFileAlt => return self.view_current(Some(!self.config.viewer.external_f3)),
+            ViewInternal => return self.view_current(None),
             Viewer(_) => return false,
         }
         true

@@ -215,6 +215,124 @@ impl App {
         }
     }
 
+    /// F9 → Options → Viewer settings (Far's `ViewerConfig`): the external
+    /// viewer, then two columns of the built-in one's options and the
+    /// default code page.
+    pub(super) fn viewer_settings_dialog(&mut self) {
+        let v = &self.config.viewer;
+        let t = |id: &str| tr!(id);
+        let left = [
+            t("MViewConfigPersistentSelection"),
+            t("MViewConfigSavePos"),
+            t("MViewConfigSaveCodepage"),
+            t("MViewConfigSaveShortPos"),
+        ];
+        let tab_label = t("MViewConfigTabSize");
+        let max_label = t("MViewConfigMaxLineSize");
+        // A check box is its text and 4 cells; a number field, its width
+        // and the text after it.
+        let left_w = left
+            .iter()
+            .map(|l| chars(l) + 4)
+            .chain([4 + chars(&tab_label), 7 + chars(&max_label)])
+            .max()
+            .unwrap_or(20);
+        let right_x = 5 + left_w + 2;
+        let right = [
+            t("MViewConfigArrows"),
+            t("MViewConfigVisible0x00"),
+            t("MViewConfigScrollbar"),
+            t("MViewConfigSaveViewMode"),
+            t("MViewConfigSaveWrapMode"),
+            t("MViewConfigDetectDumpMode"),
+            t("MViewAutoDetectCodePage"),
+        ];
+        let right_w = right.iter().map(|l| chars(l) + 4).max().unwrap_or(20);
+        let external = t("MViewConfigExternalF3");
+        let content = (left_w + 2 + right_w).max(chars(&external) + 4).max(65);
+        let (pages, labels) = default_codepages();
+        let selected = pages
+            .iter()
+            .position(|cp| *cp == v.default_codepage)
+            .unwrap_or(0);
+        let dialog = Dialog::new(t("MViewConfigTitle"), content)
+            .row(vec![check_at(5, external, v.external_f3)])
+            .row(vec![text_at(5, t("MViewConfigExternalCommand"))])
+            .row(vec![input_at(5, 64, v.external_command.clone(), true)])
+            .caption(t("MViewConfigInternal"))
+            .row(vec![
+                check_at(5, left[0].clone(), v.persistent_selection),
+                check_at(right_x, right[0].clone(), v.show_arrows),
+            ])
+            .row(vec![
+                input_at(5, 3, v.tab_size.to_string(), false),
+                text_at(9, tab_label),
+                check_at(right_x, right[1].clone(), v.show_zero),
+            ])
+            .row(vec![check_at(right_x, right[2].clone(), v.scrollbar)])
+            .separator()
+            .row(vec![
+                check_at(5, left[1].clone(), v.save_position),
+                check_at(right_x, right[3].clone(), v.save_mode),
+            ])
+            .row(vec![
+                check_at(5, left[2].clone(), v.save_codepage || v.save_position),
+                check_at(right_x, right[4].clone(), v.save_wrap),
+            ])
+            .row(vec![
+                check_at(5, left[3].clone(), v.save_bookmarks),
+                check_at(right_x, right[5].clone(), v.detect_dump),
+            ])
+            .row(vec![
+                input_at(5, 6, v.max_line.to_string(), false),
+                text_at(12, max_label),
+                check_at(right_x, right[6].clone(), v.autodetect_codepage),
+            ])
+            .row(vec![text_at(5, t("MViewConfigDefaultCodePage"))])
+            .row(vec![combo_at(
+                5,
+                64,
+                labels.into_iter().map(Some).collect(),
+                selected,
+            )])
+            .separator()
+            .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::ViewerSettings,
+        });
+    }
+
+    pub(super) fn viewer_settings_from_dialog(&mut self, dialog: &Dialog) {
+        let v = &mut self.config.viewer;
+        // Check boxes in reading order.
+        let c = |n: usize| dialog.checked(n);
+        v.external_f3 = c(0);
+        v.persistent_selection = c(1);
+        v.show_arrows = c(2);
+        v.show_zero = c(3);
+        v.scrollbar = c(4);
+        v.save_position = c(5);
+        v.save_mode = c(6);
+        // As in Far: saving the position saves the code page.
+        v.save_codepage = c(7) || v.save_position;
+        v.save_wrap = c(8);
+        v.save_bookmarks = c(9);
+        v.detect_dump = c(10);
+        v.autodetect_codepage = c(11);
+        v.external_command = dialog.input_value(0).trim().to_string();
+        if let Ok(n) = dialog.input_value(1).trim().parse::<usize>() {
+            v.tab_size = n.clamp(1, 512);
+        }
+        if let Ok(n) = dialog.input_value(2).trim().parse::<usize>() {
+            v.max_line = n.clamp(100, 100_000);
+        }
+        let (pages, _) = default_codepages();
+        v.default_codepage = pages.get(dialog.combo(0)).copied().unwrap_or(0);
+        self.viewer_defaults.scrollbar = v.scrollbar;
+        self.save_config();
+    }
+
     fn save_config(&mut self) {
         let path = crate::config::config_path();
         match self.config.save(&path) {
@@ -222,4 +340,26 @@ impl App {
             Err(e) => self.say(tr!("settings-save-failed", error = e)),
         }
     }
+}
+
+/// The default code pages to choose from: ANSI (0), OEM, Unicode, the rest
+/// of the installed ones; and their names.
+fn default_codepages() -> (Vec<u32>, Vec<String>) {
+    use crate::viewer::codepage;
+    let (ansi, oem) = (codepage::ansi(), codepage::oem());
+    let mut pages = vec![0, oem, codepage::UTF8];
+    pages.extend(
+        codepage::installed()
+            .into_iter()
+            .filter(|cp| ![ansi, oem, codepage::UTF8].contains(cp)),
+    );
+    let labels = pages
+        .iter()
+        .map(|cp| match *cp {
+            0 => format!("ANSI — {}", codepage::long_name(ansi)),
+            cp if cp == oem => format!("OEM — {}", codepage::long_name(oem)),
+            cp => codepage::long_name(cp),
+        })
+        .collect();
+    (pages, labels)
 }

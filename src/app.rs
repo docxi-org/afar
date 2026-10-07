@@ -53,6 +53,9 @@ pub enum AppMsg {
     ViewerFound(viewers::SearchDone),
     /// The agent through the IDE protocol.
     Ide(crate::ide::IdeMsg),
+    /// Folder sizes counted in the background (F3 on a folder): the
+    /// panel's folder and (name, size) pairs.
+    DirSizes(PathBuf, Vec<(String, u64)>),
 }
 
 /// The state to start from.
@@ -336,7 +339,10 @@ impl App {
             drive_paths: Default::default(),
             viewers: Vec::new(),
             next_viewer_id: 1,
-            viewer_defaults: Default::default(),
+            viewer_defaults: crate::viewer::Defaults {
+                scrollbar: config.viewer.scrollbar,
+                ..Default::default()
+            },
             viewer_positions,
             viewer_peek: false,
             viewer_keybar: true,
@@ -680,6 +686,7 @@ impl App {
             AppMsg::Dev(msg) => self.on_dev(msg),
             AppMsg::ViewerFound(done) => self.viewer_found(done),
             AppMsg::Ide(msg) => self.on_ide(msg),
+            AppMsg::DirSizes(dir, sizes) => self.dir_sizes(&dir, sizes),
             AppMsg::CommandOutput => self.on_command_output(),
             AppMsg::Mcp(McpMsg {
                 request: Request::ChannelWait,
@@ -1769,9 +1776,17 @@ impl App {
             return;
         }
         if let Some(i) = self.shown_viewer().filter(|_| !self.viewer_peek) {
+            let v = &mut self.viewers[i];
             match ev.kind {
-                MouseEventKind::ScrollUp => self.viewer_wheel(i, -3),
-                MouseEventKind::ScrollDown => self.viewer_wheel(i, 3),
+                MouseEventKind::ScrollUp => v.scroll(-3),
+                MouseEventKind::ScrollDown => v.scroll(3),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+                    v.mouse_down(ev.column, ev.row, shift);
+                    self.focus = Focus::Panels;
+                }
+                MouseEventKind::Drag(MouseButton::Left) => v.mouse_drag(ev.row),
+                MouseEventKind::Up(MouseButton::Left) => v.mouse_up(),
                 MouseEventKind::Down(_) => self.focus = Focus::Panels,
                 _ => {}
             }
@@ -1802,6 +1817,26 @@ impl App {
         let Some(side) = (0..2).find(|&s| l.panels[s].contains(pos)) else {
             return;
         };
+        // The sort mode letter (Far's FileList::ProcessMouse): the left
+        // button opens the drive menu, the right one the sort menu.
+        let r = l.panels[side];
+        if ev.row == r.y + 1 && (r.x + 1..=r.x + 2).contains(&ev.column) {
+            match ev.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.focus = Focus::Panels;
+                    self.active = side;
+                    self.drive_menu(side);
+                    return;
+                }
+                MouseEventKind::Down(MouseButton::Right) => {
+                    self.focus = Focus::Panels;
+                    self.active = side;
+                    self.sort_menu();
+                    return;
+                }
+                _ => {}
+            }
+        }
         let item = self.panels[side].item_at(ev.column, ev.row);
         match ev.kind {
             MouseEventKind::Down(button) => {
@@ -2094,7 +2129,13 @@ impl App {
                 area.width,
                 l.cmdline.y.saturating_sub(area.y),
             );
-            cursor = self.draw_overlays(over, buf);
+            let bar = Rect::new(
+                area.x,
+                l.top.y,
+                area.width,
+                l.cmdline.y.saturating_sub(l.top.y),
+            );
+            cursor = self.draw_overlays(over, bar, buf);
         }
         cursor
     }
@@ -2259,9 +2300,10 @@ fn modifier_group(m: KeyModifiers) -> &'static str {
     }
 }
 
-/// The top row of the screen in a layout.
+/// The row that opens the menu bar on a click: the top row of the panels
+/// (below the agent pane when it is on top).
 fn area_top(l: &Layout) -> u16 {
-    l.top.y.min(l.agent_frame.y)
+    l.top.y
 }
 
 /// A random UUID (version 4) for a Claude Code session id.

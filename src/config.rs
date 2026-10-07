@@ -25,11 +25,53 @@ pub struct Viewer {
     /// The command line stays under the viewer (Far hides it); the agent
     /// pane then keeps its place when a viewer opens.
     pub command_line: bool,
+    /// F3 runs the external viewer, Alt+F3 the built-in one (Far's
+    /// `UseExternalViewer`).
+    pub external_f3: bool,
+    /// The external viewer; `!.!` is replaced by the file name, otherwise
+    /// the name goes at the end.
+    pub external_command: String,
+    /// Keys do not drop the selection (Far's `PersistentBlocks`).
+    pub persistent_selection: bool,
+    pub tab_size: usize,
+    pub show_arrows: bool,
+    /// The zero character shown as `·`.
+    pub show_zero: bool,
+    pub scrollbar: bool,
+    pub save_position: bool,
+    pub save_codepage: bool,
+    pub save_bookmarks: bool,
+    pub max_line: usize,
+    pub save_mode: bool,
+    pub save_wrap: bool,
+    /// A zero byte near the start opens the dump.
+    pub detect_dump: bool,
+    pub autodetect_codepage: bool,
+    /// 0: the system's ANSI code page.
+    pub default_codepage: u32,
 }
 
 impl Default for Viewer {
     fn default() -> Self {
-        Self { command_line: true }
+        Self {
+            command_line: true,
+            external_f3: false,
+            external_command: String::new(),
+            persistent_selection: true,
+            tab_size: 8,
+            show_arrows: true,
+            show_zero: false,
+            scrollbar: false,
+            save_position: true,
+            save_codepage: true,
+            save_bookmarks: true,
+            max_line: 10_000,
+            save_mode: true,
+            save_wrap: false,
+            detect_dump: true,
+            autodetect_codepage: true,
+            default_codepage: 0,
+        }
     }
 }
 

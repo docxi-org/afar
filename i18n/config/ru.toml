@@ -56,3 +56,24 @@ run_command = "confirm"     # выполнить команду в команд�
 # Командная строка остаётся видна при просмотре (F3); в Far она скрыта.
 # Тогда панель агента не сдвигается, когда открывается просмотр.
 command_line = true
+# Остальное — как «Параметры → Настройки программы просмотра» в Far.
+# Внешняя программа просмотра: по F3 вместо Alt+F3; !.! — имя файла,
+# без него имя дописывается в конец.
+external_f3 = false
+external_command = ""
+persistent_selection = true   # клавиши не снимают выделение
+tab_size = 8
+show_arrows = true            # стрелки сдвига у краёв строк
+show_zero = false             # нулевой символ как «·»
+scrollbar = false
+# Что запоминать о файле: позицию, кодовую страницу, закладки, режим
+# (текст, hex, дамп), перенос.
+save_position = true
+save_codepage = true
+save_bookmarks = true
+save_mode = true
+save_wrap = false
+max_line = 10000              # максимальная ширина строки
+detect_dump = true            # двоичный файл открывать дампом
+autodetect_codepage = true
+default_codepage = 0          # 0 — ANSI Windows, иначе номер (866, 65001…)

@@ -31,6 +31,8 @@ pub struct Entry {
     pub selected: bool,
     /// The selection before the last selecting command (Ctrl+M).
     pub prev_selected: bool,
+    /// A folder's size, once counted (F3 on a folder, Far's CountDirSize).
+    pub dir_size: Option<u64>,
     pub hidden: bool,
     pub system: bool,
 }
@@ -194,6 +196,7 @@ impl FilePanel {
                         position: entries.len(),
                         selected: selected.contains(&name),
                         prev_selected: false,
+                        dir_size: None,
                         name,
                     });
                 }
@@ -214,6 +217,7 @@ impl FilePanel {
                     position: 0,
                     selected: false,
                     prev_selected: false,
+                    dir_size: None,
                     hidden: false,
                     system: false,
                 },
@@ -655,7 +659,7 @@ impl FilePanel {
         // Selection summary over the status separator.
         let (sfiles, sdirs, sbytes) = self.selected().fold((0, 0, 0), |(f, d, b), e| {
             if e.is_dir {
-                (f, d + 1, b)
+                (f, d + 1, b + e.dir_size.unwrap_or(0))
             } else {
                 (f + 1, d, b + e.size)
             }
@@ -715,7 +719,8 @@ fn draw_name(buf: &mut Buffer, c: &Placed, y: u16, e: &Entry, align_ext: bool, s
 /// the number in units when it does not fit (panelmix.cpp FormatStr_Size).
 fn size_cell(e: &Entry, width: u16) -> String {
     let w = usize::from(width);
-    if e.is_dir || e.link {
+    let counted = e.is_dir && !e.link && e.dir_size.is_some();
+    if (e.is_dir || e.link) && !counted {
         let label = if e.is_up() {
             tr!("MListUp")
         } else if e.link && e.is_dir {
@@ -737,7 +742,8 @@ fn size_cell(e: &Entry, width: u16) -> String {
             format!("{label:^field$}")
         };
     }
-    let plain = e.size.to_string();
+    let size = e.dir_size.unwrap_or(e.size);
+    let plain = size.to_string();
     if plain.len() <= w {
         return plain;
     }
@@ -750,7 +756,7 @@ fn size_cell(e: &Entry, width: u16) -> String {
         "MListPb",
         "MListEb",
     ];
-    let mut value = e.size;
+    let mut value = size;
     let mut unit = 0;
     while value.to_string().len() > w.saturating_sub(2) && unit + 1 < UNITS.len() {
         value /= 1024;
@@ -942,6 +948,7 @@ mod tests {
             position: 0,
             selected: false,
             prev_selected: false,
+            dir_size: None,
             hidden: false,
             system: false,
         }

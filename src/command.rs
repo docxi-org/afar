@@ -102,6 +102,10 @@ pub enum Command {
     NextScreen,
     PrevScreen,
     ViewFile,
+    /// Alt+F3: the other of the built-in and the external viewer.
+    ViewFileAlt,
+    /// Ctrl+Shift+F3: always the built-in viewer.
+    ViewInternal,
     Viewer(ViewerCmd),
 }
 
@@ -154,6 +158,8 @@ pub enum ViewerCmd {
     /// Ctrl+Enter: a reference to the selected (or shown) lines into the
     /// agent's input (IDE protocol `at_mentioned`).
     AskAgent,
+    /// Alt+Shift+F9: the viewer's settings.
+    Settings,
 }
 
 /// A command's name, its default (Far) keys, and whether it works with the
@@ -286,7 +292,9 @@ pub const COMMANDS: &[Def] = &[
     def("cmdline.insert_passive_path", InsertPassivePath, &["Ctrl+Shift+]"], true),
     def("cmdline.history_prev", HistoryPrev, &["Ctrl+E"], true),
     def("cmdline.history_next", HistoryNext, &["Ctrl+X"], true),
-    def("fileop.view", ViewFile, &["F3", "Alt+F3", "Ctrl+Shift+F3"], false),
+    def("fileop.view", ViewFile, &["F3"], false),
+    def("fileop.view_alt", ViewFileAlt, &["Alt+F3"], false),
+    def("fileop.view_internal", ViewInternal, &["Ctrl+Shift+F3"], false),
     global("screens.list", Screens, &["F12"]),
     global("screens.next", NextScreen, &["Ctrl+Tab"]),
     global("screens.prev", PrevScreen, &["Ctrl+Shift+Tab"]),
@@ -351,6 +359,7 @@ pub const COMMANDS: &[Def] = &[
     vdef("viewer.keybar", V::KeyBar, &["Ctrl+B"]),
     vdef("viewer.user_screen", V::UserScreen, &["Ctrl+O"]),
     vdef("viewer.ask_agent", V::AskAgent, &["Ctrl+Enter"]),
+    vdef("viewer.settings", V::Settings, &["Alt+Shift+F9"]),
 ];
 
 impl Command {

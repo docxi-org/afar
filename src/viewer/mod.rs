@@ -40,10 +40,6 @@ impl Mode {
     }
 }
 
-/// Far's viewer settings (config.cpp defaults).
-pub const TAB_SIZE: usize = 8;
-pub const MAX_LINE: usize = 10_000;
-const SHOW_ARROWS: bool = true;
 /// Far's `DetectDumpMode`: a zero byte in the first 2 KB opens the dump.
 const BINARY_PROBE: usize = 2048;
 /// Bytes read for code page detection (Far: 32 KB).
@@ -81,6 +77,42 @@ pub struct Remembered {
     pub mode: Option<Mode>,
     #[serde(default)]
     pub bookmarks: Vec<Option<(u64, usize)>>,
+    /// Wrapping and word wrapping.
+    #[serde(default)]
+    pub wrap: Option<(bool, bool)>,
+}
+
+impl Remembered {
+    /// What the settings let come back (Far's "Save file position", …).
+    pub fn filtered(mut self, s: &crate::config::Viewer) -> Self {
+        if !s.save_position {
+            self.top = 0;
+            self.left = 0;
+        }
+        if !s.save_position && !s.save_codepage {
+            self.cp = 0;
+        }
+        if !s.save_bookmarks {
+            self.bookmarks.clear();
+        }
+        if !s.save_mode {
+            self.mode = None;
+        }
+        if !s.save_wrap {
+            self.wrap = None;
+        }
+        self
+    }
+}
+
+/// The settings a viewer works with (from `[viewer]`).
+#[derive(Clone, Copy, Debug)]
+struct Opts {
+    tab: usize,
+    max_line: usize,
+    arrows: bool,
+    zero: bool,
+    persistent: bool,
 }
 
 /// State kept from one viewer to the next (Far's `KeepInitParameters`).
@@ -141,6 +173,11 @@ pub struct Viewer {
     last_page: bool,
     /// Row starts of the last frame (text mode).
     rows: Vec<Row>,
+    /// The scroll bar's thumb is being dragged.
+    dragging_bar: bool,
+    /// The first Shift+click of a selection (Far: the next one ends it).
+    shift_anchor: Option<u64>,
+    opts: Opts,
 }
 
 impl Viewer {
@@ -150,20 +187,35 @@ impl Viewer {
         path: &Path,
         defaults: &Defaults,
         remembered: Option<&Remembered>,
+        settings: &crate::config::Viewer,
     ) -> std::io::Result<Self> {
         let mut src = Source::open(path)?;
         let head = src.read_vec(0, DETECT_PROBE);
         let whole = head.len() as u64 == src.size();
+        let default_cp = match settings.default_codepage {
+            0 => codepage::ansi(),
+            cp => cp,
+        };
+        // A BOM always counts; the rest of the detection by the setting.
+        let detected = if settings.autodetect_codepage {
+            codepage::detect(&head, whole)
+        } else {
+            codepage::bom(&head).map(|(cp, _)| cp)
+        };
         let cp = remembered
             .map(|r| r.cp)
-            .filter(|cp| Codec::new(*cp).is_some())
-            .or_else(|| codepage::detect(&head, whole))
-            .unwrap_or_else(codepage::ansi);
+            .filter(|cp| *cp != 0 && Codec::new(*cp).is_some())
+            .or(detected)
+            .unwrap_or(default_cp);
         let codec = Codec::new(cp)
-            .or_else(|| Codec::new(codepage::ansi()))
+            .or_else(|| Codec::new(default_cp))
             .or_else(|| Codec::new(codepage::UTF8))
             .expect("UTF-8 is always supported");
-        let binary = is_binary(&head[..head.len().min(BINARY_PROBE)], codec.unit());
+        let binary =
+            settings.detect_dump && is_binary(&head[..head.len().min(BINARY_PROBE)], codec.unit());
+        let (wrap, word_wrap) = remembered
+            .and_then(|r| r.wrap)
+            .unwrap_or((defaults.wrap, defaults.word_wrap));
         let restored_mode = remembered.and_then(|r| r.mode);
         let mode = restored_mode.unwrap_or(if binary { Mode::Dump } else { Mode::Text });
         let mut v = Self {
@@ -177,8 +229,8 @@ impl Viewer {
                 Mode::Text
             },
             mode_touched: restored_mode.is_some(),
-            wrap: defaults.wrap,
-            word_wrap: defaults.word_wrap,
+            wrap,
+            word_wrap,
             scrollbar: defaults.scrollbar,
             status_line: defaults.status_line,
             top: 0,
@@ -192,6 +244,15 @@ impl Viewer {
             area: Rect::default(),
             last_page: false,
             rows: Vec::new(),
+            dragging_bar: false,
+            shift_anchor: None,
+            opts: Opts {
+                tab: settings.tab_size.clamp(1, 512),
+                max_line: settings.max_line.clamp(100, 100_000),
+                arrows: settings.show_arrows,
+                zero: settings.show_zero,
+                persistent: settings.persistent_selection,
+            },
         };
         if let Some(r) = remembered {
             v.top = r.top.min(v.src.size());
@@ -223,6 +284,7 @@ impl Viewer {
             cp: self.codec.cp(),
             mode: self.mode_touched.then_some(self.mode),
             bookmarks: self.bookmarks.to_vec(),
+            wrap: Some((self.wrap, self.word_wrap)),
         }
     }
 
@@ -261,8 +323,8 @@ impl Viewer {
     fn opts(&self) -> TextOpts {
         let w = self.width();
         TextOpts {
-            tab: TAB_SIZE,
-            max_line: MAX_LINE,
+            tab: self.opts.tab,
+            max_line: self.opts.max_line,
             wrap: match (self.wrap, self.word_wrap) {
                 (false, _) => Wrap::None,
                 (true, false) => Wrap::Chars(w),
@@ -560,6 +622,13 @@ impl Viewer {
     /// to the application.
     pub fn command(&mut self, cmd: ViewerCmd) -> Outcome {
         use ViewerCmd::*;
+        // Without persistent selection keys drop it (except copying and
+        // searching on).
+        if !self.opts.persistent
+            && !matches!(cmd, Copy | SearchNext | SearchPrev | Search | AskAgent)
+        {
+            self.selection = None;
+        }
         let text = self.mode == Mode::Text;
         match cmd {
             Up => self.up(1),
@@ -569,7 +638,7 @@ impl Viewer {
             Left if text && !self.wrap || self.mode == Mode::Hex => {
                 self.left = self.left.saturating_sub(1)
             }
-            Right if text && !self.wrap => self.left = (self.left + 1).min(MAX_LINE),
+            Right if text && !self.wrap => self.left = (self.left + 1).min(self.opts.max_line),
             Right if self.mode == Mode::Hex => {
                 let max = hex_line_width(self.bytes_per_line, self.codec.unit())
                     .saturating_sub(self.width());
@@ -583,7 +652,7 @@ impl Viewer {
             }
             RightMore if text => {
                 if !self.wrap {
-                    self.left = (self.left + 20).min(MAX_LINE);
+                    self.left = (self.left + 20).min(self.opts.max_line);
                 }
             }
             // Hex and dump: the content rolls by one character.
@@ -683,6 +752,112 @@ impl Viewer {
             other => return Outcome::App(other),
         }
         Outcome::Done
+    }
+
+    /// The scroll bar's column and its first and last rows, when shown.
+    fn scrollbar_at(&self) -> Option<(u16, u16, u16)> {
+        (self.scrollbar && self.area.height >= 2)
+            .then(|| (self.area.right(), self.area.y, self.area.bottom() - 1))
+    }
+
+    /// The byte offset of the character shown at a screen cell (text and
+    /// dump modes).
+    fn pos_at(&self, x: u16, y: u16) -> Option<u64> {
+        let a = self.area;
+        if !a.contains(ratatui::layout::Position::new(x, y)) {
+            return None;
+        }
+        let (dx, dy) = (usize::from(x - a.x), usize::from(y - a.y));
+        match self.mode {
+            Mode::Text => {
+                let row = self.rows.get(dy)?;
+                let col = dx + if self.wrap { 0 } else { self.left };
+                row.cells
+                    .iter()
+                    .find(|c| col >= c.col && col < c.col + usize::from(c.width))
+                    .map(|c| c.pos)
+            }
+            Mode::Dump => {
+                let pos = self.top
+                    + dy as u64 * (self.width() * self.codec.unit()) as u64
+                    + (dx * self.codec.unit()) as u64;
+                (pos < self.src.size()).then_some(pos)
+            }
+            Mode::Hex => None,
+        }
+    }
+
+    /// A mouse press (Far's `Viewer::ProcessMouse`). On the scroll bar: the
+    /// arrows scroll a row, the cells next to them go to the start or the
+    /// end, elsewhere the thumb goes there (and follows a drag). Shift+click
+    /// starts a selection, the next Shift+click ends it. Returns whether it
+    /// was taken.
+    pub fn mouse_down(&mut self, x: u16, y: u16, shift: bool) -> bool {
+        if let Some((bx, top, bottom)) = self.scrollbar_at()
+            && x == bx
+            && (top..=bottom).contains(&y)
+        {
+            if y == top {
+                self.up(1);
+            } else if y == bottom {
+                self.down(1);
+            } else if y == top + 1 {
+                self.command(ViewerCmd::Home);
+            } else if y + 1 == bottom {
+                self.command(ViewerCmd::End);
+            } else {
+                self.dragging_bar = true;
+                self.thumb_to(y, top, bottom);
+            }
+            return true;
+        }
+        if shift && let Some(pos) = self.pos_at(x, y) {
+            let len = self.char_len(pos);
+            match self.shift_anchor.take() {
+                None => {
+                    self.shift_anchor = Some(pos);
+                    self.selection = Some((pos, pos + len));
+                }
+                Some(a) => {
+                    let (from, to) = if a <= pos { (a, pos) } else { (pos, a) };
+                    let end = to + self.char_len(to);
+                    self.selection = Some((from, end));
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    pub fn mouse_drag(&mut self, y: u16) {
+        if self.dragging_bar
+            && let Some((_, top, bottom)) = self.scrollbar_at()
+        {
+            self.thumb_to(y, top, bottom);
+        }
+    }
+
+    pub fn mouse_up(&mut self) {
+        self.dragging_bar = false;
+    }
+
+    /// The top at the scroll bar's row `y` (between the cells for the start
+    /// and the end).
+    fn thumb_to(&mut self, y: u16, top: u16, bottom: u16) {
+        let (first, last) = (top + 2, bottom.saturating_sub(2));
+        let field = u64::from(last.saturating_sub(first)).max(1);
+        let k = u64::from(y.clamp(first, last.max(first)) - first);
+        let size = self.src.size();
+        self.top = (u128::from(size) * u128::from(k) / u128::from(field)) as u64;
+        if self.top >= size {
+            self.go_end();
+        } else {
+            self.adjust_top();
+        }
+    }
+
+    fn char_len(&mut self, pos: u64) -> u64 {
+        layout::char_at(&mut self.src, &self.codec, pos).map_or(1, |(_, n)| n as u64)
     }
 
     /// Mouse wheel: rows down (positive) or up.
@@ -785,10 +960,15 @@ impl Viewer {
                     buf.set_stringn(x, ry, &s, cw, style);
                 } else {
                     let mut tmp = [0u8; 4];
-                    buf.set_stringn(x, ry, glyph(cell.ch).encode_utf8(&mut tmp), cw, style);
+                    let ch = if cell.ch == '\0' && self.opts.zero {
+                        '·'
+                    } else {
+                        glyph(cell.ch)
+                    };
+                    buf.set_stringn(x, ry, ch.encode_utf8(&mut tmp), cw, style);
                 }
             }
-            if SHOW_ARROWS && !self.wrap {
+            if self.opts.arrows && !self.wrap {
                 if left > 0 && row.cols > 0 {
                     buf[(a.x, ry)]
                         .set_symbol("«")

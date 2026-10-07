@@ -101,6 +101,8 @@ pub struct Menu {
     list: Rect,
     rows: usize,
     pressed: Option<usize>,
+    /// The scroll bar's thumb is being dragged.
+    dragging_bar: bool,
 }
 
 impl Menu {
@@ -132,6 +134,7 @@ impl Menu {
             list: Rect::default(),
             rows: 1,
             pressed: None,
+            dragging_bar: false,
         };
         menu.selected = menu.first_selectable().unwrap_or(0);
         menu
@@ -284,12 +287,77 @@ impl Menu {
         (row < self.rows && self.items.get(i).is_some_and(Item::selectable)).then_some(i)
     }
 
+    /// The scroll bar's column and rows (arrows included), when shown.
+    fn scrollbar(&self) -> Option<(u16, u16, u16)> {
+        let (n, rows) = (self.items.len(), self.rows);
+        (n > rows && rows >= 2 && self.list.width > 0).then(|| {
+            let top = self.list.y + 1;
+            (self.list.right() - 1, top, top + rows as u16 - 1)
+        })
+    }
+
+    /// Scrolls by `delta` rows, the cursor staying on the page (Far's
+    /// wheel and scroll bar arrows).
+    fn scroll(&mut self, delta: isize) {
+        let n = self.items.len();
+        let max_top = n.saturating_sub(self.rows);
+        self.top = self.top.saturating_add_signed(delta).min(max_top);
+        self.keep_selection_in_view();
+    }
+
+    fn keep_selection_in_view(&mut self) {
+        let last = self.top + self.rows.saturating_sub(1);
+        if self.selected < self.top {
+            if let Some(i) = self.step(self.top.saturating_sub(1), 1, false) {
+                self.selected = i;
+            }
+        } else if self.selected > last
+            && let Some(i) = self.step(last + 1, -1, false)
+        {
+            self.selected = i;
+        }
+    }
+
+    /// A click or drag on the scroll bar's field: the page there.
+    fn scroll_to(&mut self, y: u16, from: u16, to: u16) {
+        let field = to.saturating_sub(from).saturating_sub(1).max(1);
+        let k = y.saturating_sub(from + 1).min(field - 1);
+        let max_top = self.items.len().saturating_sub(self.rows);
+        self.top = usize::from(k) * max_top / usize::from(field - 1).max(1);
+        self.keep_selection_in_view();
+    }
+
     /// Like Far: the cursor follows the mouse, an item is chosen on release
     /// where it was pressed, a click outside cancels (the middle button
-    /// chooses the current item), the wheel scrolls.
+    /// chooses the current item), the wheel and the scroll bar scroll.
     pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Outcome {
         let pos = Position::new(ev.column, ev.row);
         let under = self.item_at(pos);
+        if let Some((x, from, to)) = self.scrollbar() {
+            let on_bar = pos.x == x && (from..=to).contains(&pos.y);
+            match ev.kind {
+                MouseEventKind::Down(MouseButton::Left) if on_bar => {
+                    if pos.y == from {
+                        self.scroll(-1);
+                    } else if pos.y == to {
+                        self.scroll(1);
+                    } else {
+                        self.dragging_bar = true;
+                        self.scroll_to(pos.y, from, to);
+                    }
+                    return Outcome::Pending;
+                }
+                MouseEventKind::Drag(MouseButton::Left) if self.dragging_bar => {
+                    self.scroll_to(pos.y, from, to);
+                    return Outcome::Pending;
+                }
+                MouseEventKind::Up(MouseButton::Left) if self.dragging_bar => {
+                    self.dragging_bar = false;
+                    return Outcome::Pending;
+                }
+                _ => {}
+            }
+        }
         match ev.kind {
             MouseEventKind::Down(button) if !self.outer.contains(pos) => {
                 return match button {

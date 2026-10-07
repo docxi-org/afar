@@ -63,17 +63,30 @@ impl App {
     }
 
     /// F3 on the panel: views the file under the cursor; Gray+/- in the
-    /// viewer go through the panel's files.
-    pub(super) fn view_current(&mut self) -> bool {
+    /// viewer go through the panel's files. `external`: the external
+    /// viewer if one is set (F3 / Alt+F3 by the setting); `None`: always
+    /// the built-in one (Ctrl+Shift+F3).
+    pub(super) fn view_current(&mut self, external: Option<bool>) -> bool {
         let panel = &self.panels[self.active];
         let Some(entry) = panel.current() else {
             return false;
         };
         if entry.is_dir {
-            // Far counts the folder's size here (not yet).
+            self.count_dir_sizes();
             return true;
         }
         let path = panel.path.join(&entry.name);
+        let command = self.config.viewer.external_command.trim().to_string();
+        if external == Some(true) && !command.is_empty() {
+            let name = format!("\"{}\"", path.display());
+            let line = if command.contains("!.!") {
+                command.replace("!.!", &name)
+            } else {
+                format!("{command} {name}")
+            };
+            self.execute(line);
+            return true;
+        }
         let list: Vec<PathBuf> = panel
             .entries
             .iter()
@@ -84,10 +97,74 @@ impl App {
         true
     }
 
+    /// F3 on a folder (Far's CountDirSize): the sizes of the selected
+    /// folders — or of the current one, or of all of them on `..` — are
+    /// counted in the background and shown in the size column.
+    fn count_dir_sizes(&mut self) {
+        let panel = &self.panels[self.active];
+        let selected: Vec<String> = panel
+            .selected()
+            .filter(|e| e.is_dir && !e.link)
+            .map(|e| e.name.clone())
+            .collect();
+        let names = if !selected.is_empty() {
+            selected
+        } else {
+            match panel.current() {
+                Some(e) if e.name == ".." => panel
+                    .entries
+                    .iter()
+                    .filter(|e| e.is_dir && !e.link && e.name != "..")
+                    .map(|e| e.name.clone())
+                    .collect(),
+                Some(e) if !e.link => vec![e.name.clone()],
+                _ => Vec::new(),
+            }
+        };
+        if names.is_empty() {
+            return;
+        }
+        let dir = panel.path.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let sizes = names
+                .into_iter()
+                .map(|n| {
+                    let size = tree_size(&dir.join(&n));
+                    (n, size)
+                })
+                .collect();
+            let _ = tx.send(AppMsg::DirSizes(dir, sizes));
+        });
+    }
+
+    pub(super) fn dir_sizes(&mut self, dir: &Path, sizes: Vec<(String, u64)>) {
+        for panel in &mut self.panels {
+            if panel.path != dir {
+                continue;
+            }
+            for (name, size) in &sizes {
+                if let Some(e) = panel.entries.iter_mut().find(|e| e.name == *name) {
+                    e.dir_size = Some(*size);
+                }
+            }
+        }
+    }
+
     pub(super) fn open_viewer(&mut self, path: &Path, list: Vec<PathBuf>) -> Option<u32> {
         let id = self.next_viewer_id;
-        let remembered = self.viewer_positions.get(path).cloned();
-        match Viewer::open(id, path, &self.viewer_defaults, remembered.as_ref()) {
+        let remembered = self
+            .viewer_positions
+            .get(path)
+            .cloned()
+            .map(|r| r.filtered(&self.config.viewer));
+        match Viewer::open(
+            id,
+            path,
+            &self.viewer_defaults,
+            remembered.as_ref(),
+            &self.config.viewer,
+        ) {
             Ok(mut v) => {
                 self.next_viewer_id += 1;
                 v.list = list;
@@ -198,6 +275,7 @@ impl App {
                 }
             }
             AskAgent => self.ide_mention(i),
+            Settings => self.viewer_settings_dialog(),
             Edit => self.say(tr!("viewer-not-yet")),
             _ => {}
         }
@@ -238,8 +316,18 @@ impl App {
         self.remember(i);
         let old = &self.viewers[i];
         let (id, list, mode) = (old.id, old.list.clone(), old.mode);
-        let remembered = self.viewer_positions.get(&path).cloned();
-        match Viewer::open(id, &path, &self.viewer_defaults, remembered.as_ref()) {
+        let remembered = self
+            .viewer_positions
+            .get(&path)
+            .cloned()
+            .map(|r| r.filtered(&self.config.viewer));
+        match Viewer::open(
+            id,
+            &path,
+            &self.viewer_defaults,
+            remembered.as_ref(),
+            &self.config.viewer,
+        ) {
             Ok(mut v) => {
                 v.list = list;
                 if v.mode != mode {
@@ -706,7 +794,13 @@ impl App {
                 ..self.viewer_defaults
             };
             let id = self.next_viewer_id;
-            if let Ok(mut v) = Viewer::open(id, &s.path, &defaults, Some(&s.remembered)) {
+            if let Ok(mut v) = Viewer::open(
+                id,
+                &s.path,
+                &defaults,
+                Some(&s.remembered),
+                &self.config.viewer,
+            ) {
                 self.next_viewer_id += 1;
                 v.list = s.list;
                 if v.mode != s.mode {
@@ -725,14 +819,32 @@ impl App {
         });
     }
 
-    /// Mouse wheel over the viewer.
-    pub(super) fn viewer_wheel(&mut self, i: usize, rows: i32) {
-        self.viewers[i].scroll(rows);
-    }
-
     /// The key bar of the shown viewer.
     pub(super) fn viewer_keybar_labels(&self, i: usize, group: &str) -> Vec<String> {
         let v = &self.viewers[i];
         v.keybar_labels(v.next_f8_codepage(), group).to_vec()
     }
+}
+
+/// The size of the files in a folder and below it; links are not followed.
+fn tree_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
 }

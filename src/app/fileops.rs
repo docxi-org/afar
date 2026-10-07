@@ -107,6 +107,8 @@ pub(super) enum Purpose {
     Confirmations,
     /// F9 → Options → the agent and its permissions.
     AgentSettings,
+    /// F9 → Options → Viewer settings, Alt+Shift+F9 in a viewer.
+    ViewerSettings,
     /// Gray + / Gray -: select or unselect by the mask.
     Select {
         side: usize,
@@ -460,6 +462,11 @@ impl App {
                     self.confirmations_from_dialog(&dialog);
                 }
             }
+            Purpose::ViewerSettings => {
+                if button == Some(0) {
+                    self.viewer_settings_from_dialog(&dialog);
+                }
+            }
             Purpose::AgentSettings => {
                 if button == Some(0) {
                     self.agent_settings_from_dialog(&dialog);
@@ -502,7 +509,14 @@ impl App {
         }
     }
 
-    pub(super) fn draw_overlays(&mut self, area: Rect, buf: &mut Buffer) -> Option<Position> {
+    /// `bar` is where the menu bar goes: from the top row of the panels
+    /// (below the agent pane when it is on top).
+    pub(super) fn draw_overlays(
+        &mut self,
+        area: Rect,
+        bar: Rect,
+        buf: &mut Buffer,
+    ) -> Option<Position> {
         let mut cursor = None;
         for overlay in &mut self.overlays {
             cursor = match overlay {
@@ -515,8 +529,8 @@ impl App {
                     menu.draw(area, buf);
                     None
                 }
-                Overlay::MenuBar(bar) => {
-                    bar.draw(area, buf);
+                Overlay::MenuBar(menubar) => {
+                    menubar.draw(bar, buf);
                     None
                 }
             };

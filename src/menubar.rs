@@ -55,6 +55,11 @@ impl<T: Clone> MenuBar<T> {
         }
     }
 
+    /// The row the bar is on (`draw` sets it too).
+    pub fn set_row(&mut self, row: u16) {
+        self.row = row;
+    }
+
     /// Whether a title is at `pos` (on the bar's row).
     pub fn has_title_at(&self, pos: Position) -> bool {
         self.title_at(pos).is_some()
@@ -64,7 +69,8 @@ impl<T: Clone> MenuBar<T> {
         let t = &mut self.titles[self.selected];
         let items = std::mem::take(&mut t.items);
         let x = self.xpos.get(self.selected).copied().unwrap_or(2);
-        let menu = Menu::new("", items).at(x, self.row + 1).select(t.selected);
+        // Right below the bar: the submenu is drawn in the bar's area.
+        let menu = Menu::new("", items).at(x, 1).select(t.selected);
         // Keep the decorated items for the next opening.
         self.open = Some(menu);
     }
