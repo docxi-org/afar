@@ -22,6 +22,7 @@ pub(super) enum MainAction {
     AgentSettings,
     ViewerSettings,
     AutocompleteSettings,
+    FarImport,
 }
 
 /// An item: Far's text id, the key shown, what it does (`None`: disabled).
@@ -143,6 +144,8 @@ fn commands_menu() -> Vec<Entry> {
         ("MMenuFindFolder", Some("Alt+F10"), None),
         ("MMenuViewHistory", Some("Alt+F11"), None),
         ("MMenuFoldersHistory", Some("Alt+F12"), None),
+        // afar's own.
+        ("menu-import-far-history", None, Some(MainAction::FarImport)),
         SEP,
         ("MMenuSwapPanels", Some("Ctrl+U"), Some(Run(SwapPanels))),
         ("MMenuTogglePanels", Some("Ctrl+O"), Some(Run(TogglePanels))),
@@ -320,6 +323,7 @@ impl App {
             Some(MainAction::AgentSettings) => self.agent_settings_dialog(),
             Some(MainAction::ViewerSettings) => self.viewer_settings_dialog(),
             Some(MainAction::AutocompleteSettings) => self.autocomplete_settings_dialog(),
+            Some(MainAction::FarImport) => self.far_import_menu(),
             None => {}
         }
     }

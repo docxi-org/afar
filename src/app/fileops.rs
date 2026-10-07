@@ -128,6 +128,10 @@ pub(super) enum Purpose {
     },
     /// The agent menu's "Rename…" and "Other model…".
     AgentRename,
+    /// Import Far's history from this file?
+    FarImport {
+        path: PathBuf,
+    },
     /// Del in a field's history list: "clear it?" (Far's MHistoryClear).
     HistoryClear {
         list: String,
@@ -547,6 +551,11 @@ impl App {
                 };
                 if let Some(reply) = reply {
                     let _ = reply.send(answer);
+                }
+            }
+            Purpose::FarImport { path } => {
+                if button == Some(0) {
+                    self.far_import(path);
                 }
             }
             Purpose::HistoryClear { list } => {

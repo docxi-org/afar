@@ -31,6 +31,7 @@ mod agentmenu;
 mod autocomplete;
 mod cmdline;
 mod commands;
+mod farimport;
 mod fileops;
 mod fswatch;
 mod ide;
@@ -621,6 +622,7 @@ impl App {
             let (rows, cols) = self.last_agent_size();
             self.start_agent(cols, rows);
         }
+        self.offer_far_import();
         loop {
             let stats = terminal.draw(|frame| {
                 let area = frame.area();

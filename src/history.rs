@@ -5,9 +5,9 @@
 //! old entries go on exit, but only those both older than the lifetime and
 //! beyond the count of the newest, never locked ones.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 /// What a history is of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub enum Kind {
     /// Folders the panels went to (a source for path fields; later
     /// Alt+F12).
     Folder,
+    /// Files viewed and edited (later Alt+F11); now only from Far.
+    View,
 }
 
 impl Kind {
@@ -26,6 +28,7 @@ impl Kind {
             Kind::Dialog => "dialog",
             Kind::Command => "command",
             Kind::Folder => "folder",
+            Kind::View => "view",
         }
     }
 }
@@ -148,7 +151,8 @@ impl History {
                  entry_id INTEGER NOT NULL,
                  time INTEGER NOT NULL,
                  folder TEXT NOT NULL DEFAULT '');
-             CREATE INDEX IF NOT EXISTS use_entry ON use(entry_id);",
+             CREATE INDEX IF NOT EXISTS use_entry ON use(entry_id);
+             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
         Ok(Self { db })
     }
@@ -395,6 +399,109 @@ impl History {
         );
     }
 
+    /// A note the application keeps in the database (e.g. that the import
+    /// of Far's history has been offered).
+    pub fn meta(&self, key: &str) -> Option<String> {
+        self.db
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()
+            .unwrap_or(None)
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) {
+        let _ = self.db.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        );
+    }
+
+    /// Takes Far's histories (docs/15, improvement 5): each Far record is a
+    /// use at its time — a new entry, or one more use of the same text
+    /// (any case; the lock is kept if either has it). A record already
+    /// taken (a use at the same time) is skipped, so a second import adds
+    /// only what is new. `redact`: secrets become `***`, as when recorded.
+    pub fn import_far(&self, path: &Path, redact_secrets: bool) -> rusqlite::Result<FarCounts> {
+        let rows = read_far(path)?;
+        let mut counts = FarCounts::default();
+        let tx = self.db.unchecked_transaction()?;
+        for row in rows {
+            let text = if redact_secrets && row.kind == Kind::Command {
+                redact(&row.text)
+            } else {
+                row.text
+            };
+            let found: Option<(i64, i64)> = self
+                .db
+                .query_row(
+                    "SELECT id, last_used FROM entry
+                     WHERE kind = ?1 AND list = ?2 AND text = ?3 COLLATE NOCASE",
+                    params![row.kind.as_str(), row.list, text],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let id = match found {
+                Some((id, last_used)) => {
+                    let taken: bool = self
+                        .db
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM use WHERE entry_id = ?1 AND time = ?2)",
+                            params![id, row.time],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(false);
+                    if taken {
+                        continue;
+                    }
+                    self.db.execute(
+                        "UPDATE entry SET uses = uses + 1, locked = MAX(locked, ?2),
+                             first_used = MIN(first_used, ?3), last_used = MAX(last_used, ?3)
+                         WHERE id = ?1",
+                        params![id, row.locked, row.time],
+                    )?;
+                    if row.time > last_used {
+                        self.db.execute(
+                            "UPDATE entry SET folder = ?2 WHERE id = ?1",
+                            params![id, row.folder],
+                        )?;
+                    }
+                    id
+                }
+                None => {
+                    self.db.execute(
+                        "INSERT INTO entry(kind, list, text, folder, locked, first_used,
+                             last_used, data)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
+                        params![
+                            row.kind.as_str(),
+                            row.list,
+                            text,
+                            row.folder,
+                            row.locked,
+                            row.time,
+                            row.data
+                        ],
+                    )?;
+                    self.db.last_insert_rowid()
+                }
+            };
+            self.db.execute(
+                "INSERT INTO use(entry_id, time, folder) VALUES (?1, ?2, ?3)",
+                params![id, row.time, row.folder],
+            )?;
+            counts.count(row.kind);
+        }
+        self.db.execute(
+            "DELETE FROM use WHERE rowid IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER()
+                 OVER (PARTITION BY entry_id ORDER BY time DESC) AS n FROM use) WHERE n > ?1)",
+            params![USES_KEPT],
+        )?;
+        tx.commit()?;
+        Ok(counts)
+    }
+
     /// The commands of the old `commands.txt` (oldest first), once.
     pub fn import_commands(&self, lines: &[String]) {
         let count: i64 = self
@@ -422,6 +529,133 @@ impl History {
             let _ = tx.commit();
         }
     }
+}
+
+/// How many records of each kind (in Far's history, or taken from it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FarCounts {
+    pub commands: usize,
+    pub folders: usize,
+    pub views: usize,
+    pub dialogs: usize,
+}
+
+impl FarCounts {
+    fn count(&mut self, kind: Kind) {
+        match kind {
+            Kind::Command => self.commands += 1,
+            Kind::Folder => self.folders += 1,
+            Kind::View => self.views += 1,
+            Kind::Dialog => self.dialogs += 1,
+        }
+    }
+
+    pub fn total(&self) -> usize {
+        self.commands + self.folders + self.views + self.dialogs
+    }
+}
+
+/// Far's history file: in Far's local profile (`FARLOCALPROFILE` when
+/// afar runs from Far, else `%LOCALAPPDATA%\Far Manager\Profile`), or in
+/// the roaming one (`FARPROFILE`, `%APPDATA%\Far Manager\Profile`).
+pub fn far_history_path() -> Option<PathBuf> {
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let profile = |name: &str| var(name).map(|p| p.join("Far Manager").join("Profile"));
+    [
+        var("FARLOCALPROFILE"),
+        profile("LOCALAPPDATA"),
+        var("FARPROFILE"),
+        profile("APPDATA"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|dir| dir.join("history.db"))
+    .find(|p| p.is_file())
+}
+
+/// What Far's history holds, by kind.
+pub fn far_counts(path: &Path) -> rusqlite::Result<FarCounts> {
+    let mut counts = FarCounts::default();
+    for row in read_far(path)? {
+        counts.count(row.kind);
+    }
+    Ok(counts)
+}
+
+/// A record of Far's history as afar takes it.
+struct FarRow {
+    kind: Kind,
+    list: String,
+    text: String,
+    locked: bool,
+    /// Unix time, milliseconds.
+    time: i64,
+    folder: String,
+    data: Option<String>,
+}
+
+/// Far's records, oldest first (docs/14 §2: `history(kind, key, type,
+/// lock, name, time, guid, file, data)`; kinds: commands, folders,
+/// view/edit, dialogs; time in 100 ns since 1601). Plugins' folders and
+/// files (with a plugin's guid) cannot be opened by afar and are left out;
+/// so are empty texts. Read only: Far may be running.
+fn read_far(path: &Path) -> rusqlite::Result<Vec<FarRow>> {
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let _ = db.busy_timeout(std::time::Duration::from_secs(2));
+    let mut stmt = db.prepare(
+        "SELECT kind, key, type, lock, name, time, guid, data FROM history ORDER BY time, id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, i64>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
+        ))
+    })?;
+    // FILETIME of the Unix epoch.
+    const EPOCH: i64 = 116_444_736_000_000_000;
+    let mut out = Vec::new();
+    for row in rows {
+        let (kind, key, ty, lock, name, time, guid, data) = row?;
+        if name.is_empty() {
+            continue;
+        }
+        let (kind, folder, data) = match kind {
+            // A command's folder is in its data.
+            0 => (Kind::Command, data, None),
+            1 if guid.is_empty() => (Kind::Folder, String::new(), None),
+            // Far's record type: 0 viewer, 1 editor, 2/3 external, 4 read-only editor.
+            2 if guid.is_empty() => (
+                Kind::View,
+                String::new(),
+                Some(format!("{{\"far_type\":{ty}}}")),
+            ),
+            3 => (Kind::Dialog, String::new(), None),
+            _ => continue,
+        };
+        out.push(FarRow {
+            kind,
+            list: if kind == Kind::Dialog {
+                key
+            } else {
+                String::new()
+            },
+            text: name,
+            locked: lock != 0,
+            time: (time - EPOCH) / 10_000,
+            folder,
+            data,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -522,6 +756,68 @@ mod tests {
         );
         assert_eq!(redact("use sk-abcdefghijklmnopqrstu now"), "use *** now");
         assert_eq!(redact("cargo build"), "cargo build");
+    }
+
+    #[test]
+    fn imports_far_history() {
+        let dir = std::env::temp_dir().join(format!("afar-far-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        {
+            let far = Connection::open(&path).unwrap();
+            far.execute_batch(
+                "CREATE TABLE history(id INTEGER PRIMARY KEY, kind INTEGER NOT NULL,
+                     key TEXT NOT NULL, type INTEGER NOT NULL, lock INTEGER NOT NULL,
+                     name TEXT NOT NULL, time INTEGER NOT NULL, guid TEXT NOT NULL,
+                     file TEXT NOT NULL, data TEXT NOT NULL);",
+            )
+            .unwrap();
+            // 2024-01-01 00:00:00 UTC and a second later, as FILETIME.
+            let t = 133_485_408_000_000_000_i64;
+            // kind, key, type, lock, name, time, guid, data
+            type Row<'a> = (i64, &'a str, i64, i64, &'a str, i64, &'a str, &'a str);
+            let rows: [Row; 7] = [
+                (0, "", 0, 0, "cargo build", t, "", "F:\\AGI\\far"),
+                (0, "", 0, 1, "Cargo Build", t + 10_000_000, "", "F:\\AGI"),
+                (1, "", 0, 0, "C:\\Windows", t, "", ""),
+                (1, "", 0, 0, "arc:\\x.zip", t, "{plugin}", ""),
+                (2, "", 1, 0, "C:\\a.txt", t, "", ""),
+                (3, "Copy", 0, 0, "D:\\backup", t, "", ""),
+                (3, "Copy", 0, 0, "", t, "", ""),
+            ];
+            for (kind, key, ty, lock, name, time, guid, data) in rows {
+                far.execute(
+                    "INSERT INTO history(kind, key, type, lock, name, time, guid, file, data)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', ?8)",
+                    params![kind, key, ty, lock, name, time, guid, data],
+                )
+                .unwrap();
+            }
+        }
+        let c = far_counts(&path).unwrap();
+        assert_eq!((c.commands, c.folders, c.views, c.dialogs), (2, 1, 1, 1));
+        let h = History::in_memory();
+        h.add(Kind::Dialog, "Copy", "d:\\BACKUP", "", "user");
+        let taken = h.import_far(&path, true).unwrap();
+        assert_eq!(taken, c);
+        // The two commands are one entry: two uses, locked, the newer folder.
+        let cmds = h.list(Kind::Command, "");
+        assert_eq!(cmds.len(), 1);
+        assert!(cmds[0].locked);
+        assert_eq!(cmds[0].folder, "F:\\AGI");
+        assert_eq!(cmds[0].last_used, 1_704_067_201_000);
+        // The existing field value got one more use and kept its spelling.
+        assert_eq!(texts(&h, "Copy"), ["d:\\BACKUP"]);
+        assert_eq!(
+            h.list(Kind::View, "")[0].data.as_deref(),
+            Some("{\"far_type\":1}")
+        );
+        // A second import takes nothing.
+        assert_eq!(h.import_far(&path, true).unwrap().total(), 0);
+        h.set_meta("far_import", "done");
+        assert_eq!(h.meta("far_import").as_deref(), Some("done"));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]
