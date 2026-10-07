@@ -507,3 +507,6 @@ MViewConfigSaveWrapMode = Zapisz zawi&janie wierszy
 MViewConfigDetectDumpMode = W&ykryj sposób podglądu
 MViewAutoDetectCodePage = Rozpoznaj stronę kodową plik&u
 MViewConfigDefaultCodePage = &Domyślna strona kodowa:
+MHistoryTitle = Historia
+MHistoryClear = Wszystkie wpisy historii będą usunięte. Kontynuować?
+MClear = &Czyść historię

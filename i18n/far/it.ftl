@@ -504,3 +504,6 @@ MViewConfigSaveWrapMode = Salva Stato Di &A Capo Automatico
 MViewConfigDetectDumpMode = Rileva Modo Vista Dump
 MViewAutoDetectCodePage = Autorile&va Tabella Caratteri
 MViewConfigDefaultCodePage = Codifica Caratteri Default:
+MHistoryTitle = Cronologia
+MHistoryClear = La Cronologia Sarà Cancellata! Continuare?
+MClear = &Azzera Cronologia

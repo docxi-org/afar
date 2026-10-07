@@ -507,3 +507,6 @@ MViewConfigSaveWrapMode = Save w&rap mode
 MViewConfigDetectDumpMode = Detect d&ump view mode
 MViewAutoDetectCodePage = &Autodetect code page
 MViewConfigDefaultCodePage = &Default code page:
+MHistoryTitle = History
+MHistoryClear = All records in the history will be deleted. Continue?
+MClear = &Clear history

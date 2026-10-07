@@ -503,3 +503,6 @@ MViewConfigSaveWrapMode = Uložit &režim zalomení
 MViewConfigDetectDumpMode = Detekovat režim zobrazení výpisu paměti
 MViewAutoDetectCodePage = &Automaticky detekovat kódovou stránku
 MViewConfigDefaultCodePage = Výchozí stránka kódování:
+MHistoryTitle = Historie
+MHistoryClear = Všechny záznamy v historii budou smazány. Pokračovat?
+MClear = &Vymazat historii

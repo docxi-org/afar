@@ -532,3 +532,8 @@ MViewConfigSaveWrapMode
 MViewConfigDetectDumpMode
 MViewAutoDetectCodePage
 MViewConfigDefaultCodePage
+
+# Histories
+MHistoryTitle
+MHistoryClear
+MClear

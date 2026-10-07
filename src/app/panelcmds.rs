@@ -25,7 +25,12 @@ impl App {
             tr!("MUnselectTitle")
         };
         let dialog = Dialog::far(title, 55)
-            .row(vec![input_at(5, 45, self.select_mask.clone(), true)])
+            .row(vec![input_at(
+                5,
+                45,
+                self.select_mask.clone(),
+                Some("Masks"),
+            )])
             .separator()
             .button_row(vec![
                 crate::dialog::Button::new(tr!("MOk")).default(),

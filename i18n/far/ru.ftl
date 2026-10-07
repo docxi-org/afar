@@ -507,3 +507,6 @@ MViewConfigSaveWrapMode = Сохранять &режим переноса
 MViewConfigDetectDumpMode = Автов&ыбор дамп-режима просмотра
 MViewAutoDetectCodePage = &Автоопределение кодовой страницы
 MViewConfigDefaultCodePage = Кодовая стран&ица по умолчанию:
+MHistoryTitle = История команд
+MHistoryClear = История будет полностью очищена. Продолжить?
+MClear = &Очистить

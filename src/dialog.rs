@@ -35,8 +35,11 @@ pub enum Kind {
         /// Not edited yet: dimmed, replaced by the first typed character.
         unchanged: bool,
         width: u16,
-        /// Has a history: Far draws `↓` after the field.
-        history: bool,
+        /// The history list's name (Far's DIF_HISTORY): Far draws `↓`
+        /// after the field; fields with one name share the list.
+        history: Option<String>,
+        /// An empty field starts with the newest entry (DIF_USELASTHISTORY).
+        use_last: bool,
         readonly: bool,
         disabled: bool,
     },
@@ -86,6 +89,8 @@ enum Target {
     Elem(usize, usize),
     /// Row, button index in the row, button number in the dialog.
     Button(usize, usize, usize),
+    /// The `↓` of a field with a history: row, element.
+    Arrow(usize, usize),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,6 +98,37 @@ pub enum Outcome {
     Pending,
     /// Closed with a button (its number in the dialog) or cancelled.
     Closed(Option<usize>),
+    /// The focused field's history is needed (the owner keeps it).
+    History(HistoryRequest),
+}
+
+/// What a field with a history asks of the history's owner.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HistoryRequest {
+    /// Ctrl+Up / Ctrl+Down / `↓`: the list (answer: `show_history`).
+    Open {
+        list: String,
+    },
+    /// Ctrl+End: the next entry starting with `prefix` after `after`
+    /// (answer: `set_focused_input`).
+    Next {
+        list: String,
+        prefix: String,
+        after: String,
+    },
+    /// In the open list (answer: `refresh_history`).
+    Lock {
+        list: String,
+        text: String,
+        locked: bool,
+    },
+    Delete {
+        list: String,
+        text: String,
+    },
+    Clear {
+        list: String,
+    },
 }
 
 /// What the mouse button was pressed on (the action happens on release).
@@ -102,12 +138,19 @@ enum Pressed {
     ListItem(usize),
 }
 
-/// An open drop-down list of a combo box.
+/// An open drop-down list of a combo box, or of a field's history.
 struct OpenList {
     row: usize,
     elem: usize,
     current: usize,
+    /// First item shown (the list scrolls).
+    top: usize,
+    /// A field's history: texts and whether they are locked.
+    history: Option<Vec<(String, bool)>>,
 }
+
+/// Far's combo and history lists show at most this many items.
+const LIST_ROWS: usize = 8;
 
 struct Colors {
     body: Style,
@@ -292,6 +335,10 @@ pub struct Dialog {
     /// Where the open drop-down list was last drawn.
     list_rect: Rect,
     pressed: Option<Pressed>,
+    /// Ctrl+End: the text it started from (cleared by other keys).
+    cycle_prefix: Option<String>,
+    /// `fill_last` has run.
+    filled: bool,
 }
 
 impl Dialog {
@@ -311,6 +358,8 @@ impl Dialog {
             outer: Rect::default(),
             list_rect: Rect::default(),
             pressed: None,
+            cycle_prefix: None,
+            filled: false,
         }
     }
 
@@ -402,7 +451,7 @@ impl Dialog {
     /// An input field across the content width (with Far's history arrow).
     pub fn input(self, value: impl Into<String>) -> Self {
         let width = self.content_width().saturating_sub(1);
-        self.row(vec![input_at(5, width, value, true)])
+        self.row(vec![input_at(5, width, value, None)])
     }
 
     pub fn check(self, label: impl Into<String>, checked: bool) -> Self {
@@ -473,6 +522,142 @@ impl Dialog {
                 _ => Vec::new(),
             })
             .collect()
+    }
+
+    /// The fields with a history: (list, value), for recording on close.
+    pub fn history_values(&self) -> Vec<(String, String)> {
+        self.kinds()
+            .into_iter()
+            .filter_map(|k| match k {
+                Kind::Input {
+                    history: Some(list),
+                    value,
+                    readonly: false,
+                    ..
+                } => Some((list.clone(), value.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn history_filled(&self) -> bool {
+        self.filled
+    }
+
+    /// Fills the empty fields marked `use_last` with `last(list)` (once).
+    pub fn fill_last(&mut self, last: impl Fn(&str) -> Option<String>) {
+        self.filled = true;
+        for row in &mut self.rows {
+            let Row::Items(elems) = row else { continue };
+            for e in elems {
+                if let Kind::Input {
+                    history: Some(list),
+                    use_last: true,
+                    value,
+                    cursor,
+                    unchanged,
+                    ..
+                } = &mut e.kind
+                    && value.is_empty()
+                    && let Some(text) = last(list)
+                {
+                    *cursor = text.chars().count();
+                    *value = text;
+                    *unchanged = true;
+                }
+            }
+        }
+    }
+
+    /// The label of button number `n` (as shown, `&` removed).
+    pub fn button_label(&self, n: usize) -> Option<String> {
+        self.rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Buttons(b) => Some(b),
+                _ => None,
+            })
+            .flatten()
+            .nth(n)
+            .map(|b| visible(&b.label))
+    }
+
+    /// The focused field with a history: its place and list.
+    fn focused_history(&mut self) -> Option<(usize, usize, String)> {
+        match self.focus()? {
+            Target::Elem(r, e) => match &self.elem(r, e)?.kind {
+                Kind::Input {
+                    history: Some(list),
+                    readonly: false,
+                    disabled: false,
+                    ..
+                } => Some((r, e, list.clone())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Opens the focused field's history list with `entries` (texts and
+    /// locks, in the list's order); nothing to show — nothing opens.
+    pub fn show_history(&mut self, entries: Vec<(String, bool)>) {
+        let Some((r, e, _)) = self.focused_history() else {
+            return;
+        };
+        if entries.is_empty() {
+            return;
+        }
+        self.list = Some(OpenList {
+            row: r,
+            elem: e,
+            current: 0,
+            top: 0,
+            history: Some(entries),
+        });
+    }
+
+    /// The open history list after a change (lock, delete): the cursor
+    /// stays where it was.
+    pub fn refresh_history(&mut self, entries: Vec<(String, bool)>) {
+        let Some(list) = &mut self.list else { return };
+        if list.history.is_none() {
+            return;
+        }
+        if entries.is_empty() {
+            self.list = None;
+            return;
+        }
+        // The cursor follows its entry (a locked one moves to the top),
+        // or stays at its row when the entry is gone.
+        let text = list
+            .history
+            .as_ref()
+            .and_then(|h| h.get(list.current))
+            .map(|(t, _)| t.clone());
+        list.current = text
+            .and_then(|t| entries.iter().position(|(e, _)| *e == t))
+            .unwrap_or(list.current.min(entries.len() - 1));
+        list.history = Some(entries);
+    }
+
+    /// Sets the focused field's text (a history entry), cursor at the end.
+    pub fn set_focused_input(&mut self, text: &str) {
+        if let Some(Target::Elem(r, e)) = self.focus()
+            && let Some(Elem {
+                kind:
+                    Kind::Input {
+                        value,
+                        cursor,
+                        unchanged,
+                        ..
+                    },
+                ..
+            }) = self.elem_mut(r, e)
+        {
+            *value = text.to_string();
+            *cursor = value.chars().count();
+            *unchanged = false;
+        }
     }
 
     /// Text of the `n`-th input field.
@@ -741,6 +926,33 @@ impl Dialog {
         let focus = self.focus();
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // A field with a history: Ctrl+Up / Ctrl+Down open the list,
+        // Ctrl+End goes round the entries starting with the typed text.
+        let cycle = self.cycle_prefix.take();
+        if ctrl
+            && !alt
+            && let Some((r, e, list)) = self.focused_history()
+        {
+            match key.code {
+                KeyCode::Up | KeyCode::Down => {
+                    return Outcome::History(HistoryRequest::Open { list });
+                }
+                KeyCode::End => {
+                    let value = match &self.elem(r, e).map(|e| &e.kind) {
+                        Some(Kind::Input { value, .. }) => value.clone(),
+                        _ => String::new(),
+                    };
+                    let prefix = cycle.unwrap_or_else(|| value.clone());
+                    self.cycle_prefix = Some(prefix.clone());
+                    return Outcome::History(HistoryRequest::Next {
+                        list,
+                        prefix,
+                        after: value,
+                    });
+                }
+                _ => {}
+            }
+        }
         let on_input = focus.is_some_and(|t| self.is_input(t));
         // Hotkeys: Alt+letter, or a plain letter when not typing in a field.
         if let KeyCode::Char(c) = key.code
@@ -795,7 +1007,7 @@ impl Dialog {
                 _ => {}
             },
             Some(Target::Elem(r, e)) => self.elem_key(r, e, key),
-            None => {}
+            Some(Target::Arrow(..)) | None => {}
         }
         Outcome::Pending
     }
@@ -891,12 +1103,17 @@ impl Dialog {
                 row: r,
                 elem: e,
                 current: *selected,
+                top: 0,
+                history: None,
             });
         }
     }
 
     fn list_items(&self) -> Option<Vec<Option<String>>> {
         let list = self.list.as_ref()?;
+        if let Some(history) = &list.history {
+            return Some(history.iter().map(|(t, _)| Some(t.clone())).collect());
+        }
         match &self.elem(list.row, list.elem)?.kind {
             Kind::Combo { items, .. } => Some(items.clone()),
             _ => None,
@@ -904,6 +1121,18 @@ impl Dialog {
     }
 
     fn choose(&mut self, r: usize, e: usize, index: usize) {
+        // A history entry goes into its field.
+        if let Some(text) = self
+            .list
+            .as_ref()
+            .and_then(|l| l.history.as_ref())
+            .and_then(|h| h.get(index))
+            .map(|(t, _)| t.clone())
+        {
+            self.list = None;
+            self.set_focused_input(&text);
+            return;
+        }
         self.list = None;
         if let Some(Elem {
             kind: Kind::Combo { selected, .. },
@@ -931,6 +1160,58 @@ impl Dialog {
             }
             from
         };
+        // The history list's own keys (Far's history menu).
+        let history = self.list.as_ref().and_then(|l| l.history.clone());
+        if let Some(entries) = &history {
+            let list = match &self.elem(r, e).map(|e| &e.kind) {
+                Some(Kind::Input {
+                    history: Some(l), ..
+                }) => l.clone(),
+                _ => String::new(),
+            };
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let (text, locked) = entries.get(current).cloned().unwrap_or_default();
+            match key.code {
+                KeyCode::Tab => {
+                    self.choose(r, e, current);
+                    return Outcome::Pending;
+                }
+                KeyCode::Insert if !ctrl => {
+                    return Outcome::History(HistoryRequest::Lock {
+                        list,
+                        text,
+                        locked: !locked,
+                    });
+                }
+                KeyCode::Delete if shift => {
+                    return Outcome::History(HistoryRequest::Delete { list, text });
+                }
+                KeyCode::Delete => {
+                    self.list = None;
+                    return Outcome::History(HistoryRequest::Clear { list });
+                }
+                KeyCode::Char('c') | KeyCode::Insert if ctrl => {
+                    let _ = crate::clipboard::set_text(&text);
+                    return Outcome::Pending;
+                }
+                KeyCode::PageUp | KeyCode::PageDown => {
+                    let n = entries.len();
+                    let moved = if key.code == KeyCode::PageUp {
+                        current.saturating_sub(LIST_ROWS - 1)
+                    } else {
+                        (current + LIST_ROWS - 1).min(n - 1)
+                    };
+                    if let Some(l) = &mut self.list {
+                        l.current = moved;
+                    }
+                    return Outcome::Pending;
+                }
+                // No hotkeys in a history.
+                KeyCode::Char(_) => return Outcome::Pending,
+                _ => {}
+            }
+        }
         let moved = match key.code {
             KeyCode::Esc => {
                 self.list = None;
@@ -1061,7 +1342,8 @@ impl Dialog {
             if !items.contains(pos) {
                 return None;
             }
-            let index = usize::from(pos.y - items.y);
+            let top = self.list.as_ref().map_or(0, |l| l.top);
+            let index = top + usize::from(pos.y - items.y);
             return self
                 .list_items()
                 .is_some_and(|it| it.get(index).is_some_and(Option::is_some))
@@ -1078,6 +1360,13 @@ impl Dialog {
     fn activate(&mut self, target: Target) -> Outcome {
         match target {
             Target::Button(_, _, n) => Outcome::Closed(Some(n)),
+            Target::Arrow(r, e) => {
+                self.set_focus(Target::Elem(r, e));
+                match self.focused_history() {
+                    Some((_, _, list)) => Outcome::History(HistoryRequest::Open { list }),
+                    None => Outcome::Pending,
+                }
+            }
             Target::Elem(r, e) => {
                 match self.elem(r, e).map(|e| &e.kind) {
                     Some(Kind::Radio { .. }) => self.select_radio(r, e),
@@ -1285,6 +1574,7 @@ impl Dialog {
                 history,
                 readonly,
                 disabled,
+                ..
             } => {
                 let at = x(*width);
                 let skip = cur.saturating_sub(usize::from(*width).saturating_sub(1));
@@ -1302,8 +1592,12 @@ impl Dialog {
                     buf[(at + i, y)].set_symbol(" ").set_style(style);
                 }
                 put_plain(buf, at, y, *width, &shown, style);
-                if *history && !*readonly {
+                if history.is_some() && !*readonly {
                     buf[(at + width, y)].set_symbol("↓").set_style(c.body);
+                    if let Target::Elem(r, e) = target {
+                        self.hits
+                            .push((Rect::new(at + width, y, 1, 1), Target::Arrow(r, e)));
+                    }
                 }
                 if !*readonly {
                     self.hits.push((Rect::new(at, y, *width, 1), target));
@@ -1384,21 +1678,55 @@ impl Dialog {
         let Some(list) = &self.list else {
             return false;
         };
-        let (r, e, current) = (list.row, list.elem, list.current);
-        let Some(Elem {
-            x: X::At(fx),
-            kind: Kind::Combo { items, width, .. },
-        }) = self.elem(r, e)
-        else {
+        let (r, e, current, top) = (list.row, list.elem, list.current, list.top);
+        let locks: Vec<bool> = list
+            .history
+            .as_ref()
+            .map(|h| h.iter().map(|(_, l)| *l).collect())
+            .unwrap_or_default();
+        // A combo's list is as wide as the combo; a history's, as the field
+        // and the arrow, but at least 21 (Far).
+        let (fx, list_w) = match self.elem(r, e) {
+            Some(Elem {
+                x: X::At(fx),
+                kind: Kind::Combo { width, .. },
+            }) => (*fx, *width + 1),
+            Some(Elem {
+                x: X::At(fx),
+                kind: Kind::Input { width, .. },
+            }) => (*fx, (*width + 1).max(21)),
+            _ => return false,
+        };
+        let Some(items) = self.list_items() else {
             return false;
         };
-        let items = items.clone();
-        let (lx, ly) = (x0 + fx, y0 + 3 + r as u16);
+        let shown = items.len().min(LIST_ROWS);
+        // Keep the cursor on the page.
+        let top = if current < top {
+            current
+        } else if current >= top + shown {
+            current + 1 - shown
+        } else {
+            top
+        }
+        .min(items.len() - shown);
+        if let Some(l) = &mut self.list {
+            l.top = top;
+        }
+        let h = shown as u16 + 2;
+        let field_y = y0 + 2 + r as u16;
+        let lx = x0 + fx;
+        // Below the field; above it when there is no room below.
+        let ly = if field_y + 1 + h > area.bottom() && field_y >= area.y + h {
+            field_y - h
+        } else {
+            field_y + 1
+        };
         let rect = Rect::new(
             lx,
             ly,
-            (*width + 1).min(area.right().saturating_sub(lx)),
-            (items.len() as u16 + 2).min(area.bottom().saturating_sub(ly)),
+            list_w.min(area.right().saturating_sub(lx)),
+            h.min(area.bottom().saturating_sub(ly)),
         );
         self.list_rect = rect;
         if rect.width < 3 || rect.height < 3 {
@@ -1423,8 +1751,8 @@ impl Dialog {
         buf[(rect.left(), rect.bottom() - 1)].set_symbol("└");
         buf[(rect.right() - 1, rect.bottom() - 1)].set_symbol("┘");
         let inner = rect.width.saturating_sub(2);
-        for (i, item) in items.iter().enumerate() {
-            let y = rect.y + 1 + i as u16;
+        for (k, item) in items.iter().enumerate().skip(top).take(shown) {
+            let y = rect.y + 1 + (k - top) as u16;
             if y + 1 >= rect.bottom() {
                 break;
             }
@@ -1437,7 +1765,7 @@ impl Dialog {
                     }
                 }
                 Some(text) => {
-                    let (style, hot) = if i == current {
+                    let (style, hot) = if k == current {
                         (theme::COMBO_SELECTED, theme::COMBO_SELECTED_HIGHLIGHT)
                     } else {
                         (theme::COMBO_TEXT, theme::COMBO_HIGHLIGHT)
@@ -1445,23 +1773,45 @@ impl Dialog {
                     for xx in rect.left() + 1..rect.right() - 1 {
                         buf[(xx, y)].set_symbol(" ").set_style(style);
                     }
-                    put_label(
-                        buf,
-                        rect.x + 2,
-                        y,
-                        inner.saturating_sub(1),
-                        text,
-                        style,
-                        hot,
-                    );
+                    if locks.get(k).copied().unwrap_or(false) {
+                        buf[(rect.x + 1, y)].set_symbol("√");
+                    }
+                    if locks.is_empty() {
+                        put_label(
+                            buf,
+                            rect.x + 2,
+                            y,
+                            inner.saturating_sub(1),
+                            text,
+                            style,
+                            hot,
+                        );
+                    } else {
+                        // History texts are shown as they are (no hotkeys).
+                        put_plain(buf, rect.x + 2, y, inner.saturating_sub(1), text, style);
+                    }
                 }
             }
         }
-        // Clicks inside the list go to its combo box (first hit area).
+        // A scroll bar on the right frame when not all items fit.
+        if items.len() > shown && shown >= 2 {
+            let x = rect.right() - 1;
+            let field = shown as u16;
+            let thumb = ((top * usize::from(field)) / items.len()) as u16;
+            for i in 0..field {
+                let s = if i == thumb.min(field - 1) {
+                    "█"
+                } else {
+                    "░"
+                };
+                buf[(x, rect.y + 1 + i)].set_symbol(s);
+            }
+        }
+        // Clicks inside the list go to its field (first hit area).
         self.hits.insert(
             0,
             (
-                Rect::new(rect.x + 1, rect.y + 1, inner, items.len() as u16),
+                Rect::new(rect.x + 1, rect.y + 1, inner, shown as u16),
                 Target::Elem(r, e),
             ),
         );
@@ -1469,8 +1819,9 @@ impl Dialog {
     }
 }
 
-/// An input field at `x`, `width` wide.
-pub fn input_at(x: u16, width: u16, value: impl Into<String>, history: bool) -> Elem {
+/// An input field at `x`, `width` wide; `history`: the name of its
+/// history list (Far's: `Copy`, `NewFolder`, `Masks`, …).
+pub fn input_at(x: u16, width: u16, value: impl Into<String>, history: Option<&str>) -> Elem {
     let value = value.into();
     Elem {
         x: X::At(x),
@@ -1479,7 +1830,8 @@ pub fn input_at(x: u16, width: u16, value: impl Into<String>, history: bool) -> 
             unchanged: !value.is_empty(),
             value,
             width,
-            history,
+            history: history.map(str::to_string),
+            use_last: false,
             readonly: false,
             disabled: false,
         },
@@ -1541,6 +1893,14 @@ impl Elem {
             | Kind::Radio { disabled, .. }
             | Kind::Combo { disabled, .. } => *disabled = true,
             Kind::Text { .. } => {}
+        }
+        self
+    }
+
+    /// An empty field starts with its history's newest entry.
+    pub fn use_last(mut self) -> Self {
+        if let Kind::Input { use_last, .. } = &mut self.kind {
+            *use_last = true;
         }
         self
     }

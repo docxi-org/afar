@@ -363,7 +363,7 @@ impl App {
                 let name = self.agent.name.clone().unwrap_or_default();
                 let dialog = Dialog::new(tr!("agent-rename-title"), 50)
                     .text(tr!("agent-rename-prompt"))
-                    .row(vec![input_at(5, 49, name, true)])
+                    .row(vec![input_at(5, 49, name, Some("AgentName"))])
                     .separator()
                     .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
                 self.overlays.push(Overlay::Dialog {
@@ -376,7 +376,7 @@ impl App {
                 let dialog = Dialog::new(tr!("agent-compact-title"), 66)
                     .wrapped(&tr!("agent-confirm-compact-note"))
                     .text(tr!("agent-compact-prompt"))
-                    .row(vec![input_at(5, 65, "", true)])
+                    .row(vec![input_at(5, 65, "", Some("AgentCompact"))])
                     .separator()
                     .buttons(&[&tr!("agent-compact-button"), &tr!("MCancel")], 0);
                 self.overlays.push(Overlay::Dialog {
@@ -403,7 +403,7 @@ impl App {
             ModelOther => {
                 let dialog = Dialog::new(tr!("agent-model-title"), 50)
                     .text(tr!("agent-model-prompt"))
-                    .row(vec![input_at(5, 49, "", true)])
+                    .row(vec![input_at(5, 49, "", Some("AgentModel"))])
                     .separator()
                     .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
                 self.overlays.push(Overlay::Dialog {

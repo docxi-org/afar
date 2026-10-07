@@ -502,3 +502,6 @@ MViewConfigMaxLineSize = &Maximálna šírka čiary
 MViewConfigSaveWrapMode = Uložiť &režim zalomenia
 MViewAutoDetectCodePage = &Automaticky zistiť tabuľku znakov
 MViewConfigDefaultCodePage = Predvolená tabuľka znakov:
+MHistoryTitle = História
+MHistoryClear = Všetky záznamy v histórii budú zmazané. Pokračovať?
+MClear = &Vymazať históriu

@@ -502,3 +502,6 @@ MViewConfigMaxLineSize = Ancho máximo de &línea
 MViewConfigSaveWrapMode = Guardar modo de ajuste de línea
 MViewAutoDetectCodePage = &Autodetectar página de códigos
 MViewConfigDefaultCodePage = Página de códigos por defecto:
+MHistoryTitle = Historial
+MHistoryClear = Todos los datos en el historial serán borrados. Continuar?
+MClear = &Limpiar historial

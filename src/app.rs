@@ -205,6 +205,8 @@ pub struct App {
     last_click: Option<(Instant, usize, usize)>,
     /// F-key pressed with the mouse on the key bar (acts on release).
     keybar_pressed: Option<u8>,
+    /// The history database: dialogs' fields, commands (docs/15).
+    store: crate::history::History,
     /// Commands run from the command line (Ctrl+E / Ctrl+X).
     cmd_history: cmdline::History,
     /// The last mask of Gray + / Gray - (Far's strPrevMask).
@@ -281,7 +283,14 @@ impl App {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        let history_file = Some(data_dir.join("history").join("commands.txt"));
+        // Histories: dialogs' fields, commands (docs/15).
+        let (store, store_problem) =
+            match crate::history::History::open(&data_dir.join("history.db")) {
+                Ok(h) => (h, None),
+                Err(e) => (crate::history::History::in_memory(), Some(e.to_string())),
+            };
+        let cmd_history =
+            cmdline::History::load(&store, &data_dir.join("history").join("commands.txt"));
         let journal = Journal::open(session_dir);
         let viewer_positions = crate::viewer::positions::Positions::load(
             &data_dir.join("history").join("viewer.json"),
@@ -319,7 +328,8 @@ impl App {
             last_click: None,
             keybar_pressed: None,
             select_mask: "*.*".into(),
-            cmd_history: cmdline::History::load(history_file),
+            cmd_history,
+            store,
             quick_search: None,
             drive_paths: Default::default(),
             viewers: Vec::new(),
@@ -365,6 +375,9 @@ impl App {
         }
         if let Some(problem) = config_problem {
             app.say(tr!("config-problem", problem = problem));
+        }
+        if let Some(problem) = store_problem {
+            app.say(tr!("history-open-failed", error = problem));
         }
         app.set_ide(app.config.agent.ide);
         let (left, right) = (app.panels[0].path.clone(), app.panels[1].path.clone());
@@ -622,6 +635,8 @@ impl App {
                     agent.shutdown(Duration::from_secs(3));
                 }
                 let exit = self.exit.take().unwrap_or(Exit::Quit);
+                // Far's CompactHistory, on exit.
+                self.store.compact();
                 if matches!(exit, Exit::Quit) {
                     self.remember_viewers();
                     self.save_state();
@@ -946,6 +961,9 @@ impl App {
             return;
         }
         self.cmd_history.add(&text);
+        let folder = self.panels[self.active].path.display().to_string();
+        self.store
+            .add(crate::history::Kind::Command, "", &text, &folder, "user");
         // Built-ins handled by afar itself, like Far does.
         let lower = text.to_lowercase();
         if lower == "cd"
@@ -2237,6 +2255,7 @@ impl App {
                 area.width,
                 l.cmdline.y.saturating_sub(l.agent_frame.y),
             );
+            self.fill_dialogs_from_history();
             cursor = self.draw_overlays(over, bar, agent_bar, buf);
         }
         cursor

@@ -442,7 +442,7 @@ impl App {
             .1
             .unwrap_or(self.viewers[i].mode == Mode::Hex);
         let dialog = Dialog::new(tr!("MGoTo"), 29)
-            .row(vec![input_at(5, 28, self.viewer_goto.0.clone(), true)])
+            .row(vec![input_at(5, 28, "", Some("LineNumber")).use_last()])
             .separator()
             .row(vec![check_at(5, tr!("MGoToHex"), hex)])
             .separator()
@@ -487,7 +487,9 @@ impl App {
                 radio_at(x_text, text_label, !hex, group),
                 radio_at(x_hex, tr!("MSearchReplaceHex"), hex, group),
             ])
-            .row(vec![input_at(5, 65, q.text.clone(), true)])
+            .row(vec![
+                input_at(5, 65, q.text.clone(), Some("SearchText")).use_last(),
+            ])
             .separator()
             .row(vec![
                 check_at(5, tr!("MSearchReplaceCase"), q.case),

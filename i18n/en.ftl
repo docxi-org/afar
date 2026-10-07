@@ -141,3 +141,4 @@ agent-confirm-clear-note = The agent starts a new session with an empty context;
 agent-confirm-end = End the running agent?
 agent-confirm-end-note = The current turn is interrupted; the conversation is kept and can be continued.
 agent-confirm-bypass = Bypass permissions: the agent will run any command and make any edit without asking.
+history-open-failed = The history did not open (kept until exit): { $error }

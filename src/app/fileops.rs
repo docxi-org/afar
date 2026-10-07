@@ -126,6 +126,10 @@ pub(super) enum Purpose {
     },
     /// The agent menu's "Rename…" and "Other model…".
     AgentRename,
+    /// Del in a field's history list: "clear it?" (Far's MHistoryClear).
+    HistoryClear {
+        list: String,
+    },
     /// The agent menu's "Compact context…": instructions for `/compact`.
     AgentCompact,
     /// An agent menu action that asks first.
@@ -347,11 +351,11 @@ impl App {
                     });
                 }
             }
-            Some(Overlay::Dialog { dialog, .. }) => {
-                if let Outcome::Closed(button) = dialog.handle_key(&key) {
-                    self.close_dialog(button);
-                }
-            }
+            Some(Overlay::Dialog { dialog, .. }) => match dialog.handle_key(&key) {
+                Outcome::Closed(button) => self.close_dialog(button),
+                Outcome::History(request) => self.dialog_history(request),
+                Outcome::Pending => {}
+            },
             Some(Overlay::Menu { .. }) => self.menu_key(key),
             Some(Overlay::MenuBar(_)) => self.menubar_key(key),
             Some(Overlay::AgentMenu(_)) => self.agent_menu_key(key),
@@ -373,10 +377,12 @@ impl App {
             self.agent_menu_mouse(ev);
             return;
         }
-        if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut()
-            && let Some(Outcome::Closed(button)) = dialog.handle_mouse(ev)
-        {
-            self.close_dialog(button);
+        if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
+            match dialog.handle_mouse(ev) {
+                Some(Outcome::Closed(button)) => self.close_dialog(button),
+                Some(Outcome::History(request)) => self.dialog_history(request),
+                _ => {}
+            }
         }
     }
 
@@ -384,6 +390,16 @@ impl App {
         let Some(Overlay::Dialog { dialog, purpose }) = self.overlays.pop() else {
             return;
         };
+        // The fields' histories: on a button other than Cancel (not Esc).
+        if let Some(b) = button {
+            let actor = match &purpose {
+                Purpose::MkDir { actor, .. }
+                | Purpose::Delete { actor, .. }
+                | Purpose::Copy { actor, .. } => *actor,
+                _ => Actor::User,
+            };
+            self.record_dialog_history(&dialog, b, actor);
+        }
         match purpose {
             Purpose::MkDir { side, actor, reply } => {
                 if button == Some(0) {
@@ -511,6 +527,11 @@ impl App {
                     let _ = reply.send(answer);
                 }
             }
+            Purpose::HistoryClear { list } => {
+                if button == Some(0) {
+                    self.store.clear(crate::history::Kind::Dialog, &list);
+                }
+            }
             Purpose::AgentCompact => {
                 if button == Some(0) {
                     self.agent_compact(dialog.input_value(0));
@@ -609,7 +630,9 @@ impl App {
         ];
         let mut d = Dialog::far(tr!("MMakeFolderTitle"), FAR_WIDTH)
             .text(tr!("MCreateFolder"))
-            .row(vec![input_at(5, 66, names.join(";"), true)])
+            .row(vec![
+                input_at(5, 66, names.join(";"), Some("NewFolder")).use_last(),
+            ])
             .separator()
             .row(vec![
                 text_at(5, tr!("MMakeFolderLinkType")),
@@ -617,7 +640,7 @@ impl App {
             ])
             .row(vec![
                 text_at(5, tr!("MMakeFolderLinkTarget")),
-                input_at(20, 51, "", true),
+                input_at(20, 51, "", Some("NewFolderLinkTarget")),
             ])
             .row(vec![check_at(5, tr!("MMultiMakeDir"), names.len() > 1)]);
         if actor == Actor::Agent {
@@ -949,7 +972,7 @@ impl App {
             .collect();
         d = d
             .row(vec![text_at(5, prompt)])
-            .row(vec![input_at(5, 66, dest, true)])
+            .row(vec![input_at(5, 66, dest, Some("Copy"))])
             .separator()
             .row(security)
             .separator()
@@ -1218,7 +1241,7 @@ impl App {
                             5,
                             66,
                             quote_outer_space(&target.display().to_string()),
-                            false,
+                            None,
                         )
                         .readonly(),
                     ])
@@ -1266,7 +1289,7 @@ impl App {
         let suggestion = ops::unique_name(target);
         let dialog = Dialog::far(tr!("MCopyRenameTitle"), FAR_WIDTH)
             .text(tr!("MCopyRenameText"))
-            .row(vec![input_at(5, 66, name_of(&suggestion), false)])
+            .row(vec![input_at(5, 66, name_of(&suggestion), None)])
             .separator()
             .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
         self.overlays.push(Overlay::Dialog {
@@ -1593,6 +1616,109 @@ fn describe_report(kind: OpKind, dest: Option<&Path>, report: &OpReport) -> Stri
         out.push_str(" (cancelled)");
     }
     out
+}
+
+impl App {
+    /// A field asks for its history (docs/15): the list, the next match
+    /// (Ctrl+End), lock, delete, clear.
+    pub(super) fn dialog_history(&mut self, request: crate::dialog::HistoryRequest) {
+        use crate::dialog::HistoryRequest as R;
+        use crate::history::Kind;
+        let entries = |store: &crate::history::History, list: &str| -> Vec<(String, bool)> {
+            store
+                .list(Kind::Dialog, list)
+                .into_iter()
+                .map(|e| (e.text, e.locked))
+                .collect()
+        };
+        let refresh = match &request {
+            R::Lock { list, text, locked } => {
+                self.store.set_locked(Kind::Dialog, list, text, *locked);
+                Some(list.clone())
+            }
+            R::Delete { list, text } => {
+                self.store.delete(Kind::Dialog, list, text);
+                Some(list.clone())
+            }
+            _ => None,
+        };
+        match request {
+            R::Open { list } => {
+                let items = entries(&self.store, &list);
+                if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
+                    dialog.show_history(items);
+                }
+            }
+            R::Next {
+                list,
+                prefix,
+                after,
+            } => {
+                let next = self
+                    .store
+                    .next_matching(Kind::Dialog, &list, &prefix, &after);
+                if let Some(text) = next
+                    && let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut()
+                {
+                    dialog.set_focused_input(&text);
+                }
+            }
+            R::Clear { list } => {
+                let dialog = Dialog::message(
+                    &tr!("MHistoryTitle"),
+                    &[tr!("MHistoryClear")],
+                    &[&tr!("MClear"), &tr!("MCancel")],
+                    true,
+                );
+                self.overlays.push(Overlay::Dialog {
+                    dialog,
+                    purpose: Purpose::HistoryClear { list },
+                });
+            }
+            R::Lock { .. } | R::Delete { .. } => {}
+        }
+        if let Some(list) = refresh {
+            let items = entries(&self.store, &list);
+            if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
+                dialog.refresh_history(items);
+            }
+        }
+    }
+
+    /// Writes the fields' values into their histories, unless the dialog
+    /// was cancelled (Far writes on any button; Cancel here does not).
+    fn record_dialog_history(&mut self, dialog: &Dialog, button: usize, actor: Actor) {
+        let cancel =
+            [tr!("MCancel"), tr!("MSearchReplaceCancel")].map(|l| crate::dialog::visible(&l));
+        if dialog
+            .button_label(button)
+            .is_some_and(|label| cancel.contains(&label))
+        {
+            return;
+        }
+        let folder = self.panels[self.active].path.display().to_string();
+        let actor = match actor {
+            Actor::Agent => "agent",
+            _ => "user",
+        };
+        for (list, value) in dialog.history_values() {
+            self.store
+                .add(crate::history::Kind::Dialog, &list, &value, &folder, actor);
+        }
+    }
+
+    /// New dialogs: empty fields marked `use_last` get their history's
+    /// newest entry (once, when first drawn).
+    pub(super) fn fill_dialogs_from_history(&mut self) {
+        for overlay in &mut self.overlays {
+            if let Overlay::Dialog { dialog, .. } = overlay
+                && !dialog.history_filled()
+            {
+                let store = &self.store;
+                dialog.fill_last(|list| store.last(crate::history::Kind::Dialog, list));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

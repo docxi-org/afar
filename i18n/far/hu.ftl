@@ -462,3 +462,6 @@ MViewConfigScrollbar = Gör&dítősáv mutatva
 MViewConfigSavePos = &Fájlpozíció mentése
 MViewConfigSaveShortPos = Könyv&jelzők mentése
 MViewAutoDetectCodePage = &Kódlap automatikus felismerése
+MHistoryTitle = Parancs előzmények
+MHistoryClear = Az előzmények minden eleme törlődik. Folytatja?
+MClear = Elő&zmények törlése

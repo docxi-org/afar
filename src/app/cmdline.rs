@@ -6,7 +6,7 @@
 //! the line gets Ctrl+←/→ only when it has text, and everything when the
 //! panels are hidden.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -21,7 +21,8 @@ fn is_div(c: char) -> bool {
     c.is_whitespace() || WORD_DIV.contains(c)
 }
 
-/// Commands run from the command line, oldest first, saved between runs.
+/// Commands run from the command line, oldest first; kept in the history
+/// database (`crate::history`), this is its copy for browsing.
 pub(super) struct History {
     items: Vec<String>,
     /// Position while browsing with Ctrl+E / Ctrl+X; `None`: below the
@@ -31,27 +32,36 @@ pub(super) struct History {
     typed: String,
     /// Ctrl+End completion: the typed prefix and the last match.
     complete: Option<(String, usize)>,
-    file: Option<PathBuf>,
 }
 
 impl History {
-    pub(super) fn load(file: Option<PathBuf>) -> Self {
-        let items = file
-            .as_ref()
-            .and_then(|f| std::fs::read_to_string(f).ok())
-            .map(|s| {
-                s.lines()
-                    .filter(|l| !l.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+    /// The commands of the history database; the old `commands.txt` (if
+    /// any) goes into it once.
+    pub(super) fn load(store: &crate::history::History, legacy: &Path) -> Self {
+        if let Ok(text) = std::fs::read_to_string(legacy) {
+            let lines: Vec<String> = text
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+            store.import_commands(&lines);
+        }
+        let mut items: Vec<String> = store
+            .recent(crate::history::Kind::Command, "")
+            .into_iter()
+            .collect();
+        if items.len() > HISTORY_SIZE {
+            items.drain(..items.len() - HISTORY_SIZE);
+        }
+        Self::new(items)
+    }
+
+    pub(super) fn new(items: Vec<String>) -> Self {
         Self {
             items,
             pos: None,
             typed: String::new(),
             complete: None,
-            file,
         }
     }
 
@@ -68,12 +78,6 @@ impl History {
         }
         self.pos = None;
         self.complete = None;
-        if let Some(f) = &self.file {
-            if let Some(dir) = f.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(f, self.items.join("\n") + "\n");
-        }
     }
 
     /// Ctrl+E (`back`) / Ctrl+X: the line to show.
@@ -345,7 +349,7 @@ mod tests {
 
     #[test]
     fn history_browses_and_completes() {
-        let mut h = History::load(None);
+        let mut h = History::new(Vec::new());
         h.add("dir");
         h.add("git status");
         h.add("git log");

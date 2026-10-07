@@ -391,3 +391,4 @@ MViewConfigInternal = Visualizador Interno
 MViewConfigTabSize = &Tamanho da tabulação
 MViewConfigSavePos = &Salvar posição do arquivo
 MViewAutoDetectCodePage = &Auto-detectar code page
+MHistoryTitle = Histórico

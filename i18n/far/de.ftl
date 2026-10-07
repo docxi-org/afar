@@ -481,3 +481,6 @@ MViewConfigSaveShortPos = &Lesezeichen speichern
 MViewConfigMaxLineSize = Maximalwert der Zeilenbreite
 MViewConfigSaveWrapMode = &Verschieben-Modus speichern
 MViewConfigDefaultCodePage = Standardmäßig voreingestellte Codepage:
+MHistoryTitle = Historie der letzten Befehle
+MHistoryClear = Die gesamte Historie wird gelöscht. Fortfahren?
+MClear = Historie &löschen

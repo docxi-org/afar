@@ -505,3 +505,6 @@ MViewConfigSaveWrapMode = Захоўваць стан пе&раносу
 MViewConfigDetectDumpMode = Самав&ыбар дамп-рэжыму прагляду
 MViewAutoDetectCodePage = С&амавызначэнне кадыроўкі
 MViewConfigDefaultCodePage = Прадвызначаная кад&ыроўка:
+MHistoryTitle = Гісторыя
+MHistoryClear = Гісторыя будзе ачышчана. Працягнуць?
+MClear = &Ачысціць гісторыю

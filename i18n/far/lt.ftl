@@ -405,3 +405,4 @@ MViewConfigScrollbar = Rodyti šlia&užiklį
 MViewConfigSavePos = Iš&saugoti failo poziciją
 MViewConfigSaveShortPos = Išsaugoti nu&orodas
 MViewAutoDetectCodePage = Auto&nustatyti kodavimo puslapį
+MHistoryTitle = Istorija

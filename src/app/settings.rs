@@ -119,11 +119,11 @@ impl App {
         let mut d = Dialog::new(tr!("agent-settings-title"), content)
             .row(vec![
                 text_at(5, command_label),
-                input_at(field_x, field_w, a.command.clone(), false),
+                input_at(field_x, field_w, a.command.clone(), None),
             ])
             .row(vec![
                 text_at(5, args_label),
-                input_at(field_x, field_w, a.args.join(" "), false),
+                input_at(field_x, field_w, a.args.join(" "), None),
             ])
             .row(vec![check_at(5, live, a.live)])
             .row(vec![check_at(5, ide, a.ide)])
@@ -260,14 +260,19 @@ impl App {
         let dialog = Dialog::new(t("MViewConfigTitle"), content)
             .row(vec![check_at(5, external, v.external_f3)])
             .row(vec![text_at(5, t("MViewConfigExternalCommand"))])
-            .row(vec![input_at(5, 64, v.external_command.clone(), true)])
+            .row(vec![input_at(
+                5,
+                64,
+                v.external_command.clone(),
+                Some("ExternalViewer"),
+            )])
             .caption(t("MViewConfigInternal"))
             .row(vec![
                 check_at(5, left[0].clone(), v.persistent_selection),
                 check_at(right_x, right[0].clone(), v.show_arrows),
             ])
             .row(vec![
-                input_at(5, 3, v.tab_size.to_string(), false),
+                input_at(5, 3, v.tab_size.to_string(), None),
                 text_at(9, tab_label),
                 check_at(right_x, right[1].clone(), v.show_zero),
             ])
@@ -286,7 +291,7 @@ impl App {
                 check_at(right_x, right[5].clone(), v.detect_dump),
             ])
             .row(vec![
-                input_at(5, 6, v.max_line.to_string(), false),
+                input_at(5, 6, v.max_line.to_string(), None),
                 text_at(12, max_label),
                 check_at(right_x, right[6].clone(), v.autodetect_codepage),
             ])
