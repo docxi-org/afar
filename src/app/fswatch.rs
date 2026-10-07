@@ -52,8 +52,8 @@ pub(super) struct FsState {
     reload_first: Option<Instant>,
     /// Paths the agent's tools touched recently (keys of `path_key`).
     pub(super) agent_paths: Vec<(String, Instant)>,
-    /// Starts of the agent's Bash commands still running.
-    agent_bash: Vec<Instant>,
+    /// The agent's Bash commands still running: tool use id, start.
+    agent_bash: Vec<(String, Instant)>,
     agent_bash_done: Option<Instant>,
     /// afar's own operations finished recently.
     own_done: Option<Instant>,
@@ -79,7 +79,7 @@ impl FsState {
     fn agent_bash_running(&self, now: Instant) -> bool {
         self.agent_bash
             .iter()
-            .any(|t| now.duration_since(*t) < BASH_LIMIT)
+            .any(|(_, t)| now.duration_since(*t) < BASH_LIMIT)
             || self
                 .agent_bash_done
                 .is_some_and(|t| now.duration_since(t) < AFTERGLOW)
@@ -107,15 +107,17 @@ impl App {
 
     pub(super) fn on_fs(&mut self, ev: FsEvent) {
         let now = Instant::now();
-        let actor = if self.fs.agent_bash_running(now) {
-            Some(Actor::Agent)
-        } else if !self.ops.is_empty()
+        // afar's own operation first: its journal entry says who did it
+        // (the user's F7 while the agent's command runs is still the user's).
+        let actor = if !self.ops.is_empty()
             || self
                 .fs
                 .own_done
                 .is_some_and(|t| now.duration_since(t) < AFTERGLOW)
         {
             None
+        } else if self.fs.agent_bash_running(now) {
+            Some(Actor::Agent)
         } else if self.running.is_some() {
             Some(Actor::User)
         } else {
@@ -200,7 +202,7 @@ impl App {
             .retain(|(_, t)| now.duration_since(*t) < Duration::from_secs(30));
         self.fs
             .agent_bash
-            .retain(|t| now.duration_since(*t) < BASH_LIMIT);
+            .retain(|(_, t)| now.duration_since(*t) < BASH_LIMIT);
     }
 
     /// One journal entry per folder and author.
@@ -267,22 +269,32 @@ impl App {
     pub(super) fn on_pre_tool(&mut self, input: &str) -> String {
         let v: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
         if v["tool_name"] == "Bash" {
-            self.fs.agent_bash.push(Instant::now());
+            let id = v["tool_use_id"].as_str().unwrap_or_default().to_string();
+            self.fs.agent_bash.push((id, Instant::now()));
         }
         String::new()
     }
 
-    /// PostToolUse: journal the agent's tool, remember and highlight the
-    /// files it changed, reload the panels showing them.
-    pub(super) fn on_post_tool(&mut self, input: &str) -> String {
+    /// PostToolUse (`failed`: PostToolUseFailure): journal the agent's
+    /// tool, remember and highlight the files it changed, reload the panels
+    /// showing them.
+    pub(super) fn on_post_tool(&mut self, input: &str, failed: bool) -> String {
         let v: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
         let tool = v["tool_name"].as_str().unwrap_or("?").to_string();
         let now = Instant::now();
         let mut paths = Vec::new();
         let summary = match tool.as_str() {
             "Bash" => {
-                if !self.fs.agent_bash.is_empty() {
-                    self.fs.agent_bash.remove(0);
+                // The command by its id; without one, the oldest.
+                let id = v["tool_use_id"].as_str().unwrap_or_default();
+                let at = self
+                    .fs
+                    .agent_bash
+                    .iter()
+                    .position(|(i, _)| i == id)
+                    .unwrap_or(0);
+                if at < self.fs.agent_bash.len() {
+                    self.fs.agent_bash.remove(at);
                 }
                 self.fs.agent_bash_done = Some(now);
                 let cmd = v["tool_input"]["command"].as_str().unwrap_or("");
@@ -291,8 +303,10 @@ impl App {
                 if first.chars().count() > 200 || cmd.lines().count() > 1 {
                     s.push_str(" …");
                 }
-                if v["tool_response"]["interrupted"] == true {
+                if v["tool_response"]["interrupted"] == true || v["is_interrupt"] == true {
                     s.push_str(" (interrupted)");
+                } else if failed {
+                    s.push_str(" (failed)");
                 }
                 s
             }
@@ -331,8 +345,9 @@ impl App {
         String::new()
     }
 
-    /// A new prompt: whatever Bash we thought was running has ended.
-    pub(super) fn fs_new_prompt(&mut self) {
+    /// A new prompt or the agent's turn over: whatever Bash we thought was
+    /// running has ended (a denied command gets no PostToolUse).
+    pub(super) fn fs_agent_idle(&mut self) {
         self.fs.agent_bash.clear();
     }
 

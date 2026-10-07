@@ -75,6 +75,8 @@ pub enum Request {
     HookPreTool(String),
     /// `PostToolUse` hook: the hook's JSON input.
     HookPostTool(String),
+    /// PostToolUseFailure: the input of the hook.
+    HookPostToolFailure(String),
     /// `Stop` hook: the agent finished its turn.
     HookStop,
     /// `Notification` hook (the agent asks for permission or waits for
@@ -537,6 +539,7 @@ async fn hook(
         "session-start" => Request::HookSessionStart(body),
         "pre-tool" => Request::HookPreTool(body),
         "post-tool" => Request::HookPostTool(body),
+        "post-tool-failure" => Request::HookPostToolFailure(body),
         "stop" => Request::HookStop,
         "notification" => Request::HookNotification(body),
         // `afar channel` waits here for events (long polling).

@@ -933,6 +933,8 @@ impl App {
             // The agent's own edits and commands (docs/04-agent.md).
             "PreToolUse": tool_hook("pre-tool", "Bash"),
             "PostToolUse": tool_hook("post-tool", "Edit|MultiEdit|Write|NotebookEdit|Bash"),
+            // A failed command gets this instead of PostToolUse.
+            "PostToolUseFailure": tool_hook("post-tool-failure", "Bash"),
             // What the agent is doing, for the pane's frame (docs/16).
             "Stop": hook("stop"),
             "Notification": hook("notification"),
@@ -1794,6 +1796,7 @@ impl App {
             }
             Request::HookStop => {
                 self.agent_state(agent::AgentState::Ready);
+                self.fs_agent_idle();
                 Ok(String::new())
             }
             Request::HookNotification(input) => {
@@ -1802,7 +1805,7 @@ impl App {
             }
             Request::HookPrompt => {
                 self.agent_state(agent::AgentState::Working);
-                self.fs_new_prompt();
+                self.fs_agent_idle();
                 Ok(self.prompt_context())
             }
             Request::HookPreTool(input) => {
@@ -1811,7 +1814,11 @@ impl App {
             }
             Request::HookPostTool(input) => {
                 self.agent_state(agent::AgentState::Working);
-                Ok(self.on_post_tool(&input))
+                Ok(self.on_post_tool(&input, false))
+            }
+            Request::HookPostToolFailure(input) => {
+                self.agent_state(agent::AgentState::Working);
+                Ok(self.on_post_tool(&input, true))
             }
             Request::ChannelWait => unreachable!("answered in handle"),
             Request::View {
