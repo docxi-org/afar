@@ -11,6 +11,7 @@ use crate::panel::{SortMode, ViewMode};
 pub enum Ctx {
     Panels,
     Viewer,
+    Editor,
 }
 
 impl Ctx {
@@ -19,6 +20,7 @@ impl Ctx {
         match self {
             Ctx::Panels => "panels",
             Ctx::Viewer => "viewer",
+            Ctx::Editor => "editor",
         }
     }
 }
@@ -123,11 +125,97 @@ pub enum Command {
     NextScreen,
     PrevScreen,
     ViewFile,
+    /// F4 / Ctrl+Shift+F4: the file under the cursor in the editor.
+    EditFile,
+    /// Shift+F4: Far's "open or create" dialog.
+    EditNew,
     /// Alt+F3: the other of the built-in and the external viewer.
     ViewFileAlt,
     /// Ctrl+Shift+F3: always the built-in viewer.
     ViewInternal,
     Viewer(ViewerCmd),
+    Editor(EditorCmd),
+}
+
+/// Commands of the editor (Far's editor.cpp / fileedit.cpp keys,
+/// docs/17 §4). Typed characters go to the editor without a command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorCmd {
+    // Movement.
+    Left,
+    Right,
+    /// Ctrl+S: a character left, not onto the previous line (WordStar).
+    CharLeft,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    FileStart,
+    FileEnd,
+    /// Ctrl+PgUp / Ctrl+PgDn: the first / last line, the column kept.
+    FirstLine,
+    LastLine,
+    WordLeft,
+    WordRight,
+    /// Ctrl+Up / Ctrl+Down: the screen by a line, the cursor with it.
+    ScrollUp,
+    ScrollDown,
+    /// Ctrl+N / Ctrl+E: the first / last line of the screen.
+    ScreenTop,
+    ScreenBottom,
+    // Stream selection.
+    SelLeft,
+    SelRight,
+    SelUp,
+    SelDown,
+    SelHome,
+    SelEnd,
+    SelPageUp,
+    SelPageDown,
+    SelWordLeft,
+    SelWordRight,
+    SelFileStart,
+    SelFileEnd,
+    SelFirstLine,
+    SelLastLine,
+    SelectAll,
+    Unselect,
+    // Clipboard and blocks.
+    Copy,
+    Cut,
+    Paste,
+    DeleteBlock,
+    // Editing.
+    Delete,
+    Backspace,
+    DeleteWordLeft,
+    DeleteWordRight,
+    DeleteToLineStart,
+    DeleteToLineEnd,
+    DeleteLine,
+    Enter,
+    Tab,
+    BackTab,
+    Overtype,
+    QuoteChar,
+    Undo,
+    Redo,
+    InsertFileName,
+    Lock,
+    // The window.
+    Save,
+    SaveAs,
+    SaveQuit,
+    Quit,
+    View,
+    OpenFile,
+    GoFile,
+    LineNumbers,
+    StatusLine,
+    KeyBar,
+    UserScreen,
 }
 
 /// Commands of the viewer (Far's viewer.cpp / fileview.cpp keys).
@@ -219,7 +307,18 @@ const fn global(name: &'static str, command: Command, keys: &'static [&'static s
         command,
         keys,
         with_panels_hidden: true,
-        ctx: &[Ctx::Panels, Ctx::Viewer],
+        ctx: &[Ctx::Panels, Ctx::Viewer, Ctx::Editor],
+    }
+}
+
+/// A command of the editor.
+const fn edef(name: &'static str, command: EditorCmd, keys: &'static [&'static str]) -> Def {
+    Def {
+        name,
+        command: Command::Editor(command),
+        keys,
+        with_panels_hidden: true,
+        ctx: &[Ctx::Editor],
     }
 }
 
@@ -235,6 +334,7 @@ const fn vdef(name: &'static str, command: ViewerCmd, keys: &'static [&'static s
 }
 
 use Command::*;
+use EditorCmd as E;
 use ViewerCmd as V;
 
 /// All commands with Far's keys.
@@ -333,11 +433,79 @@ pub const COMMANDS: &[Def] = &[
     def("screen.top", ScreenTop, &["Ctrl+Alt+Home"], true),
     def("screen.bottom", ScreenBottom, &["Ctrl+Alt+End"], true),
     def("fileop.view", ViewFile, &["F3"], false),
+    def("fileop.edit", EditFile, &["F4", "Ctrl+Shift+F4"], false),
+    def("fileop.edit_new", EditNew, &["Shift+F4"], false),
     def("fileop.view_alt", ViewFileAlt, &["Alt+F3"], false),
     def("fileop.view_internal", ViewInternal, &["Ctrl+Shift+F3"], false),
     global("screens.list", Screens, &["F12"]),
     global("screens.next", NextScreen, &["Ctrl+Tab"]),
     global("screens.prev", PrevScreen, &["Ctrl+Shift+Tab"]),
+    edef("editor.left", E::Left, &["Left"]),
+    edef("editor.right", E::Right, &["Right"]),
+    edef("editor.char_left", E::CharLeft, &["Ctrl+S"]),
+    edef("editor.up", E::Up, &["Up"]),
+    edef("editor.down", E::Down, &["Down"]),
+    edef("editor.home", E::Home, &["Home"]),
+    edef("editor.end", E::End, &["End"]),
+    edef("editor.page_up", E::PageUp, &["PgUp"]),
+    edef("editor.page_down", E::PageDown, &["PgDn"]),
+    edef("editor.file_start", E::FileStart, &["Ctrl+Home"]),
+    edef("editor.file_end", E::FileEnd, &["Ctrl+End"]),
+    edef("editor.first_line", E::FirstLine, &["Ctrl+PgUp"]),
+    edef("editor.last_line", E::LastLine, &["Ctrl+PgDn"]),
+    edef("editor.word_left", E::WordLeft, &["Ctrl+Left"]),
+    edef("editor.word_right", E::WordRight, &["Ctrl+Right"]),
+    edef("editor.scroll_up", E::ScrollUp, &["Ctrl+Up"]),
+    edef("editor.scroll_down", E::ScrollDown, &["Ctrl+Down"]),
+    edef("editor.screen_top", E::ScreenTop, &["Ctrl+N"]),
+    edef("editor.screen_bottom", E::ScreenBottom, &["Ctrl+E"]),
+    edef("editor.sel_left", E::SelLeft, &["Shift+Left"]),
+    edef("editor.sel_right", E::SelRight, &["Shift+Right"]),
+    edef("editor.sel_up", E::SelUp, &["Shift+Up", "Ctrl+Shift+Up"]),
+    edef("editor.sel_down", E::SelDown, &["Shift+Down", "Ctrl+Shift+Down"]),
+    edef("editor.sel_home", E::SelHome, &["Shift+Home"]),
+    edef("editor.sel_end", E::SelEnd, &["Shift+End"]),
+    edef("editor.sel_page_up", E::SelPageUp, &["Shift+PgUp"]),
+    edef("editor.sel_page_down", E::SelPageDown, &["Shift+PgDn"]),
+    edef("editor.sel_word_left", E::SelWordLeft, &["Ctrl+Shift+Left"]),
+    edef("editor.sel_word_right", E::SelWordRight, &["Ctrl+Shift+Right"]),
+    edef("editor.sel_file_start", E::SelFileStart, &["Ctrl+Shift+Home"]),
+    edef("editor.sel_file_end", E::SelFileEnd, &["Ctrl+Shift+End"]),
+    edef("editor.sel_first_line", E::SelFirstLine, &["Ctrl+Shift+PgUp"]),
+    edef("editor.sel_last_line", E::SelLastLine, &["Ctrl+Shift+PgDn"]),
+    edef("editor.select_all", E::SelectAll, &["Ctrl+A"]),
+    edef("editor.unselect", E::Unselect, &["Ctrl+U"]),
+    edef("editor.copy", E::Copy, &["Ctrl+C", "Ctrl+Ins"]),
+    edef("editor.cut", E::Cut, &["Ctrl+X", "Shift+Del"]),
+    edef("editor.paste", E::Paste, &["Ctrl+V", "Shift+Ins"]),
+    edef("editor.delete_block", E::DeleteBlock, &["Ctrl+D"]),
+    edef("editor.delete", E::Delete, &["Del"]),
+    edef("editor.backspace", E::Backspace, &["BS", "Shift+BS"]),
+    edef("editor.delete_word_left", E::DeleteWordLeft, &["Ctrl+BS"]),
+    edef("editor.delete_word_right", E::DeleteWordRight, &["Ctrl+Del", "Ctrl+T"]),
+    edef("editor.delete_to_line_start", E::DeleteToLineStart, &["Ctrl+Shift+BS"]),
+    edef("editor.delete_to_line_end", E::DeleteToLineEnd, &["Ctrl+K", "Alt+D"]),
+    edef("editor.delete_line", E::DeleteLine, &["Ctrl+Y"]),
+    edef("editor.enter", E::Enter, &["Enter"]),
+    edef("editor.tab", E::Tab, &["Tab"]),
+    edef("editor.back_tab", E::BackTab, &["Shift+Tab"]),
+    edef("editor.overtype", E::Overtype, &["Ins"]),
+    edef("editor.quote_char", E::QuoteChar, &["Ctrl+Q"]),
+    edef("editor.undo", E::Undo, &["Ctrl+Z", "Alt+BS"]),
+    edef("editor.redo", E::Redo, &["Ctrl+Shift+Z"]),
+    edef("editor.insert_file_name", E::InsertFileName, &["Ctrl+F"]),
+    edef("editor.lock", E::Lock, &["Ctrl+L"]),
+    edef("editor.save", E::Save, &["F2"]),
+    edef("editor.save_as", E::SaveAs, &["Shift+F2"]),
+    edef("editor.save_quit", E::SaveQuit, &["Shift+F10"]),
+    edef("editor.quit", E::Quit, &["F4", "F10", "Esc"]),
+    edef("editor.view", E::View, &["F6"]),
+    edef("editor.open_file", E::OpenFile, &["Shift+F4"]),
+    edef("editor.go_file", E::GoFile, &["Ctrl+F10"]),
+    edef("editor.line_numbers", E::LineNumbers, &["Ctrl+F3"]),
+    edef("editor.status_line", E::StatusLine, &["Ctrl+Shift+B"]),
+    edef("editor.keybar", E::KeyBar, &["Ctrl+B"]),
+    edef("editor.user_screen", E::UserScreen, &["Ctrl+O"]),
     vdef("viewer.close", V::Close, &["F3", "F10", "Esc"]),
     vdef("viewer.wrap", V::Wrap, &["F2"]),
     vdef("viewer.word_wrap", V::WordWrap, &["Shift+F2"]),

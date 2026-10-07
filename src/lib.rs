@@ -8,6 +8,7 @@ pub mod config;
 pub mod dev;
 pub mod dialog;
 pub mod drives;
+pub mod editor;
 pub mod find;
 pub mod history;
 pub mod i18n;

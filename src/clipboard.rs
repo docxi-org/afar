@@ -1,17 +1,24 @@
-//! The system clipboard: text out (the viewer's Ctrl+C). On Windows through
-//! the clipboard API (works in any console host); elsewhere through the
-//! terminal (OSC 52).
+//! The system clipboard: text out (the viewer's Ctrl+C) and in (the
+//! editor's Ctrl+V). On Windows through the clipboard API (works in any
+//! console host); elsewhere out through the terminal (OSC 52), and in not
+//! at all.
 
 /// Puts `text` on the clipboard.
 pub fn set_text(text: &str) -> Result<(), String> {
     system::set_text(text)
 }
 
+/// The clipboard's text, if any.
+pub fn get_text() -> Option<String> {
+    system::get_text()
+}
+
 #[cfg(windows)]
 mod system {
     use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+        OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
         GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock,
@@ -50,11 +57,42 @@ mod system {
         }
         Ok(())
     }
+
+    pub fn get_text() -> Option<String> {
+        unsafe {
+            if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0
+                || OpenClipboard(std::ptr::null_mut()) == 0
+            {
+                return None;
+            }
+            let mem = GetClipboardData(CF_UNICODETEXT);
+            let mut text = None;
+            if !mem.is_null() {
+                let ptr = GlobalLock(mem) as *const u16;
+                if !ptr.is_null() {
+                    let mut len = 0;
+                    while *ptr.add(len) != 0 {
+                        len += 1;
+                    }
+                    text = Some(String::from_utf16_lossy(std::slice::from_raw_parts(
+                        ptr, len,
+                    )));
+                    GlobalUnlock(mem);
+                }
+            }
+            CloseClipboard();
+            text
+        }
+    }
 }
 
 #[cfg(not(windows))]
 mod system {
     use std::io::Write as _;
+
+    pub fn get_text() -> Option<String> {
+        None
+    }
 
     pub fn set_text(text: &str) -> Result<(), String> {
         let mut out = std::io::stdout();

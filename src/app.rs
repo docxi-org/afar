@@ -32,6 +32,7 @@ mod attributes;
 mod autocomplete;
 mod cmdline;
 mod commands;
+mod editors;
 mod farimport;
 mod fileops;
 mod findfiles;
@@ -304,6 +305,16 @@ pub struct App {
     /// Open viewers (F3), each on its own screen.
     viewers: Vec<crate::viewer::Viewer>,
     next_viewer_id: u32,
+    /// Editor screens (F4), and the next one's id.
+    editors: Vec<crate::editor::Editor>,
+    next_editor_id: u32,
+    /// The editors' status line (Ctrl+Shift+B) and key bar (Ctrl+B).
+    editor_status: bool,
+    editor_keybar: bool,
+    /// Where files were left in the editor.
+    editor_places: editors::EditorPlaces,
+    /// The last left click in an editor (double click: a word).
+    editor_last_click: Option<(Instant, u16, u16)>,
     /// Wrapping and bars carried to the next viewer (Far's
     /// `KeepInitParameters`).
     viewer_defaults: crate::viewer::Defaults,
@@ -440,6 +451,14 @@ impl App {
             drive_paths: Default::default(),
             viewers: Vec::new(),
             next_viewer_id: 1,
+            editors: Vec::new(),
+            next_editor_id: 1,
+            editor_status: true,
+            editor_keybar: true,
+            editor_places: editors::EditorPlaces::load(
+                &data_dir.join("history").join("editor.json"),
+            ),
+            editor_last_click: None,
             viewer_defaults: crate::viewer::Defaults {
                 scrollbar: config.viewer.scrollbar,
                 ..Default::default()
@@ -511,6 +530,7 @@ impl App {
         }
         self.set_panels_visible(state.panels_visible);
         self.restore_viewers(state.viewers, state.viewer_shown);
+        self.restore_editors(state.editors, state.editor_shown);
         self.wm.set_hidden(WinId::Agent(0), state.agent_hidden);
         self.agent.session_id = state.agent_session;
         self.agent.cwd = state.agent_cwd;
@@ -572,6 +592,9 @@ impl App {
         state.user_screen = Vec::new();
         state.commands = Vec::new();
         state.next_cmd_id = 0;
+        state.next_op_id = 0;
+        state.editors = Vec::new();
+        state.editor_shown = None;
         if let Ok(json) = serde_json::to_vec_pretty(&state) {
             let _ = std::fs::create_dir_all(&self.data_dir);
             let _ = std::fs::write(self.data_dir.join("state.json"), json);
@@ -580,6 +603,7 @@ impl App {
 
     fn state(&self) -> DevState {
         let (viewers, viewer_shown) = self.viewer_states();
+        let (editors, editor_shown) = self.editor_states();
         DevState {
             panels: self
                 .panels
@@ -606,6 +630,8 @@ impl App {
             agent_permission_mode: self.agent.permission_mode.clone(),
             viewers,
             viewer_shown,
+            editors,
+            editor_shown,
             agent_hidden: self.wm.is_hidden(WinId::Agent(0)),
             journal_dir: Some(self.journal.dir().to_path_buf()),
             next_op_id: self.next_op_id,
@@ -619,7 +645,9 @@ impl App {
     /// Development mode: what keeps a restart waiting.
     fn restart_blocker(&self) -> Option<String> {
         let dev = self.dev.as_ref()?;
-        if self.has_overlay() {
+        if self.editors_modified() {
+            Some(tr!("dev-blocker-editor"))
+        } else if self.has_overlay() {
             Some(tr!("dev-blocker-dialog"))
         } else if !self.ops.is_empty() {
             Some(tr!("dev-blocker-operation"))
@@ -776,6 +804,7 @@ impl App {
                 self.store.compact();
                 if matches!(exit, Exit::Quit) {
                     self.remember_viewers();
+                    self.remember_editors();
                     self.save_state();
                 }
                 return Ok(exit);
@@ -921,6 +950,7 @@ impl App {
             self.message = None;
         }
         self.viewer_tick();
+        self.editor_tick();
         self.ide_sync_selection();
         if self.agent_alive() {
             self.agent.send_enter();
@@ -1580,6 +1610,9 @@ impl App {
 
     /// Keys of the current screen: a viewer or the panels.
     fn screen_key(&mut self, key: KeyEvent) {
+        if let Some(i) = self.shown_editor() {
+            return self.editor_key(i, key);
+        }
         match self.shown_viewer() {
             Some(i) => self.viewer_key(i, key),
             None => self.panels_key(key),
@@ -2270,6 +2303,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left | MouseButton::Right)
         ) && ev.row == area_top(&l)
             && self.shown_viewer().is_none()
+            && self.shown_editor().is_none()
         {
             self.top_row_click(&ev);
             return;
@@ -2356,6 +2390,10 @@ impl App {
         }
 
         if !l.user.contains(pos) {
+            return;
+        }
+        if let Some(i) = self.shown_editor().filter(|_| !self.viewer_peek) {
+            self.editor_mouse(i, &ev, wheel);
             return;
         }
         if let Some(i) = self.shown_viewer().filter(|_| !self.viewer_peek) {
@@ -2481,15 +2519,23 @@ impl App {
     fn layout(&self, area: Rect) -> Layout {
         // A viewer hides the command line (unless set to keep it) and,
         // with Ctrl+B, its key bar.
-        let viewer = self.shown_viewer().is_some() && !self.viewer_peek;
-        let keybar_h = u16::from(!viewer || self.viewer_keybar);
+        let editor = self.shown_editor().is_some() && !self.viewer_peek;
+        let viewer = (self.shown_viewer().is_some() || editor) && !self.viewer_peek;
+        let keybar_h = u16::from(
+            !viewer
+                || if editor {
+                    self.editor_keybar
+                } else {
+                    self.viewer_keybar
+                },
+        );
         let keybar = Rect::new(
             area.x,
             area.bottom().saturating_sub(keybar_h),
             area.width,
             keybar_h,
         );
-        let cmdline_h = u16::from(!viewer || self.config.viewer.command_line);
+        let cmdline_h = u16::from(!viewer || !editor && self.config.viewer.command_line);
         let cmdline = Rect::new(
             area.x,
             keybar.y.saturating_sub(cmdline_h),
@@ -2562,8 +2608,22 @@ impl App {
             let _ = run.pty.resize(l.user.height, l.user.width);
         }
 
-        // Top area: a viewer, the panels or the user screen.
-        if let Some(i) = self.shown_viewer().filter(|_| !self.viewer_peek) {
+        // Top area: an editor, a viewer, the panels or the user screen.
+        if let Some(i) = self.shown_editor().filter(|_| !self.viewer_peek) {
+            if l.user != l.top {
+                self.draw_user_screen(l.user, buf);
+            }
+            let clock = l.top.y == area.y && l.top.right() == area.right() && self.editor_status;
+            let c = self.draw_editor(i, l.top, buf, clock);
+            if clock {
+                let t = chrono::Local::now().format("%H:%M").to_string();
+                let x = area.right() - t.len() as u16;
+                buf.set_stringn(x, area.y, &t, t.len(), theme::EDITOR_STATUS);
+            }
+            if self.focus == Focus::Panels && !self.has_overlay() {
+                cursor = c;
+            }
+        } else if let Some(i) = self.shown_viewer().filter(|_| !self.viewer_peek) {
             // The agent pane hidden by Ctrl+O shows the output there.
             if l.user != l.top {
                 self.draw_user_screen(l.user, buf);
@@ -2730,7 +2790,10 @@ impl App {
                     );
                 }
             }
-            if self.focus == Focus::Panels && self.shown_viewer().is_none() {
+            if self.focus == Focus::Panels
+                && self.shown_viewer().is_none()
+                && self.shown_editor().is_none()
+            {
                 let x = (prompt.chars().count() + self.cmd_cursor) as u16;
                 if x < l.cmdline.width {
                     cursor = Some(Position::new(l.cmdline.x + x, l.cmdline.y));
@@ -3059,9 +3122,10 @@ impl App {
         }
         let width = area.width;
         let group = modifier_group(self.held);
-        let labels: Vec<String> = match self.shown_viewer() {
-            Some(v) => self.viewer_keybar_labels(v, group),
-            None => (1..=12)
+        let labels: Vec<String> = match (self.shown_editor(), self.shown_viewer()) {
+            (Some(e), _) => self.editor_keybar_labels(e, group),
+            (None, Some(v)) => self.viewer_keybar_labels(v, group),
+            (None, None) => (1..=12)
                 .map(|n| crate::i18n::plain(&tr!(&format!("M{group}F{n}"))))
                 .collect(),
         };

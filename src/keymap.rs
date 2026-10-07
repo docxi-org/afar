@@ -264,7 +264,7 @@ impl Keymap {
                 return (map, problems);
             }
         };
-        for ctx in [Ctx::Panels, Ctx::Viewer] {
+        for ctx in [Ctx::Panels, Ctx::Viewer, Ctx::Editor] {
             let Some(section) = table.get(ctx.section()).and_then(toml::Value::as_table) else {
                 continue;
             };

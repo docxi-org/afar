@@ -234,7 +234,8 @@ impl App {
             KeyCode::F(3) if which == HistoryMenu::Commands => self.command_info(&entry),
             KeyCode::F(3) | KeyCode::F(4) if which == HistoryMenu::Views => {
                 self.overlays.pop();
-                self.history_menu_open(which, &entry);
+                self.focus = Focus::Panels;
+                self.history_open_file(&entry, Some(key.code == KeyCode::F(4)));
             }
             KeyCode::Char('r') if ctrl && which == HistoryMenu::Folders => {
                 for e in entries_of(&self.store, kind) {
@@ -263,15 +264,27 @@ impl App {
                 let side = self.active;
                 self.change_dir(side, std::path::Path::new(&entry.text));
             }
-            HistoryMenu::Views => {
-                let path = std::path::PathBuf::from(&entry.text);
-                if path.is_file() {
-                    self.record_view(&path);
-                    self.open_viewer(&path, vec![path.clone()]);
-                } else {
-                    self.say(tr!("link-not-found", path = entry.text.as_str()));
-                }
-            }
+            HistoryMenu::Views => self.history_open_file(entry, None),
+        }
+    }
+
+    /// A file of the view history: in the viewer or the editor (`edit`;
+    /// `None`: as it was last opened — Far's Enter).
+    fn history_open_file(&mut self, entry: &Entry, edit: Option<bool>) {
+        let path = std::path::PathBuf::from(&entry.text);
+        let edited = entry
+            .data
+            .as_deref()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .and_then(|v| v.get("far_type").and_then(|t| t.as_i64()))
+            .is_some_and(|t| t == 1 || t == 4);
+        if edit.unwrap_or(edited) {
+            self.edit_file(&path, None);
+        } else if path.is_file() {
+            self.record_view(&path);
+            self.open_viewer(&path, vec![path.clone()]);
+        } else {
+            self.say(tr!("link-not-found", path = entry.text.as_str()));
         }
     }
 
@@ -306,6 +319,8 @@ impl App {
         let folder = self.panels[self.active].path.display().to_string();
         let text = path.display().to_string();
         self.store.add(Kind::View, "", &text, &folder, "user");
+        self.store
+            .set_data(Kind::View, "", &text, "{\"far_type\":0}");
         self.journal.push(
             crate::journal::Actor::User,
             crate::journal::Event::FileViewed {

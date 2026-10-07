@@ -144,6 +144,24 @@ pub struct DevState {
     /// The next file operation's number (they go on in the journal).
     #[serde(default)]
     pub next_op_id: u64,
+    /// Open editors (none modified: a restart waits for saving), and the
+    /// one shown.
+    #[serde(default)]
+    pub editors: Vec<EditorState>,
+    #[serde(default)]
+    pub editor_shown: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EditorState {
+    pub path: PathBuf,
+    pub cp: u32,
+    pub line: usize,
+    pub col: usize,
+    pub top: usize,
+    pub left: usize,
+    #[serde(default)]
+    pub line_numbers: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

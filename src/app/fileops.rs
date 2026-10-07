@@ -132,6 +132,8 @@ pub(super) enum Purpose {
     ViewerGoto {
         id: u32,
     },
+    /// The editor's questions.
+    Editor(super::editors::Ask),
     /// The agent menu's "Rename…" and "Other model…".
     AgentRename,
     /// Alt+F7: what and where to look.
@@ -657,6 +659,7 @@ impl App {
                     self.agent_model(dialog.input_value(0));
                 }
             }
+            Purpose::Editor(ask) => self.editor_dialog_closed(ask, button, &dialog),
             Purpose::ViewerGoto { id } => {
                 if button == Some(0) {
                     self.viewer_goto_closed(id, &dialog);

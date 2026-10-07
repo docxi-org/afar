@@ -291,7 +291,21 @@ impl App {
             }
             AskAgent => self.ide_mention(i),
             Settings => self.viewer_settings_dialog(),
-            Edit => self.say(tr!("viewer-not-yet")),
+            // F6: the editor on the same place (the top line of the screen).
+            Edit => {
+                let v = &mut self.viewers[i];
+                let (path, cp) = (v.path().to_path_buf(), v.codepage());
+                let line = v
+                    .visible_lines()
+                    .map_or(0, |(first, _)| first.saturating_sub(1));
+                let top = line as usize;
+                self.close_viewer(i);
+                if let Some(id) = self.open_editor(&path, Some(cp), Some(top))
+                    && let Some(e) = self.editors.iter_mut().find(|e| e.id == id)
+                {
+                    e.top = top;
+                }
+            }
             _ => {}
         }
     }

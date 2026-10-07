@@ -51,6 +51,12 @@ pub const PANEL_INFO_SELECTED: Style = c(con::YELLOW, con::CYAN);
 pub const PANEL_INFO_TEXT: Style = c(con::YELLOW, con::BLUE);
 pub const PANEL_BOX: Style = c(con::LIGHTCYAN, con::BLUE);
 
+// Editor (palette.cpp: Editor.*).
+pub const EDITOR_TEXT: Style = c(con::LIGHTCYAN, con::BLUE);
+pub const EDITOR_SELECTED: Style = c(con::BLACK, con::CYAN);
+pub const EDITOR_STATUS: Style = c(con::BLACK, con::CYAN);
+pub const EDITOR_LINE_NUMBERS: Style = c(con::LIGHTGRAY, con::BLUE);
+
 // Dialogs.
 pub const DIALOG_TEXT: Style = c(con::BLACK, con::LIGHTGRAY);
 pub const DIALOG_BOX: Style = c(con::BLACK, con::LIGHTGRAY);

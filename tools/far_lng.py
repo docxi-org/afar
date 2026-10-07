@@ -108,7 +108,8 @@ def cmd_gen(ids_file, out_dir):
             text = data[mid][n]
             if text is not None:
                 lines.append(f"{mid} = {to_fluent(text)}")
-        (out / f"{lang}.ftl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # LF, as .gitattributes keeps the repository.
+        (out / f"{lang}.ftl").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     print(f"{len(ids)} ids → {len(LANGS)} languages in {out}")
 
 

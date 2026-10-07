@@ -21,6 +21,14 @@ impl App {
         let a = self.active;
         let cmdline_empty = self.cmdline.is_empty();
         match command {
+            // Far asks about each modified editor before leaving.
+            Quit if self.editors_modified() => {
+                if let Some(i) = self.editors.iter().position(|e| e.modified()) {
+                    let id = self.editors[i].id;
+                    self.wm.switch_to(crate::wm::ScreenId::Editor(id));
+                    self.editor_leave(i, super::editors::After::Close);
+                }
+            }
             Quit => {
                 if !self.agent_alive() && self.running.is_none()
                     || self
@@ -219,7 +227,9 @@ impl App {
             ViewFile => return self.view_current(Some(self.config.viewer.external_f3)),
             ViewFileAlt => return self.view_current(Some(!self.config.viewer.external_f3)),
             ViewInternal => return self.view_current(None),
-            Viewer(_) => return false,
+            EditFile => return self.edit_current(false),
+            EditNew => return self.edit_current(true),
+            Viewer(_) | Editor(_) => return false,
         }
         true
     }

@@ -24,6 +24,8 @@ pub enum WinId {
     UserScreen,
     /// A viewer (F3) by its id.
     Viewer(u32),
+    /// An editor (F4) by its id.
+    Editor(u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -105,6 +107,7 @@ pub enum ScreenId {
     Panels,
     UserScreen,
     Viewer(u32),
+    Editor(u32),
 }
 
 pub struct Screen {
