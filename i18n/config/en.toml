@@ -49,6 +49,11 @@ channels = false
 # It is Claude Code's warning: turn this on only if you agree to confirm it
 # in advance.
 confirm_channels = false
+# The agent's test tools: it presses keys in afar, types, clicks and takes
+# screenshots (text with colors or a PNG picture) to test afar by itself.
+# The keys count as yours, past the permissions below: turn this on only
+# while testing. Applies when afar starts next time.
+test_tools = false
 
 [agent.permissions]
 # What the agent may do through afar (its afar_* tools):
@@ -63,6 +68,7 @@ move = "confirm"            # move and rename
 delete = "confirm"          # to the recycle bin
 delete_permanent = "deny"   # bypassing the recycle bin
 run_command = "confirm"     # run a command in the command line
+edit_buffer = "allow"       # change the text of a file open in afar's editor (you save it, F2)
 
 [viewer]
 # The command line stays visible in the viewer (F3); Far hides it.

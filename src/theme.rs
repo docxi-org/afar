@@ -56,6 +56,8 @@ pub const EDITOR_TEXT: Style = c(con::LIGHTCYAN, con::BLUE);
 pub const EDITOR_SELECTED: Style = c(con::BLACK, con::CYAN);
 pub const EDITOR_STATUS: Style = c(con::BLACK, con::CYAN);
 pub const EDITOR_LINE_NUMBERS: Style = c(con::LIGHTGRAY, con::BLUE);
+/// Text the agent wrote, not yet accepted (afar's).
+pub const EDITOR_AGENT: Style = c(con::LIGHTGREEN, con::BLUE);
 
 // Dialogs.
 pub const DIALOG_TEXT: Style = c(con::BLACK, con::LIGHTGRAY);

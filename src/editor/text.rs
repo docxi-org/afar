@@ -34,6 +34,9 @@ impl Eol {
 pub struct Line {
     pub text: String,
     pub eol: Eol,
+    /// Written by the agent and not yet accepted by the user (a user's
+    /// edit of the line or a save accepts it; docs/11 «Три слоя»).
+    pub by_agent: bool,
 }
 
 impl Line {
@@ -41,6 +44,7 @@ impl Line {
         Self {
             text: text.into(),
             eol,
+            by_agent: false,
         }
     }
 
@@ -211,6 +215,16 @@ pub fn encode(lines: &[Line], cp: u32, bom: bool) -> Result<Vec<u8>, char> {
     Ok(out)
 }
 
+/// The temporary file `write_file` writes first.
+pub fn temp_path(path: &std::path::Path) -> std::path::PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    dir.join(format!(".{name}.afar-{}.tmp", std::process::id()))
+}
+
 /// Writes `data` to `path` safely (Far's `SaveSafely`): a temporary file in
 /// the same folder, then `ReplaceFileW` (the original's attributes stay);
 /// a new file is renamed into place. Streams (`:` in the name) are
@@ -223,12 +237,7 @@ pub fn write_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
         }
         return std::fs::write(path, data);
     }
-    let dir = path.parent().unwrap_or(std::path::Path::new("."));
-    let tmp = dir.join(format!(
-        ".{}.afar-{}.tmp",
-        name.unwrap_or_default(),
-        std::process::id()
-    ));
+    let tmp = temp_path(path);
     std::fs::write(&tmp, data)?;
     match replace_file(path, &tmp) {
         Ok(()) => Ok(()),

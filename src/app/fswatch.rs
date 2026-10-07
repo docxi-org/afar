@@ -141,7 +141,14 @@ impl App {
     /// paths, inside one, or the folder holding one (its entry changes).
     fn is_own(&self, path: &Path, change: Change, now: Instant) -> bool {
         let key = path_key(path);
+        // `ReplaceFileW` keeps its own temporary file (`name~RF….TMP`) beside
+        // the file it replaces.
+        let name = key.rsplit('\\').next().unwrap_or("");
+        let replace_tmp = name.contains("~rf") && name.ends_with(".tmp");
         let inside = |root: &str| {
+            if replace_tmp && parent_key(root) == parent_key(&key) {
+                return true;
+            }
             key == root
                 || key.strip_prefix(root).is_some_and(|r| r.starts_with('\\'))
                 || change == Change::Modified
@@ -334,6 +341,12 @@ impl App {
     /// PreToolUse (Bash only): the agent's command starts.
     pub(super) fn on_pre_tool(&mut self, input: &str) -> String {
         let v: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
+        // A file open in the editor: its buffer is the truth.
+        if let Some(tool) = v["tool_name"].as_str()
+            && let Some(deny) = self.editor_guard(tool, &v["tool_input"])
+        {
+            return deny;
+        }
         if matches!(v["tool_name"].as_str(), Some("Bash" | "PowerShell")) {
             let id = v["tool_use_id"].as_str().unwrap_or_default().to_string();
             self.fs.agent_bash.push((id, Instant::now()));

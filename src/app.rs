@@ -32,6 +32,9 @@ mod attributes;
 mod autocomplete;
 mod cmdline;
 mod commands;
+mod editagent;
+mod testtools;
+pub use testtools::PNG_MARK;
 mod editors;
 mod farimport;
 mod fileops;
@@ -149,7 +152,8 @@ afar_command_output) and let you show things in the panels (afar_navigate, afar_
 refer to a file or directory, show it with afar_navigate. To point at a place inside a file, open it \
 in afar's viewer with afar_view (a line or a pattern) and mark lines with afar_highlight (a label; \
 info / warning / error); afar_viewer_state tells which file and lines the user looks at and what they \
-selected. Blocks starting with [afar journal] in a \
+selected. A file open in afar's editor (afar_edit, afar_editor_state) is edited in its buffer, not on the \
+disk: read it with afar_buffer_read, change it with afar_buffer_edit / afar_buffer_insert; the user saves. Blocks starting with [afar journal] in a \
 user message are recent user actions added automatically. In the journal, `fs` entries are file changes afar saw in the panels' folders; afar cannot tell who wrote them: \
 `(while your Bash ran)` means they happened during your shell command (Bash or PowerShell) and most likely are its own \
 writes, `(while [cmd-N] ran)` — during the user's command. `tool` entries are your own tool uses; files you change \
@@ -313,6 +317,10 @@ pub struct App {
     editor_keybar: bool,
     /// Where files were left in the editor.
     editor_places: editors::EditorPlaces,
+    /// The test tools: the input being played, and the last frame (kept
+    /// only while the tools are on).
+    test_run: Option<testtools::TestRun>,
+    last_frame: Option<(Buffer, Option<Position>)>,
     /// The last left click in an editor (double click: a word).
     editor_last_click: Option<(Instant, u16, u16)>,
     /// Wrapping and bars carried to the next viewer (Far's
@@ -459,6 +467,8 @@ impl App {
                 &data_dir.join("history").join("editor.json"),
             ),
             editor_last_click: None,
+            test_run: None,
+            last_frame: None,
             viewer_defaults: crate::viewer::Defaults {
                 scrollbar: config.viewer.scrollbar,
                 ..Default::default()
@@ -505,6 +515,9 @@ impl App {
             app.say(tr!("history-open-failed", error = problem));
         }
         app.set_ide(app.config.agent.ide);
+        if app.config.agent.test_tools {
+            app.say(tr!("test-tools-on"));
+        }
         let (left, right) = (app.panels[0].path.clone(), app.panels[1].path.clone());
         app.journal
             .push(Actor::System, Event::AppStarted { left, right });
@@ -778,6 +791,9 @@ impl App {
                 if let Some(pos) = cursor {
                     frame.set_cursor_position(pos);
                 }
+                if self.config.agent.test_tools {
+                    self.last_frame = Some((frame.buffer_mut().clone(), cursor));
+                }
             })?;
             self.poll_signals();
             let outer = self.outer_update();
@@ -809,7 +825,10 @@ impl App {
                 }
                 return Ok(exit);
             }
-            match rx.recv_timeout(Duration::from_millis(250)) {
+            // The test tools play their input a frame at a time.
+            let testing = self.test_step();
+            let wait = if testing { 15 } else { 250 };
+            match rx.recv_timeout(Duration::from_millis(wait)) {
                 Ok(msg) => {
                     // Coalesce bursts (PTY output) into one redraw; a paste
                     // into the agent's pane goes as one piece.
@@ -865,6 +884,10 @@ impl App {
                 request: Request::ChannelWait,
                 reply,
             }) => self.channel_wait(reply),
+            AppMsg::Mcp(McpMsg {
+                request: Request::TestInput { actions, screen },
+                reply,
+            }) => self.test_input(actions, screen, reply),
             AppMsg::Mcp(McpMsg { request, reply }) => match request {
                 // Answered later: after the user's confirmation.
                 Request::Delete {
@@ -1016,7 +1039,11 @@ impl App {
             "UserPromptSubmit": hook("user-prompt"),
             // The agent's own edits and commands (docs/04-agent.md).
             // PowerShell is the agent's shell on Windows, as Bash elsewhere.
-            "PreToolUse": tool_hook("pre-tool", "Bash|PowerShell"),
+            // Read / Edit / Write: the editor's guard (a file open there).
+            "PreToolUse": tool_hook(
+                "pre-tool",
+                "Bash|PowerShell|Read|Edit|MultiEdit|Write|NotebookEdit"
+            ),
             "PostToolUse": tool_hook(
                 "post-tool",
                 "Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell"
@@ -1977,6 +2004,11 @@ impl App {
                 }
                 Ok(out)
             }
+            Request::TestInput { .. } => Err("answered in handle".into()),
+            Request::TestScreen { format } if self.config.agent.test_tools => {
+                testtools::screen_answer(self.last_frame.as_ref(), &format)
+            }
+            Request::TestScreen { .. } => Err("the test tools are off ([agent] test_tools)".into()),
             Request::Delete { .. } | Request::Copy { .. } | Request::MkDir { .. } => {
                 Err("handled asynchronously".into())
             }
@@ -2021,6 +2053,30 @@ impl App {
                 clear,
             } => self.agent_highlight(&path, marks, flash, ttl_s, clear),
             Request::ViewerState => Ok(self.agent_viewer_state()),
+            Request::Edit {
+                path,
+                line,
+                pattern,
+            } => self.agent_edit(&path, line, pattern),
+            Request::EditorState => Ok(self.agent_editor_state()),
+            Request::BufferRead {
+                path,
+                from_line,
+                to_line,
+                since_version,
+            } => self.agent_buffer_read(&path, from_line, to_line, since_version),
+            Request::BufferEdit {
+                path,
+                old,
+                new,
+                all,
+            } => self.agent_buffer_edit(&path, &old, &new, all),
+            Request::BufferInsert {
+                path,
+                after_line,
+                after_text,
+                text,
+            } => self.agent_buffer_insert(&path, after_line, after_text, &text),
             Request::HookSessionStart(input) => {
                 let resumed = self.on_session_start(&input);
                 let mut context = self.session_start_context();

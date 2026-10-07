@@ -218,3 +218,6 @@ editor-changed-on-disk = changed on the disk, and the editor has unsaved changes
 editor-reload = &Read again
 editor-keep-mine = &Keep mine
 dev-blocker-editor = an editor has unsaved changes
+agent-edited-behind = The agent is editing { $what } in the editor — F12 to go there
+test-tools-on = The agent's test tools are on ([agent] test_tools): it can press keys in afar and take screenshots
+test-input = The agent presses: { $what }

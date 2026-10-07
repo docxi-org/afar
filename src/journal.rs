@@ -104,6 +104,33 @@ pub enum Event {
         paths: Vec<PathBuf>,
         outcome: String,
     },
+    /// A file opened in the editor.
+    EditorOpened {
+        path: PathBuf,
+    },
+    /// The agent changed lines of an editor's buffer (not the file).
+    BufferEdited {
+        path: PathBuf,
+        /// Lines changed or added (up to 20), and how many were removed.
+        changed: Vec<u64>,
+        removed: usize,
+        version: u64,
+    },
+    /// The agent played input in afar (its test tools).
+    TestInput {
+        actions: Vec<String>,
+    },
+    /// A file saved from the editor.
+    FileSaved {
+        path: PathBuf,
+        codepage: String,
+    },
+    /// The file of an editor with unsaved changes changed on the disk:
+    /// what happened.
+    EditorDiskChanged {
+        path: PathBuf,
+        outcome: String,
+    },
     /// A file opened in the viewer.
     FileViewed {
         path: PathBuf,
@@ -370,6 +397,35 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 }
             }
             Event::FileViewed { path } => format!("view   {}", path.display()),
+            Event::EditorOpened { path } => format!("edit   {}", path.display()),
+            Event::BufferEdited {
+                path,
+                changed,
+                removed,
+                version,
+            } => {
+                let lines: Vec<String> = changed.iter().map(u64::to_string).collect();
+                let removed = if *removed > 0 {
+                    format!(", {removed} removed")
+                } else {
+                    String::new()
+                };
+                format!(
+                    "buffer {} lines {}{removed} (editor buffer v{version}, not saved)",
+                    path.display(),
+                    lines.join(",")
+                )
+            }
+            Event::TestInput { actions } => format!("test   {}", actions.join(", ")),
+            Event::FileSaved { path, codepage } => {
+                format!("save   {} ({codepage})", path.display())
+            }
+            Event::EditorDiskChanged { path, outcome } => {
+                format!(
+                    "disk   {} changed on the disk while edited: {outcome}",
+                    path.display()
+                )
+            }
             Event::ViewerSelection {
                 path,
                 from_line,

@@ -113,6 +113,45 @@ fn vertical_moves_keep_the_screen_column() {
 }
 
 #[test]
+fn agent_edits_are_one_step_and_keep_the_user_cursor() {
+    let mut e = ed("alpha\r\nbeta\r\ngamma");
+    e.cursor = Pos::new(2, 3);
+    let edit = e.agent_replace("beta", "BETA\nmore", false).unwrap();
+    assert_eq!(edit.changed, [1, 2]);
+    assert_eq!(e.version, 1);
+    assert_eq!(e.text(), "alpha\r\nBETA\r\nmore\r\ngamma");
+    assert!(e.lines()[1].by_agent && e.lines()[2].by_agent && !e.lines()[0].by_agent);
+    // The user's cursor moved down with its line.
+    assert_eq!(e.cursor, Pos::new(3, 3));
+    e.undo();
+    assert_eq!(e.text(), "alpha\r\nbeta\r\ngamma");
+    assert!(e.agent_replace("a", "A", false).is_err());
+    assert!(e.agent_replace("zzz", "A", false).is_err());
+    let edit = e.agent_insert(3, "end").unwrap();
+    assert_eq!(edit.changed, [3]);
+    assert_eq!(e.text(), "alpha\r\nbeta\r\ngamma\r\nend");
+    let edit = e.agent_insert(0, "top").unwrap();
+    assert_eq!(edit.changed, [0]);
+    assert!(e.text().starts_with("top\r\nalpha"));
+    // Only the new lines are the agent's: the ones the insertions were
+    // built around are not.
+    let marked: Vec<bool> = e.lines().iter().map(|l| l.by_agent).collect();
+    assert_eq!(marked, [true, false, false, false, true]);
+    // Removing a line marks nothing.
+    let edit = e.agent_replace("beta\n", "", false).unwrap();
+    assert_eq!((edit.changed.len(), edit.removed), (0, 1));
+    assert!(!e.lines()[2].by_agent);
+    // Replacing in two places: two lines, one version.
+    let mut e = ed("x1\ny\nz\nx2");
+    let v = e.version;
+    let edit = e.agent_replace("x", "X", true).unwrap();
+    assert_eq!(edit.changed, [0, 3]);
+    assert_eq!(e.version, v + 1);
+    e.saved();
+    assert!(e.lines().iter().all(|l| !l.by_agent));
+}
+
+#[test]
 fn lock_blocks_editing() {
     let mut e = ed("abc");
     e.command(C::Lock);

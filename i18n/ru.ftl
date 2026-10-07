@@ -219,3 +219,6 @@ editor-changed-on-disk = изменён на диске, а в редактор�
 editor-reload = &Перечитать
 editor-keep-mine = &Оставить своё
 dev-blocker-editor = в редакторе есть несохранённые правки
+agent-edited-behind = Агент правит { $what } в редакторе — F12, чтобы перейти
+test-tools-on = Включены тестовые инструменты агента ([agent] test_tools): он может нажимать клавиши в afar и снимать экран
+test-input = Агент нажимает: { $what }

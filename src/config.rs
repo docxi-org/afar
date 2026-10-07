@@ -259,6 +259,9 @@ pub struct Agent {
     /// afar answers Claude Code's question about development channels at
     /// the agent's start itself (only when afar's channel is the only one).
     pub confirm_channels: bool,
+    /// The agent's test tools (`afar_test_input`, `afar_test_screen`): it
+    /// presses keys and takes screenshots of afar — past its permissions.
+    pub test_tools: bool,
     pub permissions: Permissions,
 }
 
@@ -280,6 +283,7 @@ impl Default for Agent {
             ide: false,
             channels: false,
             confirm_channels: false,
+            test_tools: false,
             permissions: Permissions::default(),
         }
     }
@@ -309,6 +313,8 @@ pub struct Permissions {
     pub delete: Level,
     pub delete_permanent: Level,
     pub run_command: Level,
+    /// Changing the text of a file open in afar's editor.
+    pub edit_buffer: Level,
 }
 
 impl Default for Permissions {
@@ -321,6 +327,7 @@ impl Default for Permissions {
             delete: Level::Confirm,
             delete_permanent: Level::Deny,
             run_command: Level::Confirm,
+            edit_buffer: Level::Allow,
         }
     }
 }

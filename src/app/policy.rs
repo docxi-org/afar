@@ -19,6 +19,9 @@ pub(super) enum AgentAction {
     Move,
     Delete,
     DeletePermanent,
+    /// Changing the text of a file open in afar's editor (the buffer; the
+    /// user saves it).
+    EditBuffer,
 }
 
 impl AgentAction {
@@ -31,6 +34,7 @@ impl AgentAction {
             AgentAction::Move => "move",
             AgentAction::Delete => "delete",
             AgentAction::DeletePermanent => "delete_permanent",
+            AgentAction::EditBuffer => "edit_buffer",
         }
     }
 }
@@ -45,9 +49,13 @@ impl App {
             AgentAction::Move => p.move_,
             AgentAction::Delete => p.delete,
             AgentAction::DeletePermanent => p.delete_permanent,
+            AgentAction::EditBuffer => p.edit_buffer,
         };
-        // Showing things needs no question: "confirm" means allow.
-        if action == AgentAction::Navigate && level == Level::Confirm {
+        // Showing things needs no question, and the buffer is not the disk
+        // (the user saves it): "confirm" means allow.
+        if matches!(action, AgentAction::Navigate | AgentAction::EditBuffer)
+            && level == Level::Confirm
+        {
             Level::Allow
         } else {
             level

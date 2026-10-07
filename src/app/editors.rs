@@ -178,7 +178,9 @@ impl App {
             });
             return;
         }
-        self.open_editor(path, cp, None);
+        if self.open_editor(path, cp, None).is_some() {
+            self.journal_user_edit(path);
+        }
     }
 
     /// Opens an editor screen (or shows the one already open on the file);
@@ -204,8 +206,13 @@ impl App {
             return Some(id);
         }
         let remembered = self.editor_places.get(path).cloned();
+        // A file that does not show its code page (plain ASCII, a new
+        // one) is taken as UTF-8 — Far takes ANSI, and a Cyrillic word
+        // typed into it then goes to the disk in 1251, which other tools
+        // (the agent's Read and Edit) read as UTF-8 and break. A page set
+        // in the settings wins.
         let default_cp = match self.config.viewer.default_codepage {
-            0 => codepage::ansi(),
+            0 => codepage::UTF8,
             cp => cp,
         };
         let id = self.next_editor_id;
@@ -274,6 +281,16 @@ impl App {
         self.store.add(Kind::View, "", &text, &folder, "user");
         self.store
             .set_data(Kind::View, "", &text, "{\"far_type\":1}");
+    }
+
+    /// The user opened a file in the editor (the journal).
+    fn journal_user_edit(&mut self, path: &Path) {
+        self.journal.push(
+            crate::journal::Actor::User,
+            crate::journal::Event::EditorOpened {
+                path: path.to_path_buf(),
+            },
+        );
     }
 
     fn remember_editor(&mut self, i: usize) {
@@ -516,8 +533,9 @@ impl App {
                 return;
             }
         };
-        // The panels' watcher: this write is afar's own.
-        self.own_paths(u64::MAX - 1, std::slice::from_ref(&path));
+        // The panels' watcher: this write and its temporary file are
+        // afar's own.
+        self.own_paths(u64::MAX - 1, &[path.clone(), text::temp_path(&path)]);
         let result = (|| -> std::io::Result<()> {
             if readonly {
                 let mut p = std::fs::metadata(&path)?.permissions();
@@ -551,6 +569,14 @@ impl App {
         e.saved();
         e.stamp = stamp(&path);
         e.ignored_stamp = None;
+        let codepage = codepage::long_name(e.cp);
+        self.journal.push(
+            crate::journal::Actor::User,
+            crate::journal::Event::FileSaved {
+                path: path.clone(),
+                codepage,
+            },
+        );
         for p in &mut self.panels {
             p.reload(None);
         }
@@ -715,13 +741,15 @@ impl App {
                 self.edit_file(&path, cp);
             }
             Ask::NewPath { path, cp } => {
-                if button == Some(0) {
-                    self.open_editor(&path, cp, None);
+                if button == Some(0) && self.open_editor(&path, cp, None).is_some() {
+                    self.journal_user_edit(&path);
                 }
             }
             Ask::Large { path, cp } => match button {
                 Some(0) => {
-                    self.open_editor(&path, cp, None);
+                    if self.open_editor(&path, cp, None).is_some() {
+                        self.journal_user_edit(&path);
+                    }
                 }
                 Some(1) => {
                     self.record_view(&path);
@@ -821,11 +849,24 @@ impl App {
                 }
             }
             Ask::Reload { id } => {
-                if let Some(i) = self.editor_index(id)
-                    && button == Some(0)
-                {
+                let Some(i) = self.editor_index(id) else {
+                    return;
+                };
+                let path = self.editors[i].path().to_path_buf();
+                let outcome = if button == Some(0) {
                     self.editor_reload(i);
-                }
+                    "the user read it again (the unsaved changes are gone)"
+                } else {
+                    self.editors[i].disk_changed = true;
+                    "the user kept the buffer (saving will overwrite the disk's version)"
+                };
+                self.journal.push(
+                    crate::journal::Actor::User,
+                    crate::journal::Event::EditorDiskChanged {
+                        path,
+                        outcome: outcome.to_string(),
+                    },
+                );
             }
         }
     }
@@ -862,9 +903,16 @@ impl App {
             return;
         }
         if !e.modified() {
-            let name = e.path().display().to_string();
+            let path = e.path().to_path_buf();
             self.editor_reload(i);
-            self.say(tr!("editor-reloaded", path = name));
+            self.say(tr!("editor-reloaded", path = path.display().to_string()));
+            self.journal.push(
+                crate::journal::Actor::External,
+                crate::journal::Event::EditorDiskChanged {
+                    path,
+                    outcome: "the buffer had no unsaved changes and was read again".to_string(),
+                },
+            );
             return;
         }
         let id = e.id;

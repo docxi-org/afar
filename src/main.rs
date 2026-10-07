@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
             })?;
     }
     let token = new_token();
-    let port = afar::mcp::start(tx.clone(), token.clone())?;
+    let port = afar::mcp::start(tx.clone(), token.clone(), config.agent.test_tools)?;
     if dev {
         let tx = tx.clone();
         afar::dev::spawn_watcher(move |m| {

@@ -300,10 +300,14 @@ impl App {
                     .map_or(0, |(first, _)| first.saturating_sub(1));
                 let top = line as usize;
                 self.close_viewer(i);
-                if let Some(id) = self.open_editor(&path, Some(cp), Some(top))
-                    && let Some(e) = self.editors.iter_mut().find(|e| e.id == id)
-                {
-                    e.top = top;
+                if let Some(id) = self.open_editor(&path, Some(cp), Some(top)) {
+                    if let Some(e) = self.editors.iter_mut().find(|e| e.id == id) {
+                        e.top = top;
+                    }
+                    self.journal.push(
+                        crate::journal::Actor::User,
+                        crate::journal::Event::EditorOpened { path },
+                    );
                 }
             }
             _ => {}

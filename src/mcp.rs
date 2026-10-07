@@ -99,6 +99,38 @@ pub enum Request {
         clear: bool,
     },
     ViewerState,
+    /// The test tools: input played in afar, then the screen; the screen.
+    TestInput {
+        actions: Vec<String>,
+        screen: Option<String>,
+    },
+    TestScreen {
+        format: String,
+    },
+    Edit {
+        path: String,
+        line: Option<u64>,
+        pattern: Option<String>,
+    },
+    EditorState,
+    BufferRead {
+        path: String,
+        from_line: Option<u64>,
+        to_line: Option<u64>,
+        since_version: Option<u64>,
+    },
+    BufferEdit {
+        path: String,
+        old: String,
+        new: String,
+        all: bool,
+    },
+    BufferInsert {
+        path: String,
+        after_line: Option<u64>,
+        after_text: Option<String>,
+        text: String,
+    },
 }
 
 pub type Reply = Result<String, String>;
@@ -161,6 +193,52 @@ pub struct NavigateParams {
     pub path: String,
     /// Name of the item to put the cursor on.
     pub cursor: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct EditParams {
+    /// File to open; absolute or relative to the active panel's directory.
+    pub path: String,
+    /// Line to show (from 1).
+    pub line: Option<u64>,
+    /// A regular expression: show its first match (from `line`, if given).
+    pub pattern: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct BufferReadParams {
+    /// A file open in afar's editor.
+    pub path: String,
+    /// First line (from 1).
+    pub from_line: Option<u64>,
+    /// Last line (inclusive).
+    pub to_line: Option<u64>,
+    /// Only the changes since this version (one you read before), as a
+    /// unified diff.
+    pub since_version: Option<u64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct BufferEditParams {
+    /// A file open in afar's editor.
+    pub path: String,
+    /// Text to replace, exactly as in the buffer (lines joined with \n);
+    /// must occur once unless replace_all.
+    pub old_string: String,
+    pub new_string: String,
+    pub replace_all: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct BufferInsertParams {
+    /// A file open in afar's editor.
+    pub path: String,
+    /// Insert after this line (from 1; 0: before the first line).
+    pub after_line: Option<u64>,
+    /// Or after the line holding this fragment (must be on one line).
+    pub after_text: Option<String>,
+    /// The lines to insert (joined with \n).
+    pub text: String,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -233,19 +311,99 @@ pub struct CopyParams {
 #[derive(Clone)]
 pub struct AfarMcp {
     tx: Sender<AppMsg>,
+    /// The tools offered: the test tools only when turned on.
+    router: rmcp::handler::server::router::tool::ToolRouter<Self>,
 }
 
 fn result(r: Reply) -> Result<CallToolResult, McpError> {
     Ok(match r {
+        // A picture: `PNG_MARK<base64>\0<text>`.
+        Ok(text) if text.starts_with(crate::app::PNG_MARK) => {
+            let rest = &text[crate::app::PNG_MARK.len()..];
+            let (data, text) = rest.split_once('\0').unwrap_or((rest, ""));
+            let mut content = vec![ContentBlock::image(data, "image/png")];
+            if !text.is_empty() {
+                content.push(ContentBlock::text(text));
+            }
+            CallToolResult::success(content)
+        }
         Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
         Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
     })
 }
 
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct TestInputParams {
+    /// Played in order, one per frame: a key in afar's key map notation
+    /// ("F4", "Ctrl+Z", "Shift+F2", "Alt+F7", "Enter", "Esc", "Up", "Gray+"),
+    /// "text:<characters>" (\n is Enter), "click:x,y", "rclick:x,y",
+    /// "dclick:x,y", "drag:x1,y1,x2,y2", "wheel:x,y,n" (n > 0: down) or
+    /// "wait:ms". Screen cells count from 0 (column x, row y).
+    pub actions: Vec<String>,
+    /// The screen afterwards: "text" (default: rows and their colors),
+    /// "png" (a picture), "both" or "none".
+    pub screen: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct TestScreenParams {
+    /// "text" (default: rows and their colors), "png" (a picture) or "both".
+    pub format: Option<String>,
+}
+
 #[tool_router]
 impl AfarMcp {
-    pub fn new(tx: Sender<AppMsg>) -> Self {
-        Self { tx }
+    pub fn new(tx: Sender<AppMsg>, test_tools: bool) -> Self {
+        let mut router = Self::tool_router();
+        if !test_tools {
+            router.remove_route("afar_test_input");
+            router.remove_route("afar_test_screen");
+        }
+        Self { tx, router }
+    }
+
+    #[tool(
+        description = "TEST TOOL (the user turned it on to let you test afar): play input in \
+        afar as the user would — keys, text, mouse clicks — one action per frame, then get the \
+        screen. The input goes to afar's interface (panels, dialogs, viewer, editor), not to your \
+        own pane, and counts as the user's: it bypasses your permissions, so touch only test \
+        (sandbox) files. Every call is journaled and shown to the user."
+    )]
+    async fn afar_test_input(
+        &self,
+        Parameters(p): Parameters<TestInputParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask_within(
+                &self.tx,
+                Request::TestInput {
+                    actions: p.actions,
+                    screen: p.screen,
+                },
+                Duration::from_secs(120),
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "TEST TOOL: afar's screen as it is now — \"text\" (rows from 0 and, for \
+        each row, its runs of colors as fg/bg by columns, in Far's console color names; the \
+        cursor) or \"png\" (a picture of the screen) or \"both\"."
+    )]
+    async fn afar_test_screen(
+        &self,
+        Parameters(p): Parameters<TestScreenParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask(
+                &self.tx,
+                Request::TestScreen {
+                    format: p.format.unwrap_or_else(|| "text".into()),
+                },
+            )
+            .await,
+        )
     }
 
     #[tool(
@@ -408,6 +566,108 @@ impl AfarMcp {
     }
 
     #[tool(
+        description = "Open a file in afar's editor (F4) at a line or at the first match of a \
+        regular expression. While a file is open there, its buffer is the truth: read it with \
+        afar_buffer_read and change it with afar_buffer_edit / afar_buffer_insert — your Read of \
+        a modified buffer's file and your Edit / Write of an open file are refused. The user \
+        saves (F2)."
+    )]
+    async fn afar_edit(
+        &self,
+        Parameters(p): Parameters<EditParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask(
+                &self.tx,
+                Request::Edit {
+                    path: p.path,
+                    line: p.line,
+                    pattern: p.pattern,
+                },
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "Files open in afar's editor: path, whether on the screen, buffer version, \
+        modified (unsaved), the user's cursor, visible lines, the selection (lines and text), and \
+        the version you last read."
+    )]
+    async fn afar_editor_state(&self) -> Result<CallToolResult, McpError> {
+        result(ask(&self.tx, Request::EditorState).await)
+    }
+
+    #[tool(
+        description = "Read the buffer of a file open in afar's editor (what the user sees, with \
+        unsaved changes): numbered lines (up to 2000 without a range), or with since_version only \
+        the changes since a version you read, as a unified diff."
+    )]
+    async fn afar_buffer_read(
+        &self,
+        Parameters(p): Parameters<BufferReadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask(
+                &self.tx,
+                Request::BufferRead {
+                    path: p.path,
+                    from_line: p.from_line,
+                    to_line: p.to_line,
+                    since_version: p.since_version,
+                },
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "Change the buffer of a file open in afar's editor, like Edit: old_string \
+        (exact, unique unless replace_all) becomes new_string. One undo step for the user; your \
+        lines are marked until they accept them; the file is not written — the user saves (F2)."
+    )]
+    async fn afar_buffer_edit(
+        &self,
+        Parameters(p): Parameters<BufferEditParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask(
+                &self.tx,
+                Request::BufferEdit {
+                    path: p.path,
+                    old: p.old_string,
+                    new: p.new_string,
+                    all: p.replace_all.unwrap_or(false),
+                },
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "Insert lines into the buffer of a file open in afar's editor: after a line \
+        number (0: at the top) or after the line holding a unique fragment — e.g. to write your \
+        answer below the user's text. One undo step; the user saves."
+    )]
+    async fn afar_buffer_insert(
+        &self,
+        Parameters(p): Parameters<BufferInsertParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask(
+                &self.tx,
+                Request::BufferInsert {
+                    path: p.path,
+                    after_line: p.after_line,
+                    after_text: p.after_text,
+                    text: p.text,
+                },
+            )
+            .await,
+        )
+    }
+
+    #[tool(
         description = "Select files in an afar panel so the user sees them highlighted \
         (e.g. before proposing an operation on them)."
     )]
@@ -504,7 +764,7 @@ const INSTRUCTIONS: &str = "afar is the two-panel file manager (Far Manager styl
 in; you run in its bottom pane. Use afar_state/afar_journal to learn what the user did, \
 afar_command_output to read output of commands they ran, afar_navigate/afar_select to show things.";
 
-#[tool_handler]
+#[tool_handler(router = self.router)]
 impl ServerHandler for AfarMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
@@ -567,7 +827,7 @@ async fn hook(
 }
 
 /// Starts the server; returns its port.
-pub fn start(tx: Sender<AppMsg>, token: String) -> anyhow::Result<u16> {
+pub fn start(tx: Sender<AppMsg>, token: String, test_tools: bool) -> anyhow::Result<u16> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
@@ -592,7 +852,7 @@ pub fn start(tx: Sender<AppMsg>, token: String) -> anyhow::Result<u16> {
                 };
                 let factory_tx = tx.clone();
                 let mcp = StreamableHttpService::new(
-                    move || Ok(AfarMcp::new(factory_tx.clone())),
+                    move || Ok(AfarMcp::new(factory_tx.clone(), test_tools)),
                     LocalSessionManager::default().into(),
                     StreamableHttpServerConfig::default(),
                 );
@@ -729,6 +989,11 @@ pub fn run_hook(event: &str) -> anyhow::Result<()> {
     if let Some(body) = post_to_afar(&format!("/hook/{event}"), &input, Duration::from_secs(10))
         && !body.is_empty()
     {
+        // afar's own JSON (a PreToolUse decision) goes out as it is.
+        if body.starts_with('{') {
+            print!("{body}");
+            return Ok(());
+        }
         // JSON hook output: the text goes into the model's context as
         // additional context rather than as plain hook output.
         let event_name = match event {

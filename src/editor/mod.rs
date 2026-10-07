@@ -67,6 +67,14 @@ pub enum Outcome {
     App(EditorCmd),
 }
 
+/// What one agent's portion did: the lines it changed or added (from 0)
+/// and how many it removed.
+#[derive(Debug, Default)]
+pub struct AgentEdit {
+    pub changed: Vec<usize>,
+    pub removed: usize,
+}
+
 pub struct Editor {
     pub id: u32,
     path: PathBuf,
@@ -102,6 +110,14 @@ pub struct Editor {
     pub stamp: Option<(SystemTime, u64)>,
     /// A change on the disk the user chose to keep their text over.
     pub ignored_stamp: Option<(SystemTime, u64)>,
+    /// Changes now are the agent's (its lines are marked).
+    agent_writing: bool,
+    /// The texts of the versions the agent read (the last few; it gets
+    /// the changes since one of them).
+    agent_seen: Vec<(u64, Vec<String>)>,
+    /// The file changed on the disk while this buffer had unsaved changes
+    /// and the user kept the buffer.
+    pub disk_changed: bool,
     pub opened: Instant,
 }
 
@@ -135,6 +151,9 @@ impl Editor {
             new_file: false,
             stamp: None,
             ignored_stamp: None,
+            agent_writing: false,
+            agent_seen: Vec::new(),
+            disk_changed: false,
             opened: Instant::now(),
         }
     }
@@ -163,6 +182,11 @@ impl Editor {
     pub fn saved(&mut self) {
         self.history.mark_saved();
         self.new_file = false;
+        // Saving accepts the agent's text.
+        for l in &mut self.lines {
+            l.by_agent = false;
+        }
+        self.disk_changed = false;
     }
 
     /// The whole text replaced (the file read again): no undo across it.
@@ -178,6 +202,7 @@ impl Editor {
         self.history = History::default();
         self.anchor = None;
         self.version += 1;
+        self.disk_changed = false;
         let last = self.lines.len() - 1;
         self.cursor.line = self.cursor.line.min(last);
         self.top = self.top.min(last);
@@ -474,10 +499,9 @@ impl Editor {
             if i + 1 == n {
                 text.push_str(&suffix);
             }
-            new_lines.push(Line::new(
-                text,
-                if i + 1 == n { last_eol } else { break_eol },
-            ));
+            let mut line = Line::new(text, if i + 1 == n { last_eol } else { break_eol });
+            line.by_agent = self.agent_writing;
+            new_lines.push(line);
         }
         let end_col = if n == 1 {
             prefix.chars().count() + segments[0].chars().count()
@@ -716,6 +740,176 @@ impl Editor {
             self.anchor = None;
             self.version += 1;
         }
+    }
+
+    // --------------------------------------------------------------- agent
+
+    /// The text's lines without their endings (what the agent sees).
+    pub fn plain_lines(&self) -> Vec<String> {
+        self.lines.iter().map(|l| l.text.clone()).collect()
+    }
+
+    /// The position of byte `offset` of the text joined with `\n`.
+    fn pos_of_offset(&self, offset: usize) -> Pos {
+        let mut start = 0;
+        for (n, l) in self.lines.iter().enumerate() {
+            let end = start + l.text.len();
+            if offset <= end {
+                return Pos::new(n, l.text[..offset - start].chars().count());
+            }
+            start = end + 1;
+        }
+        self.file_end()
+    }
+
+    /// An agent's change from `s` to `e` — one undo step; the user's
+    /// cursor, screen and selection stay where they were in the text.
+    fn agent_change(&mut self, s: Pos, e: Pos, new: &str) -> (usize, usize) {
+        let before = self.lines.len();
+        let (cursor, top, anchor) = (self.cursor, self.top, self.anchor);
+        let eol = self.lines[s.line].eol;
+        self.agent_writing = true;
+        let end = self.replace(s, e, new, eol, false);
+        self.agent_writing = false;
+        let delta = self.lines.len() as isize - before as isize;
+        // Below the change: moved by the lines it added or removed; inside
+        // it: kept within it.
+        fn shift(p: Pos, s: Pos, e: Pos, end: Pos, delta: isize) -> Pos {
+            if p.line > e.line {
+                Pos::new((p.line as isize + delta).max(0) as usize, p.col)
+            } else if p.line >= s.line {
+                Pos::new(p.line.min(end.line), p.col)
+            } else {
+                p
+            }
+        }
+        self.cursor = shift(cursor, s, e, end, delta);
+        self.anchor = anchor.map(|a| shift(a, s, e, end, delta));
+        if top > e.line {
+            self.top = (top as isize + delta).max(0) as usize;
+        }
+        (s.line, end.line)
+    }
+
+    /// One portion of the agent's (one tool call): one undo step, one
+    /// version. Afterwards only the lines whose text it really changed or
+    /// added stay marked as its own (a line rebuilt around an insertion
+    /// keeps its mark); the changed lines and the count of removed ones
+    /// are returned.
+    fn agent_portion(&mut self, f: impl FnOnce(&mut Self)) -> AgentEdit {
+        use similar::DiffOp;
+        let old = self.lines.clone();
+        let version = self.version;
+        let before = self.cursor;
+        self.history.begin(before);
+        f(self);
+        self.history.end(self.cursor);
+        self.version = version + 1;
+        let a: Vec<&str> = old.iter().map(|l| l.text.as_str()).collect();
+        let b: Vec<String> = self.lines.iter().map(|l| l.text.clone()).collect();
+        let b: Vec<&str> = b.iter().map(String::as_str).collect();
+        let mut edit = AgentEdit::default();
+        for op in similar::capture_diff_slices(similar::Algorithm::Myers, &a, &b) {
+            match op {
+                DiffOp::Equal {
+                    old_index,
+                    new_index,
+                    len,
+                } => {
+                    for k in 0..len {
+                        self.lines[new_index + k].by_agent = old[old_index + k].by_agent;
+                    }
+                }
+                DiffOp::Delete { old_len, .. } => edit.removed += old_len,
+                DiffOp::Insert {
+                    new_index, new_len, ..
+                } => edit.changed.extend(new_index..new_index + new_len),
+                DiffOp::Replace {
+                    old_len,
+                    new_index,
+                    new_len,
+                    ..
+                } => {
+                    edit.changed.extend(new_index..new_index + new_len);
+                    edit.removed += old_len.saturating_sub(new_len);
+                }
+            }
+        }
+        edit
+    }
+
+    /// `afar_buffer_edit`: `old` (lines joined with `\n`) replaced by
+    /// `new`; `old` must be found once unless `all`.
+    pub fn agent_replace(&mut self, old: &str, new: &str, all: bool) -> Result<AgentEdit, String> {
+        if old.is_empty() {
+            return Err("old_string is empty".into());
+        }
+        let text = self.plain_lines().join("\n");
+        let found: Vec<usize> = text.match_indices(old).map(|(i, _)| i).collect();
+        match found.len() {
+            0 => return Err("old_string not found in the buffer (it may differ from the file on the disk; read it with afar_buffer_read)".into()),
+            n if n > 1 && !all => {
+                return Err(format!(
+                    "old_string found {n} times; give more context to make it unique, or set replace_all"
+                ));
+            }
+            _ => {}
+        }
+        let new = new.replace("\r\n", "\n");
+        Ok(self.agent_portion(|ed| {
+            // From the end, so the earlier offsets stay right.
+            for &at in found.iter().rev() {
+                let s = ed.pos_of_offset(at);
+                let e = ed.pos_of_offset(at + old.len());
+                ed.agent_change(s, e, &new);
+            }
+        }))
+    }
+
+    /// `afar_buffer_insert`: `text` as new lines after line `after` (from
+    /// 1; 0: before the first).
+    pub fn agent_insert(&mut self, after: usize, text: &str) -> Result<AgentEdit, String> {
+        let n = self.lines.len();
+        if after > n {
+            return Err(format!(
+                "line {after} is past the end: the buffer has {n} lines"
+            ));
+        }
+        let text = text.replace("\r\n", "\n");
+        let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
+        Ok(self.agent_portion(|ed| {
+            if after == 0 {
+                ed.agent_change(Pos::default(), Pos::default(), &format!("{text}\n"));
+            } else {
+                let line = after - 1;
+                let end = Pos::new(line, ed.line_len(line));
+                ed.agent_change(end, end, &format!("\n{text}"));
+            }
+        }))
+    }
+
+    /// The agent read the text at its current version (a few of the
+    /// latest are kept for `since_version`).
+    pub fn agent_read(&mut self) {
+        let lines = self.plain_lines();
+        self.agent_seen.retain(|(v, _)| *v != self.version);
+        self.agent_seen.push((self.version, lines));
+        if self.agent_seen.len() > 8 {
+            self.agent_seen.remove(0);
+        }
+    }
+
+    /// The text of a version the agent has read.
+    pub fn agent_version(&self, version: u64) -> Option<&[String]> {
+        self.agent_seen
+            .iter()
+            .find(|(v, _)| *v == version)
+            .map(|(_, l)| l.as_slice())
+    }
+
+    /// The last version the agent read.
+    pub fn agent_last_read(&self) -> Option<u64> {
+        self.agent_seen.last().map(|(v, _)| *v)
     }
 
     // ------------------------------------------------------------ commands
@@ -1021,6 +1215,8 @@ impl Editor {
                     let selected = sel_v.is_some_and(|(a, b)| v >= a && v < b);
                     let style = if selected {
                         theme::EDITOR_SELECTED
+                    } else if l.by_agent {
+                        theme::EDITOR_AGENT
                     } else {
                         theme::EDITOR_TEXT
                     };
