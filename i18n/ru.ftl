@@ -9,6 +9,9 @@ objects = { $count ->
 ## Панель агента
 agent-title = Агент · { $name } · { $status }
 agent-running = работает
+agent-ready = готов
+agent-working = думает…
+agent-waiting = ждёт разрешения
 agent-not-started = не запущен — Enter: запуск
 agent-exited = завершён (код { $code }) — Enter: перезапуск
 observe-live = ● live

@@ -5,6 +5,7 @@
 //! message line.
 
 use super::App;
+use super::agent::AgentState;
 use crate::term::Signals;
 use crate::tr;
 
@@ -21,6 +22,45 @@ pub(super) struct Outer {
 }
 
 impl App {
+    /// The agent's state changed (hooks): a bell when it is done or asks
+    /// while the window is in the background.
+    pub(super) fn agent_state(&mut self, state: AgentState) {
+        if state == self.agent.state {
+            return;
+        }
+        let ends = matches!(state, AgentState::Ready | AgentState::Waiting(_))
+            && self.agent.state == AgentState::Working;
+        if ends && !self.window_focused {
+            self.outer.pending.push(0x07);
+        }
+        self.agent.state = state;
+    }
+
+    /// `Notification`: a permission request makes the agent wait; other
+    /// notices (waiting for input) go to the message line.
+    pub(super) fn on_agent_notification(&mut self, input: &str) {
+        let v: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
+        let message = v
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let kind = v
+            .get("notification_type")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default();
+        if kind == "permission_prompt" || message.to_lowercase().contains("permission") {
+            self.agent_state(AgentState::Waiting(message));
+        } else {
+            if !self.window_focused {
+                self.outer.pending.push(0x07);
+            }
+            if !message.is_empty() {
+                self.say(format!("{}: {message}", tr!("note-from-agent")));
+            }
+        }
+    }
+
     /// Takes what the agent and the running command signalled.
     pub(super) fn poll_signals(&mut self) {
         let agent = self.agent.pty.as_ref().map(|p| p.take_signals());
@@ -68,10 +108,18 @@ impl App {
                 .extend_from_slice(format!("\x1b]2;{title}\x07\x1b]9;9;{folder}\x07").as_bytes());
             self.outer.title = title;
         }
+        // The agent's own progress, else its state: working — the
+        // indeterminate one, waiting — paused (yellow).
+        let agent = match (&self.agent.state, self.outer.agent_progress) {
+            (_, p) if p.0 != 0 => p,
+            (AgentState::Working, _) if self.agent_alive() => (3, 0),
+            (AgentState::Waiting(_), _) if self.agent_alive() => (4, 100),
+            _ => (0, 0),
+        };
         let progress = self
             .ops_progress()
             .or(Some(self.outer.command_progress).filter(|p| p.0 != 0))
-            .unwrap_or(self.outer.agent_progress);
+            .unwrap_or(agent);
         if progress != self.outer.progress {
             let (state, percent) = progress;
             self.outer

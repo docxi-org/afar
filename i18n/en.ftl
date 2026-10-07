@@ -8,6 +8,9 @@ objects = { $count ->
 ## Agent pane
 agent-title = Agent · { $name } · { $status }
 agent-running = running
+agent-ready = ready
+agent-working = working…
+agent-waiting = asks for permission
 agent-not-started = not started — Enter: start
 agent-exited = exited (code { $code }) — Enter: restart
 observe-live = ● live

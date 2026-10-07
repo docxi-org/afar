@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
         screen.bracketed_paste()
     );
     println!("=== scrolled-off lines captured: {}", scrolled.len());
-    for (line, wrapped) in scrolled.iter().rev().take(5).rev() {
+    for (line, wrapped, _) in scrolled.iter().rev().take(5).rev() {
         println!("  | {line}{}", if *wrapped { " ⏎" } else { "" });
     }
     println!("=== screen:");

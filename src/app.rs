@@ -151,7 +151,7 @@ struct RunningCommand {
     pty: PtySession,
     started: Instant,
     /// Output lines that already scrolled off the command's screen.
-    captured: Vec<String>,
+    captured: Vec<termview::Line>,
     /// Panels were hidden automatically and come back when it ends.
     auto_switched: bool,
 }
@@ -188,7 +188,7 @@ pub struct App {
     /// The agent's session (docs/13-agent-sessions.md).
     agent: agent::AgentSession,
     /// The "user screen": text of finished commands.
-    history: Vec<String>,
+    history: Vec<termview::Line>,
     running: Option<RunningCommand>,
     next_cmd_id: u64,
     journal: Journal,
@@ -207,8 +207,13 @@ pub struct App {
     last_live: Rect,
     /// A Ctrl+click opened a link: its release is not passed on.
     link_pressed: bool,
+    /// Where the user screen last drew the kept lines, and the first one's
+    /// index in history + captured output.
+    user_lines: (Rect, usize),
     /// What afar last told the outer terminal (title, progress).
     outer: outer::Outer,
+    /// The terminal window has the focus (focus events, `?1004`).
+    window_focused: bool,
     /// Last left click (time, panel, item) to detect double clicks.
     last_click: Option<(Instant, usize, usize)>,
     /// F-key pressed with the mouse on the key bar (acts on release).
@@ -340,7 +345,9 @@ impl App {
             last_layout: None,
             last_live: Rect::default(),
             link_pressed: false,
+            user_lines: (Rect::default(), 0),
             outer: Default::default(),
+            window_focused: true,
             last_click: None,
             keybar_pressed: None,
             select_mask: "*.*".into(),
@@ -584,8 +591,8 @@ impl App {
             duration_ms: 0,
             lines: output.len(),
         });
-        self.push_history([format!("{}>{text}", cwd.display())]);
-        self.push_history(output);
+        self.push_history([format!("{}>{text}", cwd.display()).into()]);
+        self.push_history(output.into_iter().map(termview::Line::from));
     }
 
     /// Restarts when a new build is ready (or on request) and nothing is
@@ -694,6 +701,8 @@ impl App {
                 self.on_key(key)
             }
             AppMsg::Input(TermEvent::Mouse(mouse)) => self.on_mouse(mouse),
+            AppMsg::Input(TermEvent::FocusGained) => self.window_focused = true,
+            AppMsg::Input(TermEvent::FocusLost) => self.window_focused = false,
             AppMsg::AgentOutput => {
                 if let Some(dev) = &mut self.dev {
                     dev.last_agent_output = Instant::now();
@@ -849,6 +858,9 @@ impl App {
             // The agent's own edits and commands (docs/04-agent.md).
             "PreToolUse": tool_hook("pre-tool", "Bash"),
             "PostToolUse": tool_hook("post-tool", "Edit|MultiEdit|Write|NotebookEdit|Bash"),
+            // What the agent is doing, for the pane's frame (docs/16).
+            "Stop": hook("stop"),
+            "Notification": hook("notification"),
         }});
         let mcp_path = dir.join("mcp.json");
         let settings_path = dir.join("settings.json");
@@ -969,6 +981,7 @@ impl App {
         self.agent.resumed_at = None;
         self.agent.started = Instant::now();
         self.agent.channels_confirmed = false;
+        self.agent.state = agent::AgentState::Ready;
         self.agent.cwd = Some(cwd.clone());
         self.agent.ide_sent = None;
         match launch {
@@ -1107,7 +1120,7 @@ impl App {
             duration_ms: 0,
             lines: 0,
         });
-        self.push_history([format!("{}>{}", cwd.display(), text)]);
+        self.push_history([format!("{}>{}", cwd.display(), text).into()]);
         self.clear_cmdline();
 
         // The command text goes through an environment variable: cmd.exe
@@ -1142,7 +1155,7 @@ impl App {
                 self.focus = Focus::Command;
             }
             Err(e) => {
-                self.push_history([tr!("command-start-failed", error = format!("{e:#}"))]);
+                self.push_history([tr!("command-start-failed", error = format!("{e:#}")).into()]);
                 self.journal.push(
                     Actor::System,
                     Event::CommandFinished {
@@ -1164,8 +1177,9 @@ impl App {
         }
         let run = self.running.take().unwrap();
         let mut output = run.captured;
-        output.extend(termview::screen_lines(run.pty.parser().screen()));
-        let _ = std::fs::write(self.journal.output_path(run.id), output.join("\n"));
+        output.extend(termview::screen_lines_links(run.pty.parser().screen()));
+        let text: Vec<&str> = output.iter().map(|l| l.text.as_str()).collect();
+        let _ = std::fs::write(self.journal.output_path(run.id), text.join("\n"));
         let (exit_code, duration_ms) = (
             run.pty.exit_code(),
             run.started.elapsed().as_millis() as u64,
@@ -1208,7 +1222,7 @@ impl App {
         }
     }
 
-    fn push_history(&mut self, lines: impl IntoIterator<Item = String>) {
+    fn push_history(&mut self, lines: impl IntoIterator<Item = termview::Line>) {
         self.history.extend(lines);
         if self.history.len() > HISTORY_MAX {
             self.history.drain(..self.history.len() - HISTORY_MAX);
@@ -1376,6 +1390,11 @@ impl App {
                 self.start_agent(cols, rows);
             }
             return;
+        }
+        // Esc interrupts the agent (no hook tells): it is ready again; a
+        // tool it goes on with makes it working.
+        if key.code == KeyCode::Esc && self.agent.state != agent::AgentState::Ready {
+            self.agent_state(agent::AgentState::Ready);
         }
         let agent = self.agent.pty.as_ref().unwrap();
         // Typing returns from a scrolled-back view.
@@ -1618,9 +1637,13 @@ impl App {
                 )),
                 None => {
                     let start = self.history.len().saturating_sub(40);
+                    let text: Vec<&str> = self.history[start..]
+                        .iter()
+                        .map(|l| l.text.as_str())
+                        .collect();
                     Ok(format!(
                         "[no running command; end of the user screen]\n{}",
-                        self.history[start..].join("\n")
+                        text.join("\n")
                     ))
                 }
             },
@@ -1687,12 +1710,27 @@ impl App {
             Request::Delete { .. } | Request::Copy { .. } | Request::MkDir { .. } => {
                 Err("handled asynchronously".into())
             }
+            Request::HookStop => {
+                self.agent_state(agent::AgentState::Ready);
+                Ok(String::new())
+            }
+            Request::HookNotification(input) => {
+                self.on_agent_notification(&input);
+                Ok(String::new())
+            }
             Request::HookPrompt => {
+                self.agent_state(agent::AgentState::Working);
                 self.fs_new_prompt();
                 Ok(self.prompt_context())
             }
-            Request::HookPreTool(input) => Ok(self.on_pre_tool(&input)),
-            Request::HookPostTool(input) => Ok(self.on_post_tool(&input)),
+            Request::HookPreTool(input) => {
+                self.agent_state(agent::AgentState::Working);
+                Ok(self.on_pre_tool(&input))
+            }
+            Request::HookPostTool(input) => {
+                self.agent_state(agent::AgentState::Working);
+                Ok(self.on_post_tool(&input))
+            }
             Request::ChannelWait => unreachable!("answered in handle"),
             Request::HookSessionStart(input) => {
                 self.on_session_start(&input);
@@ -1747,7 +1785,7 @@ impl App {
 
     fn command_output(&self, id: u64) -> Result<Vec<String>, String> {
         if let Some(run) = self.running.as_ref().filter(|r| r.id == id) {
-            let mut lines = run.captured.clone();
+            let mut lines: Vec<String> = run.captured.iter().map(|l| l.text.clone()).collect();
             lines.extend(termview::screen_lines(run.pty.parser().screen()));
             return Ok(lines);
         }
@@ -1920,7 +1958,10 @@ impl App {
             self.top_row_click(&ev);
             return;
         }
+        // Ctrl+click is for links (the row next to a boundary is a link's
+        // too, e.g. the last output line above the agent pane).
         if ev.kind == MouseEventKind::Down(MouseButton::Left)
+            && !ev.modifiers.contains(KeyModifiers::CONTROL)
             && let Some(grab) = l.arrangement.grab(pos)
         {
             self.drag = Some(grab);
@@ -2019,7 +2060,10 @@ impl App {
         if !self.panels_visible() || l.top.height < 5 || !l.top.contains(pos) {
             // User screen: the running command gets the mouse if it wants
             // it; Ctrl+click on a link opens it.
-            if let Some(uri) = self.link_click(&ev, self.last_live, false) {
+            if let Some(uri) = self
+                .link_click(&ev, self.last_live, false)
+                .or_else(|| self.kept_link_click(&ev))
+            {
                 self.open_link(&uri);
                 return;
             }
@@ -2249,11 +2293,18 @@ impl App {
                 "agent-exited",
                 code = a.exit_code().map_or(-1, |c| c as i64)
             ),
-            Some(_) => tr!("agent-running"),
+            Some(_) => match &self.agent.state {
+                agent::AgentState::Ready => tr!("agent-ready"),
+                agent::AgentState::Working => tr!("agent-working"),
+                agent::AgentState::Waiting(_) => tr!("agent-waiting"),
+            },
         };
+        let waiting = matches!(self.agent.state, agent::AgentState::Waiting(_));
         let frame = l.agent_frame;
         crate::panel::draw_frame(buf, frame, theme::PANEL_BOX);
-        let title_style = if agent_focused {
+        let title_style = if waiting && !agent_focused {
+            theme::AGENT_WAITING
+        } else if agent_focused {
             theme::PANEL_TITLE_SELECTED
         } else {
             theme::PANEL_TITLE
@@ -2414,7 +2465,7 @@ impl App {
         }
         let mut live_rows = 0u16;
         let mut cursor = None;
-        let text: Vec<&String> = match &self.running {
+        let text: Vec<&termview::Line> = match &self.running {
             Some(run) => {
                 let parser = run.pty.parser();
                 let screen = parser.screen();
@@ -2442,15 +2493,30 @@ impl App {
         let rows = (area.height - live_rows) as usize;
         let start = text.len().saturating_sub(rows);
         let first_y = area.bottom() - live_rows - (text.len() - start) as u16;
+        let show_links = self.held.contains(KeyModifiers::CONTROL);
         for (i, line) in text[start..].iter().enumerate() {
+            let y = first_y + i as u16;
             buf.set_stringn(
                 area.x,
-                first_y + i as u16,
-                line.as_str(),
+                y,
+                line.text.as_str(),
                 area.width as usize,
                 theme::COMMAND_LINE,
             );
+            // While Ctrl is held, links are underlined (Ctrl+click opens).
+            if show_links && !line.links.is_empty() {
+                for x in 0..area.width {
+                    if line.link_at_column(usize::from(x)).is_some() {
+                        buf[(area.x + x, y)].modifier |= ratatui::style::Modifier::UNDERLINED;
+                    }
+                }
+            }
         }
+        // Where the kept lines are, for Ctrl+click.
+        self.user_lines = (
+            Rect::new(area.x, first_y, area.width, (text.len() - start) as u16),
+            start,
+        );
         cursor
     }
 

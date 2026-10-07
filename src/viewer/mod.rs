@@ -555,6 +555,37 @@ impl Viewer {
     }
 
     /// Goes to a byte offset (Alt+F8): to the start of its row.
+    /// Goes to the start of line `n` (from 1), counting line feeds from
+    /// the start of the file (links to `file#L10`, docs/16).
+    pub fn goto_line(&mut self, n: u64) {
+        let unit = self.codec.unit();
+        let nl = self.codec.encode(
+            "
+",
+        );
+        let (mut pos, mut line) = (0u64, 1u64);
+        'scan: while line < n {
+            let chunk = self.src.chunk(pos);
+            if chunk.is_empty() {
+                break;
+            }
+            let len = chunk.len();
+            let mut k = 0;
+            while k + unit <= len {
+                if chunk[k..k + unit] == nl[..] {
+                    line += 1;
+                    if line == n {
+                        pos += (k + unit) as u64;
+                        break 'scan;
+                    }
+                }
+                k += unit;
+            }
+            pos += len as u64;
+        }
+        self.goto(pos, Some(0));
+    }
+
     pub fn goto(&mut self, pos: u64, left: Option<usize>) {
         self.push_undo();
         self.top = pos.min(self.src.size());

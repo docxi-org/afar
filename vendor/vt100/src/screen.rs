@@ -1,6 +1,10 @@
 use crate::term::BufWrite as _;
 use unicode_width::UnicodeWidthChar as _;
 
+/// AFAR-PATCH: a line scrolled off the top: text, whether it continues on
+/// the next line, its hyperlinks `(start, end, uri)` in characters.
+pub type ScrolledLine = (String, bool, Vec<(usize, usize, String)>);
+
 const MODE_APPLICATION_KEYPAD: u8 = 0b0000_0001;
 const MODE_APPLICATION_CURSOR: u8 = 0b0000_0010;
 const MODE_HIDE_CURSOR: u8 = 0b0000_0100;
@@ -668,10 +672,30 @@ impl Screen {
     }
 
     /// Returns lines scrolled off the top since the previous call, as
-    /// `(text, wrapped)` pairs; `wrapped` means the line continues on the
-    /// next one.
-    pub fn take_scrolled_lines(&mut self) -> Vec<(String, bool)> {
-        self.grid.take_scrolled_lines()
+    /// `(text, wrapped, links)`; `wrapped` means the line continues on the
+    /// next one; `links` are `(start, end, uri)` in characters of the text.
+    pub fn take_scrolled_lines(&mut self) -> Vec<ScrolledLine> {
+        let lines = self.grid.take_scrolled_lines();
+        lines
+            .into_iter()
+            .map(|(text, wrapped, spans)| (text, wrapped, self.resolve_links(spans)))
+            .collect()
+    }
+
+    /// The hyperlinks of the visible rows, as `rows(start, width)` writes
+    /// them: `(start, end, uri)` in characters.
+    pub fn row_links(&self, start: u16, width: u16) -> Vec<Vec<(usize, usize, String)>> {
+        self.grid()
+            .visible_rows()
+            .map(|row| self.resolve_links(row.link_spans(start, width)))
+            .collect()
+    }
+
+    fn resolve_links(&self, spans: Vec<(usize, usize, u16)>) -> Vec<(usize, usize, String)> {
+        spans
+            .into_iter()
+            .filter_map(|(a, b, id)| self.hyperlink(id).map(|u| (a, b, u.to_string())))
+            .collect()
     }
     // AFAR-PATCH end
 

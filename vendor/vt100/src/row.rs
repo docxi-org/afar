@@ -95,6 +95,45 @@ impl Row {
         other.clear(*other.attrs());
     }
 
+    // AFAR-PATCH begin
+    /// Hyperlinks of the row as `(start, end, id)` in characters of the
+    /// text `write_contents(…, start, width, false)` writes.
+    pub fn link_spans(&self, start: u16, width: u16) -> Vec<(usize, usize, u16)> {
+        let mut spans: Vec<(usize, usize, u16)> = Vec::new();
+        let mut chars = 0usize;
+        let mut prev_was_wide = false;
+        let mut prev_col = start;
+        for (col, cell) in self
+            .cells()
+            .enumerate()
+            .skip(usize::from(start))
+            .take(usize::from(width))
+        {
+            if prev_was_wide {
+                prev_was_wide = false;
+                continue;
+            }
+            prev_was_wide = cell.is_wide();
+            let col: u16 = col.try_into().unwrap();
+            if cell.has_contents() {
+                chars += usize::from(col - prev_col);
+                prev_col += col - prev_col;
+                let from = chars;
+                chars += cell.contents().chars().count();
+                prev_col += if cell.is_wide() { 2 } else { 1 };
+                let id = cell.hyperlink();
+                if id != 0 {
+                    match spans.last_mut() {
+                        Some(last) if last.2 == id && last.1 == from => last.1 = chars,
+                        _ => spans.push((from, chars, id)),
+                    }
+                }
+            }
+        }
+        spans
+    }
+    // AFAR-PATCH end
+
     pub fn write_contents(
         &self,
         contents: &mut String,

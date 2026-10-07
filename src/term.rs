@@ -170,7 +170,7 @@ pub struct PtySession {
     killer: Box<dyn ChildKiller + Send + Sync>,
     exited: Arc<AtomicBool>,
     exit_code: Arc<Mutex<Option<u32>>>,
-    scrolled: Arc<Mutex<Vec<(String, bool)>>>,
+    scrolled: Arc<Mutex<Vec<vt100::ScrolledLine>>>,
 }
 
 pub struct SpawnOptions<'a> {
@@ -357,8 +357,9 @@ impl PtySession {
         self.parser.lock().unwrap()
     }
 
-    /// Lines scrolled off the top since the previous call, `(text, wrapped)`.
-    pub fn take_scrolled_lines(&self) -> Vec<(String, bool)> {
+    /// Lines scrolled off the top since the previous call, `(text,
+    /// wrapped, links)`.
+    pub fn take_scrolled_lines(&self) -> Vec<vt100::ScrolledLine> {
         std::mem::take(&mut *self.scrolled.lock().unwrap())
     }
 

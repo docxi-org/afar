@@ -146,6 +146,55 @@ pub fn draw_rows_links(
         .then(|| Position::new(area.x + cx, area.y + cy - first_row))
 }
 
+/// Hyperlinks of a line: `(start, end, uri)` in characters of its text.
+pub type Links = Vec<(usize, usize, String)>;
+
+/// A line of a command's output as kept on the user screen: the text and
+/// its hyperlinks (Ctrl+click opens them after the command has ended).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Line {
+    pub text: String,
+    pub links: Links,
+}
+
+impl From<String> for Line {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            links: Vec::new(),
+        }
+    }
+}
+
+impl Line {
+    /// The link at display column `col` (wide characters take two).
+    pub fn link_at_column(&self, col: usize) -> Option<&str> {
+        use unicode_width::UnicodeWidthChar as _;
+        let mut x = 0;
+        let i = self.text.chars().position(|c| {
+            x += c.width().unwrap_or(0);
+            x > col
+        })?;
+        self.links
+            .iter()
+            .find(|(a, b, _)| (*a..*b).contains(&i))
+            .map(|(_, _, u)| u.as_str())
+    }
+}
+
+/// `screen_lines` with each line's hyperlinks.
+pub fn screen_lines_links(screen: &vt100::Screen) -> Vec<Line> {
+    let (_, cols) = screen.size();
+    let mut links = screen.row_links(0, cols).into_iter();
+    screen_lines(screen)
+        .into_iter()
+        .map(|text| Line {
+            text,
+            links: links.next().unwrap_or_default(),
+        })
+        .collect()
+}
+
 /// Text of the screen rows up to the last non-blank one (or the cursor row).
 pub fn screen_lines(screen: &vt100::Screen) -> Vec<String> {
     let (_, cols) = screen.size();
@@ -163,22 +212,45 @@ pub fn screen_lines(screen: &vt100::Screen) -> Vec<String> {
     lines
 }
 
-/// Joins `(text, wrapped)` rows into logical lines.
-pub fn join_wrapped(rows: impl IntoIterator<Item = (String, bool)>, out: &mut Vec<String>) {
-    let mut pending = String::new();
+/// Joins `(text, wrapped, links)` rows into logical lines.
+pub fn join_wrapped(rows: impl IntoIterator<Item = vt100::ScrolledLine>, out: &mut Vec<Line>) {
+    let mut pending = Line::default();
     let mut continues = false;
-    for (text, wrapped) in rows {
-        if continues {
-            pending.push_str(&text);
-        } else {
-            pending = text;
+    let finish = |mut line: Line| {
+        line.text = line.text.trim_end().to_string();
+        line
+    };
+    for (text, wrapped, links) in rows {
+        if !continues {
+            pending = Line::default();
         }
+        let shift = pending.text.chars().count();
+        pending
+            .links
+            .extend(links.into_iter().map(|(a, b, u)| (a + shift, b + shift, u)));
+        pending.text.push_str(&text);
         continues = wrapped;
         if !wrapped {
-            out.push(std::mem::take(&mut pending).trim_end().to_string());
+            out.push(finish(std::mem::take(&mut pending)));
         }
     }
     if continues {
-        out.push(pending.trim_end().to_string());
+        out.push(finish(pending));
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn kept_lines_keep_links() {
+        let mut p = vt100::Parser::new(5, 30, 0);
+        p.process(b"see \x1b]8;;file:///C:/x\x1b\\readme\x1b]8;;\x1b\\ end\r\n");
+        let lines = screen_lines_links(p.screen());
+        assert_eq!(lines[0].text, "see readme end");
+        assert_eq!(lines[0].links, vec![(4, 10, "file:///C:/x".to_string())]);
+        assert_eq!(lines[0].link_at_column(5), Some("file:///C:/x"));
+        assert_eq!(lines[0].link_at_column(2), None);
     }
 }

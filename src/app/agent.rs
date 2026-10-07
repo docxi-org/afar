@@ -10,6 +10,19 @@ use tokio::sync::oneshot;
 use crate::mcp::Reply;
 use crate::term::PtySession;
 
+/// What the agent is doing, by Claude Code's hooks (shown on the pane's
+/// frame, docs/16).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum AgentState {
+    /// Started, or finished its turn (`Stop`).
+    #[default]
+    Ready,
+    /// A prompt was sent or a tool ran (`UserPromptSubmit`, tool hooks).
+    Working,
+    /// Asks for permission (`Notification`): the message.
+    Waiting(String),
+}
+
 pub(super) struct AgentSession {
     pub pty: Option<PtySession>,
     /// Claude Code's session id (`--session-id`, `--resume`), so that a
@@ -45,6 +58,7 @@ pub(super) struct AgentSession {
     pub enter_at: Option<Instant>,
     /// The development channels question has been answered by afar.
     pub channels_confirmed: bool,
+    pub state: AgentState,
 }
 
 impl AgentSession {
@@ -67,6 +81,7 @@ impl AgentSession {
             name_checked: Instant::now(),
             enter_at: None,
             channels_confirmed: false,
+            state: AgentState::Ready,
         }
     }
 

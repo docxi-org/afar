@@ -11,7 +11,9 @@ use std::io::{self, Write};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+};
 use crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, enable_raw_mode,
 };
@@ -75,7 +77,14 @@ impl Tui {
         }));
         enable_raw_mode()?;
         // Mouse capture: Shift+drag still selects text in the terminal.
-        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        // Focus events: a bell when the agent is done while afar is in the
+        // background.
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange
+        )?;
         let pending = Rc::new(RefCell::new(Pending {
             buf: Vec::with_capacity(256 * 1024),
             hold: false,
@@ -121,6 +130,6 @@ impl Tui {
 pub fn restore() {
     // No progress left on the taskbar button.
     let _ = io::stdout().write_all(b"\x1b]9;4;0;0\x07");
-    let _ = execute!(io::stdout(), DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableMouseCapture, DisableFocusChange);
     ratatui::restore();
 }

@@ -43,6 +43,8 @@ pub const PANEL_CURSOR: Style = c(con::BLACK, con::CYAN);
 pub const PANEL_SELECTED_CURSOR: Style = c(con::YELLOW, con::CYAN);
 pub const PANEL_TITLE: Style = c(con::LIGHTCYAN, con::BLUE);
 pub const PANEL_TITLE_SELECTED: Style = c(con::BLACK, con::CYAN);
+/// The agent pane's title while the agent asks for permission (afar's).
+pub const AGENT_WAITING: Style = c(con::BLACK, con::YELLOW);
 pub const PANEL_COLUMN_TITLE: Style = c(con::YELLOW, con::BLUE);
 pub const PANEL_INFO_SELECTED: Style = c(con::YELLOW, con::CYAN);
 pub const PANEL_BOX: Style = c(con::LIGHTCYAN, con::BLUE);

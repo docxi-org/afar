@@ -75,6 +75,11 @@ pub enum Request {
     HookPreTool(String),
     /// `PostToolUse` hook: the hook's JSON input.
     HookPostTool(String),
+    /// `Stop` hook: the agent finished its turn.
+    HookStop,
+    /// `Notification` hook (the agent asks for permission or waits for
+    /// input): the hook's JSON input.
+    HookNotification(String),
     /// `afar channel` waits for events for the agent (answered when there
     /// are some, or with none after a while).
     ChannelWait,
@@ -435,6 +440,8 @@ async fn hook(
         "session-start" => Request::HookSessionStart(body),
         "pre-tool" => Request::HookPreTool(body),
         "post-tool" => Request::HookPostTool(body),
+        "stop" => Request::HookStop,
+        "notification" => Request::HookNotification(body),
         // `afar channel` waits here for events (long polling).
         "channel-wait" => Request::ChannelWait,
         _ => return (StatusCode::NOT_FOUND, String::new()),
@@ -578,7 +585,19 @@ pub fn run_channel() -> anyhow::Result<()> {
                     arrive as <channel source=\"afar-channel\">. Each is something the user \
                     asked for in afar (or afar noticed); act on it with afar's tools.",
             }),
-            "tools/list" => serde_json::json!({"tools": []}),
+            // One harmless tool: a server without tools is shown with a
+            // warning in Claude Code's /mcp.
+            "tools/list" => serde_json::json!({"tools": [{
+                "name": "channel_status",
+                "description": "Whether afar's event channel is connected. Events \
+                    arrive by themselves as <channel source=\"afar-channel\">; there is \
+                    no need to call this.",
+                "inputSchema": {"type": "object", "properties": {}},
+            }]}),
+            "tools/call" => serde_json::json!({"content": [{
+                "type": "text",
+                "text": "afar's channel is connected; its events arrive as <channel source=\"afar-channel\">.",
+            }]}),
             _ => serde_json::json!({}),
         };
         send(

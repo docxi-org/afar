@@ -60,6 +60,19 @@ pub fn supervise() -> anyhow::Result<i32> {
     } else {
         target.clone()
     };
+    // Windows Terminal's ConPTY beside the build (tools/conpty.py) goes
+    // with the copy: portable-pty looks for it next to the program. Files
+    // in use by a running copy stay as they are.
+    for name in ["conpty.dll", "x64/OpenConsole.exe", "arm64/OpenConsole.exe"] {
+        let from = dir.join(name);
+        let to = run_dir.join(name);
+        if from.is_file() {
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&from, &to);
+        }
+    }
     let state = run_dir.join(format!("state-{pid}.json"));
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     for n in 0.. {

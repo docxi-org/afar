@@ -40,18 +40,50 @@ impl App {
         Some(uri)
     }
 
+    /// A Ctrl+left press on a link in the kept output of ended commands
+    /// on the user screen: the link.
+    pub(super) fn kept_link_click(&mut self, ev: &crossterm::event::MouseEvent) -> Option<String> {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        let (rect, start) = self.user_lines;
+        if ev.kind != MouseEventKind::Down(MouseButton::Left)
+            || !ev.modifiers.contains(KeyModifiers::CONTROL)
+            || !rect.contains(ratatui::layout::Position::new(ev.column, ev.row))
+        {
+            return None;
+        }
+        let index = start + usize::from(ev.row - rect.y);
+        let captured = self
+            .running
+            .as_ref()
+            .map(|r| r.captured.as_slice())
+            .unwrap_or(&[]);
+        let line = self.history.iter().chain(captured).nth(index)?;
+        let uri = line
+            .link_at_column(usize::from(ev.column - rect.x))?
+            .to_string();
+        self.link_pressed = true;
+        Some(uri)
+    }
+
     /// Opens a link: a file or folder (`file:` URIs and plain absolute
     /// paths) in afar, web and mail addresses in their programs; other
     /// schemes are not opened.
     pub(super) fn open_link(&mut self, uri: &str) {
         if let Some(path) = file_path(uri) {
+            let (path, line) = with_line(path, uri);
             if path.is_dir() {
                 self.focus = Focus::Panels;
                 let side = self.active;
                 self.change_dir(side, &path);
             } else if path.is_file() {
                 self.focus = Focus::Panels;
-                self.open_viewer(&path, vec![path.clone()]);
+                if let Some(id) = self.open_viewer(&path, vec![path.clone()])
+                    && let Some(line) = line
+                    && let Ok(n) = line.parse::<u64>()
+                    && let Some(v) = self.viewers.iter_mut().find(|v| v.id == id)
+                {
+                    v.goto_line(n);
+                }
             } else {
                 self.say(tr!("link-not-found", path = path.display().to_string()));
             }
@@ -109,6 +141,43 @@ fn file_path(uri: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path.replace('/', "\\")))
 }
 
+/// The line a link points to: a fragment `#L10` / `#L10-20` / `#10`, or
+/// a `:10` (`:10:5`) after a path that is not there as written.
+fn with_line(path: PathBuf, uri: &str) -> (PathBuf, Option<String>) {
+    if let Some(frag) = uri.rsplit_once('#').map(|(_, f)| f) {
+        let digits: String = frag
+            .trim_start_matches(['L', 'l'])
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if !digits.is_empty() {
+            return (path, Some(digits));
+        }
+    }
+    if !path.exists() {
+        let s = path.to_string_lossy();
+        // `name:10` or `name:10:5` (the drive's colon is the first one).
+        let mut parts = s.rsplitn(3, ':');
+        let (a, b) = (parts.next(), parts.next());
+        let all_digits = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit());
+        if let (Some(a), Some(b)) = (a, b)
+            && all_digits(a)
+        {
+            if all_digits(b)
+                && let Some(rest) = parts.next()
+                && rest.len() > 2
+            {
+                return (PathBuf::from(rest), Some(b.to_string()));
+            }
+            let base = &s[..s.len() - a.len() - 1];
+            if base.len() > 2 {
+                return (PathBuf::from(base), Some(a.to_string()));
+            }
+        }
+    }
+    (path, None)
+}
+
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -152,6 +221,31 @@ mod tests {
         assert_eq!(p(r"C:\plain\path").as_deref(), Some(r"C:\plain\path"));
         assert_eq!(p("https://example.com"), None);
         assert_eq!(p("relative/x"), None);
+    }
+
+    #[test]
+    fn lines_of_links() {
+        let p = PathBuf::from;
+        assert_eq!(
+            with_line(p(r"C:\x.rs"), "file:///C:/x.rs#L42"),
+            (p(r"C:\x.rs"), Some("42".into()))
+        );
+        assert_eq!(
+            with_line(p(r"C:\x.rs"), "file:///C:/x.rs#L42-50"),
+            (p(r"C:\x.rs"), Some("42".into()))
+        );
+        assert_eq!(
+            with_line(p(r"C:\no-such\x.rs:12"), r"C:\no-such\x.rs:12"),
+            (p(r"C:\no-such\x.rs"), Some("12".into()))
+        );
+        assert_eq!(
+            with_line(p(r"C:\no-such\x.rs:12:5"), r"C:\no-such\x.rs:12:5"),
+            (p(r"C:\no-such\x.rs"), Some("12".into()))
+        );
+        assert_eq!(
+            with_line(p(r"C:\no-such"), r"C:\no-such"),
+            (p(r"C:\no-such"), None)
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ pub struct Grid {
     scrollback_offset: usize,
     // AFAR-PATCH: text of rows scrolled off the top (row text, row is wrapped)
     capture_lines: bool,
-    scrolled_lines: Vec<(String, bool)>,
+    scrolled_lines: Vec<(String, bool, Vec<(usize, usize, u16)>)>,
 }
 
 impl Grid {
@@ -200,7 +200,9 @@ impl Grid {
         }
     }
 
-    pub fn take_scrolled_lines(&mut self) -> Vec<(String, bool)> {
+    pub fn take_scrolled_lines(
+        &mut self,
+    ) -> Vec<(String, bool, Vec<(usize, usize, u16)>)> {
         std::mem::take(&mut self.scrolled_lines)
     }
     // AFAR-PATCH end
@@ -585,7 +587,8 @@ impl Grid {
             if self.capture_lines && !self.scroll_region_active() {
                 let mut text = String::new();
                 removed.write_contents(&mut text, 0, self.size.cols, false);
-                self.scrolled_lines.push((text, removed.wrapped()));
+                let links = removed.link_spans(0, self.size.cols);
+                self.scrolled_lines.push((text, removed.wrapped(), links));
             }
             // AFAR-PATCH end
             if self.scrollback_len > 0 && !self.scroll_region_active() {
