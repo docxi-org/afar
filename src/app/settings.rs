@@ -343,7 +343,7 @@ impl App {
         use crate::config::Use;
         let a = &self.config.autocomplete;
         let checks = [
-            tr!("MConfigAutoCompleteShowList"),
+            tr!("ac-fuzzy"),
             tr!("MConfigAutoCompleteModalList"),
             tr!("MConfigAutoCompleteAutoAppend"),
             tr!("MConfigDialogsAutoComplete"),
@@ -355,7 +355,15 @@ impl App {
             tr!("ac-source-variables"),
             tr!("ac-source-programs"),
         ];
-        let label_w = sources.iter().map(|l| chars(l)).max().unwrap_or(10);
+        let suggest_label = tr!("ac-suggest");
+        let fuzzy_label = checks[0].clone();
+        let label_w = sources
+            .iter()
+            .chain([&suggest_label])
+            .map(|l| chars(l))
+            .max()
+            .unwrap_or(10);
+        let suggest_w = label_w;
         const COMBO: u16 = 26;
         let content = checks
             .iter()
@@ -371,9 +379,22 @@ impl App {
         };
         let uses = [a.history, a.files, a.variables, a.programs];
         let mut d = Dialog::new(tr!("MConfigAutoCompleteTitle"), content)
-            .row(vec![check_at(5, checks[0].clone(), a.show_list)])
+            .row(vec![
+                text_at(5, suggest_label.clone()),
+                combo_at(
+                    5 + suggest_w + 1,
+                    COMBO,
+                    vec![
+                        Some(tr!("ac-suggest-ghost")),
+                        Some(tr!("ac-suggest-list")),
+                        Some(tr!("ac-suggest-off")),
+                    ],
+                    a.suggest as usize,
+                ),
+            ])
             .row(vec![check_at(9, checks[1].clone(), a.modal)])
-            // Appending the first match is not done yet.
+            .row(vec![check_at(5, fuzzy_label.clone(), a.fuzzy)])
+            // Appending the first match is not done (the ghost shows it).
             .row(vec![check_at(5, checks[2].clone(), false).disabled()])
             .separator()
             .row(vec![check_at(5, checks[3].clone(), a.dialogs)])
@@ -404,11 +425,16 @@ impl App {
     pub(super) fn autocomplete_settings_from_dialog(&mut self, dialog: &Dialog) {
         use crate::config::Use;
         let a = &mut self.config.autocomplete;
-        a.show_list = dialog.checked(0);
-        a.modal = dialog.checked(1);
+        a.suggest = match dialog.combo(0) {
+            0 => crate::config::Suggest::Ghost,
+            1 => crate::config::Suggest::List,
+            _ => crate::config::Suggest::Off,
+        };
+        a.modal = dialog.checked(0);
+        a.fuzzy = dialog.checked(1);
         a.dialogs = dialog.checked(3);
         a.command_line = dialog.checked(4);
-        let use_of = |i: usize| match dialog.combo(i) {
+        let use_of = |i: usize| match dialog.combo(i + 1) {
             0 => Use::Always,
             1 => Use::CtrlSpace,
             _ => Use::Never,

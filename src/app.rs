@@ -208,9 +208,12 @@ pub struct App {
     keybar_pressed: Option<u8>,
     /// The history database: dialogs' fields, commands (docs/15).
     store: crate::history::History,
-    /// The open autocompletion list, and the programs on PATH it offers.
+    /// The open autocompletion list; what completion keeps between keys
+    /// (programs on PATH, folders' names).
     completion: Option<autocomplete::ActiveCompletion>,
-    programs: crate::complete::Programs,
+    complete_cache: crate::complete::Cache,
+    /// The command line's ghost suggestion: (the line, the rest).
+    cmd_ghost: Option<(String, String)>,
     /// Commands run from the command line (Ctrl+E / Ctrl+X).
     cmd_history: cmdline::History,
     /// The last mask of Gray + / Gray - (Far's strPrevMask).
@@ -335,7 +338,8 @@ impl App {
             cmd_history,
             store,
             completion: None,
-            programs: Default::default(),
+            complete_cache: Default::default(),
+            cmd_ghost: None,
             quick_search: None,
             drive_paths: Default::default(),
             viewers: Vec::new(),
@@ -1339,7 +1343,9 @@ impl App {
     fn panels_key(&mut self, key: KeyEvent) {
         // The command line's completion list takes keys first; an edit of
         // the line recomputes it.
-        if self.completion_key(autocomplete::Owner::Cmdline, &key) {
+        if self.completion_key(autocomplete::Owner::Cmdline, &key)
+            || self.ghost_key(autocomplete::Owner::Cmdline, &key)
+        {
             return;
         }
         let before = self.cmdline.clone();
@@ -2254,6 +2260,20 @@ impl App {
                 &line,
                 theme::COMMAND_LINE,
             );
+            // The ghost suggestion after the line, with the cursor at its end.
+            if let Some(rest) = self.shown_cmd_ghost() {
+                let x = line.chars().count() as u16;
+                if x < l.cmdline.width {
+                    put(
+                        buf,
+                        l.cmdline.x + x,
+                        l.cmdline.y,
+                        l.cmdline.width - x,
+                        &rest,
+                        theme::GHOST_COMMAND_LINE,
+                    );
+                }
+            }
             if self.focus == Focus::Panels && self.shown_viewer().is_none() {
                 let x = (prompt.chars().count() + self.cmd_cursor) as u16;
                 if x < l.cmdline.width {

@@ -91,6 +91,20 @@ impl Use {
     }
 }
 
+/// What appears as you type (docs/15, improvement 8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Suggest {
+    /// The rest of the best match in grey after the text; the list only
+    /// when asked for (Ctrl+Space in dialogs).
+    #[default]
+    Ghost,
+    /// Far's list of matches.
+    List,
+    /// Nothing; the list when asked for.
+    Off,
+}
+
 /// Autocompletion in input fields and the command line (Far's
 /// "AutoComplete settings", docs/15).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -99,10 +113,13 @@ pub struct Autocomplete {
     /// In dialogs' fields with a history or a path.
     pub dialogs: bool,
     pub command_line: bool,
-    /// The list of matches appears as you type.
-    pub show_list: bool,
+    /// What appears as you type.
+    pub suggest: Suggest,
     /// The list takes the keys: moving in it does not change the field.
     pub modal: bool,
+    /// Matches by characters in order anywhere, after the ones from the
+    /// start (highlighted in the list).
+    pub fuzzy: bool,
     pub history: Use,
     pub files: Use,
     pub variables: Use,
@@ -114,8 +131,9 @@ impl Default for Autocomplete {
         Self {
             dialogs: true,
             command_line: true,
-            show_list: true,
+            suggest: Suggest::Ghost,
             modal: false,
+            fuzzy: true,
             history: Use::Always,
             files: Use::Always,
             variables: Use::Always,

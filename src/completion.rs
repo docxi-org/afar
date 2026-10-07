@@ -285,6 +285,23 @@ impl Completion {
                             buf[(l + 1, yy)].set_symbol("√");
                         }
                         buf.set_stringn(l + 2, yy, &c.shown, inner, style);
+                        // The characters the typed text matched.
+                        let mark = if k == self.current {
+                            theme::MENU_SELECTED_HIGHLIGHT
+                        } else {
+                            theme::MENU_HIGHLIGHT
+                        };
+                        let mut xx = l + 2;
+                        for (i, ch) in c.shown.chars().enumerate() {
+                            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+                            if xx + cw > l + 2 + inner as u16 {
+                                break;
+                            }
+                            if c.marks.contains(&i) {
+                                buf[(xx, yy)].set_style(mark);
+                            }
+                            xx += cw;
+                        }
                     }
                 }
             }
@@ -302,6 +319,7 @@ mod tests {
             shown: s.into(),
             history: true,
             locked: false,
+            marks: Vec::new(),
         }
     }
 

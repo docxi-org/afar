@@ -11,6 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 
+use crate::complete::fuzzy;
 use crate::panel::draw_frame;
 use crate::theme;
 
@@ -114,6 +115,8 @@ pub struct FocusedField {
     pub path: bool,
     pub exec: bool,
     pub rect: Rect,
+    /// The cursor is at the end of the text.
+    pub at_end: bool,
 }
 
 /// What a field with a history asks of the history's owner.
@@ -236,22 +239,6 @@ impl HistoryView {
             .find(|k| self.entry(*k).is_some())
             .unwrap_or(0)
     }
-}
-
-/// `pattern`'s characters in `text` in order (case-insensitive): a score
-/// (lower is closer: an early start, few gaps) and the matched positions.
-fn fuzzy(text: &str, pattern: &str) -> Option<(usize, Vec<usize>)> {
-    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let mut marks = Vec::new();
-    let mut from = 0;
-    for pc in pattern.chars().flat_map(char::to_lowercase) {
-        let i = (from..t.len()).find(|&i| t[i] == pc)?;
-        marks.push(i);
-        from = i + 1;
-    }
-    let first = *marks.first().unwrap_or(&0);
-    let gaps: usize = marks.windows(2).map(|w| w[1] - w[0] - 1).sum();
-    Some((first + gaps * 2, marks))
 }
 
 /// Far's combo and history lists show at most this many items.
@@ -446,6 +433,9 @@ pub struct Dialog {
     filled: bool,
     /// Where the focused input field was last drawn.
     focused_rect: Rect,
+    /// The ghost suggestion: shown in grey after the focused field's text
+    /// while it is this text and the cursor is at its end.
+    ghost: Option<(String, String)>,
 }
 
 impl Dialog {
@@ -468,7 +458,17 @@ impl Dialog {
             cycle_prefix: None,
             filled: false,
             focused_rect: Rect::default(),
+            ghost: None,
         }
+    }
+
+    /// The ghost suggestion for the focused field: `(its text, the rest)`.
+    pub fn set_ghost(&mut self, ghost: Option<(String, String)>) {
+        self.ghost = ghost;
+    }
+
+    pub fn ghost(&self) -> Option<(String, String)> {
+        self.ghost.clone()
     }
 
     /// The dialog is being moved with the mouse.
@@ -753,6 +753,7 @@ impl Dialog {
             Target::Elem(r, e) => match &self.elem(r, e)?.kind {
                 Kind::Input {
                     value,
+                    cursor,
                     history,
                     path,
                     exec,
@@ -765,6 +766,7 @@ impl Dialog {
                     path: *path,
                     exec: *exec,
                     rect,
+                    at_end: *cursor >= value.chars().count(),
                 }),
                 _ => None,
             },
@@ -1754,6 +1756,18 @@ impl Dialog {
                     buf[(at + i, y)].set_symbol(" ").set_style(style);
                 }
                 put_plain(buf, at, y, *width, &shown, style);
+                // The ghost after the text, as far as the field goes.
+                if focused
+                    && !*unchanged
+                    && *cur >= value.chars().count()
+                    && let Some((base, rest)) = &self.ghost
+                    && base == value
+                {
+                    let gx = (cur - skip) as u16;
+                    if gx < *width {
+                        put_plain(buf, at + gx, y, width - gx, rest, theme::GHOST_EDIT);
+                    }
+                }
                 if history.is_some() && !*readonly {
                     buf[(at + width, y)].set_symbol("↓").set_style(c.body);
                     if let Target::Elem(r, e) = target {

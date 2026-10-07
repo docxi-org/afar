@@ -1,7 +1,8 @@
 //! Autocompletion in the application (docs/15): after an edit of the
-//! command line or a dialog's field the list of matches is recomputed
-//! (`crate::complete`) and shown (`crate::completion`); while it is open,
-//! keys go to it first.
+//! command line or a dialog's field the matches are recomputed
+//! (`crate::complete`) and shown — as the ghost suggestion after the text,
+//! or as the list (`crate::completion`); while the list is open, keys go
+//! to it first.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::buffer::Buffer;
@@ -10,6 +11,7 @@ use ratatui::layout::Rect;
 use super::fileops::Overlay;
 use super::{App, Focus};
 use crate::completion::{Completion, Reply};
+use crate::config::Suggest;
 use crate::history::Kind;
 
 /// Whose text the list completes.
@@ -60,25 +62,44 @@ impl App {
         }
     }
 
-    /// Recomputes the list after an edit; `manual`: asked for (Ctrl+Space),
-    /// so it shows even when automatic completion is off.
+    /// Drops the owner's ghost suggestion.
+    fn clear_ghost(&mut self, owner: Owner) {
+        match owner {
+            Owner::Cmdline => self.cmd_ghost = None,
+            Owner::Dialog => {
+                if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
+                    dialog.set_ghost(None);
+                }
+            }
+        }
+    }
+
+    /// Recomputes the suggestion after an edit: the ghost or the list, as
+    /// set; `manual`: the list is asked for (Ctrl+Space), so it shows even
+    /// when automatic completion is off.
     pub(super) fn autocomplete(&mut self, owner: Owner, manual: bool) {
         let ac = self.config.autocomplete.clone();
         let enabled = match owner {
             Owner::Cmdline => ac.command_line,
             Owner::Dialog => ac.dialogs,
         };
-        if !manual && (!enabled || !ac.show_list) {
+        self.clear_ghost(owner);
+        // A list asked for stays while the text is edited.
+        let list_open = self.completion.as_ref().is_some_and(|c| c.owner == owner);
+        let want_list = manual || list_open || (enabled && ac.suggest == Suggest::List);
+        let want_ghost = !want_list && enabled && ac.suggest == Suggest::Ghost;
+        if !want_list && !want_ghost {
             self.completion = None;
             return;
         }
-        let (text, kind, history, path, exec) = match owner {
+        let (text, kind, history, path, exec, at_end) = match owner {
             Owner::Cmdline => (
                 self.cmdline.clone(),
                 Kind::Command,
                 Some(String::new()),
                 true,
                 true,
+                self.cmd_cursor >= self.cmdline.chars().count(),
             ),
             Owner::Dialog => {
                 let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() else {
@@ -94,7 +115,7 @@ impl App {
                     self.completion = None;
                     return;
                 }
-                (f.value, Kind::Dialog, f.history, f.path, f.exec)
+                (f.value, Kind::Dialog, f.history, f.path, f.exec, f.at_end)
             }
         };
         let sources = crate::complete::Sources {
@@ -115,7 +136,34 @@ impl App {
             Vec::new()
         };
         let base = self.panels[self.active].path.clone();
-        let groups = crate::complete::complete(&text, &entries, sources, &base, &mut self.programs);
+        let passive = &self.panels[1 - self.active];
+        let passive_names: Vec<String> = passive.entries.iter().map(|e| e.name.clone()).collect();
+        let ctx = crate::complete::Context {
+            base: &base,
+            // The same folder adds nothing to the files.
+            passive: (passive.path != base).then_some((passive.path.as_path(), &passive_names[..])),
+            fuzzy: ac.fuzzy,
+        };
+        if want_ghost {
+            self.completion = None;
+            if !at_end {
+                return;
+            }
+            let rest =
+                crate::complete::ghost(&text, &entries, sources, &ctx, &mut self.complete_cache);
+            let ghost = rest.map(|r| (text, r));
+            match owner {
+                Owner::Cmdline => self.cmd_ghost = ghost,
+                Owner::Dialog => {
+                    if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
+                        dialog.set_ghost(ghost);
+                    }
+                }
+            }
+            return;
+        }
+        let groups =
+            crate::complete::complete(&text, &entries, sources, &ctx, &mut self.complete_cache);
         // The command line's list opens upwards (Far's MenuUp).
         let up = owner == Owner::Cmdline
             || self
@@ -129,6 +177,55 @@ impl App {
                 kind,
                 history: list_name(&history),
             });
+    }
+
+    /// The command line's ghost, when it is to be seen: the line is the
+    /// one it was made for, the cursor at its end, the panels have the keys.
+    pub(super) fn shown_cmd_ghost(&self) -> Option<String> {
+        let (base, rest) = self.cmd_ghost.as_ref()?;
+        (*base == self.cmdline
+            && self.cmd_cursor >= self.cmdline.chars().count()
+            && self.focus == Focus::Panels
+            && !self.has_overlay()
+            && self.completion.is_none()
+            && self.shown_viewer().is_none())
+        .then(|| rest.clone())
+    }
+
+    /// Takes the ghost suggestion: `→` (and `End` in a field) at the end of
+    /// the text — all of it, `Ctrl+→` — a word. `true`: taken.
+    pub(super) fn ghost_key(&mut self, owner: Owner, key: &KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        let word = match key.code {
+            KeyCode::Right if ctrl => true,
+            KeyCode::Right if plain => false,
+            KeyCode::End if plain && owner == Owner::Dialog => false,
+            _ => return false,
+        };
+        let open_list = self.completion.is_some();
+        let (base, rest) = match owner {
+            Owner::Cmdline => match self.shown_cmd_ghost() {
+                Some(rest) => (self.cmdline.clone(), rest),
+                None => return false,
+            },
+            Owner::Dialog => {
+                let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() else {
+                    return false;
+                };
+                let Some(f) = dialog.focused_field() else {
+                    return false;
+                };
+                match dialog.ghost() {
+                    Some((base, rest)) if base == f.value && f.at_end && !open_list => (base, rest),
+                    _ => return false,
+                }
+            }
+        };
+        let taken = if word { first_word(&rest) } else { rest };
+        self.set_owner_text(owner, &format!("{base}{taken}"));
+        self.autocomplete(owner, false);
+        true
     }
 
     /// A key while the list is open; `true`: taken (also when it was passed
@@ -281,4 +378,30 @@ impl App {
 
 fn list_name(history: &Option<String>) -> String {
     history.clone().unwrap_or_default()
+}
+
+/// The ghost's first word: separators before it, the word, and a path's
+/// `\` after it.
+fn first_word(rest: &str) -> String {
+    let sep = |c: char| c.is_whitespace() || matches!(c, '\\' | '/' | '"');
+    let lead = rest.chars().take_while(|c| sep(*c)).count();
+    let word = rest.chars().skip(lead).take_while(|c| !sep(*c)).count();
+    let mut n = lead + word;
+    if rest.chars().nth(n).is_some_and(|c| matches!(c, '\\' | '/')) {
+        n += 1;
+    }
+    rest.chars().take(n).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_word;
+
+    #[test]
+    fn ghost_words() {
+        assert_eq!(first_word("ild --release"), "ild");
+        assert_eq!(first_word(" --release"), " --release");
+        assert_eq!(first_word("Files\\Far\\far.exe"), "Files\\");
+        assert_eq!(first_word("\\Far"), "\\Far");
+    }
 }

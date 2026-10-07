@@ -355,7 +355,9 @@ impl App {
             }
             Some(Overlay::Dialog { .. }) => {
                 // The completion list first; an edit recomputes it.
-                if self.dialog_completion_key(&key) {
+                if self.dialog_completion_key(&key)
+                    || self.ghost_key(super::autocomplete::Owner::Dialog, &key)
+                {
                     return;
                 }
                 let before = self.dialog_field_text();

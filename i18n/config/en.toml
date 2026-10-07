@@ -85,8 +85,12 @@ default_codepage = 0          # 0: the Windows ANSI code page, else a number (86
 # Autocompletion as in Far ("Options → AutoComplete settings").
 dialogs = true            # in dialogs' fields with a history or a path
 command_line = true
-show_list = true          # the list of matches appears as you type
+# What appears as you type: "ghost" — the rest of the best match in grey after
+# the text (→ at the end of the line takes it, Ctrl+→ a word), the list on
+# Ctrl+Space in dialogs; "list" — the list of matches, as in Far; "off" — nothing.
+suggest = "ghost"
 modal = false             # the list takes the keys: moving in it does not change the field
+fuzzy = true              # also matches with the letters in order anywhere (lower, highlighted)
 # Sources: "always", "ctrl_space" (only on Ctrl+Space), "never".
 history = "always"        # the field's or the commands' history
 files = "always"          # files and folders
