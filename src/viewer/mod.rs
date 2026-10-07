@@ -5,6 +5,7 @@
 
 pub mod codepage;
 pub mod layout;
+pub mod lines;
 pub mod positions;
 pub mod search;
 pub mod source;
@@ -143,6 +144,38 @@ pub enum Outcome {
     App(ViewerCmd),
 }
 
+/// What a mark on the viewer's lines is (the agent's pointers, the
+/// changes of the file).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    Info,
+    Warning,
+    Error,
+    /// Lines that changed on the disk while the file was open.
+    Changed,
+}
+
+/// Lines marked in the viewer (docs/11, "Агент открывает и показывает"):
+/// lines from 1, inclusive.
+#[derive(Clone, Debug)]
+pub struct Mark {
+    pub from: u64,
+    pub to: u64,
+    pub label: String,
+    pub kind: MarkKind,
+    /// Made by the agent.
+    pub agent: bool,
+    /// Blinks until then.
+    pub flash_until: Option<Instant>,
+    /// Goes away then.
+    pub expires: Option<Instant>,
+    /// Its place changed (the lines were rewritten): shown dimmed.
+    pub stale: bool,
+}
+
+/// Files up to this size are remembered to show what changed in them.
+const SNAPSHOT_LIMIT: u64 = 4 << 20;
+
 pub struct Viewer {
     pub id: u32,
     src: Source,
@@ -178,6 +211,15 @@ pub struct Viewer {
     /// The first Shift+click of a selection (Far: the next one ends it).
     shift_anchor: Option<u64>,
     opts: Opts,
+    /// Lines marked by the agent, and the changed ones.
+    pub marks: Vec<Mark>,
+    lines: lines::LineIndex,
+    /// The file's bytes as last read (small files), for what changed.
+    snapshot: Option<Vec<u8>>,
+    /// "Follow the agent" is on (shown in the status line).
+    pub follow: bool,
+    /// The label of the first mark the last frame showed.
+    shown_label: Option<String>,
 }
 
 impl Viewer {
@@ -253,7 +295,13 @@ impl Viewer {
                 zero: settings.show_zero,
                 persistent: settings.persistent_selection,
             },
+            marks: Vec::new(),
+            lines: lines::LineIndex::new(),
+            snapshot: None,
+            follow: false,
+            shown_label: None,
         };
+        v.snapshot = v.read_snapshot();
         if let Some(r) = remembered {
             v.top = r.top.min(v.src.size());
             v.left = r.left;
@@ -558,32 +606,177 @@ impl Viewer {
     /// Goes to the start of line `n` (from 1), counting line feeds from
     /// the start of the file (links to `file#L10`, docs/16).
     pub fn goto_line(&mut self, n: u64) {
-        let unit = self.codec.unit();
-        let nl = self.codec.encode(
-            "
-",
-        );
-        let (mut pos, mut line) = (0u64, 1u64);
-        'scan: while line < n {
-            let chunk = self.src.chunk(pos);
-            if chunk.is_empty() {
-                break;
+        let pos = self.line_start(n);
+        self.goto(pos, Some(0));
+    }
+
+    /// Where line `n` (from 1) starts.
+    pub fn line_start(&mut self, n: u64) -> u64 {
+        self.lines.line_start(&mut self.src, &self.codec, n)
+    }
+
+    /// The line (from 1) of a byte offset.
+    pub fn line_of(&mut self, offset: u64) -> u64 {
+        self.lines.line_of(&mut self.src, &self.codec, offset)
+    }
+
+    /// How many lines the file has.
+    pub fn line_count(&mut self) -> u64 {
+        self.lines.count(&mut self.src, &self.codec)
+    }
+
+    /// Shows line `n` with a few lines of context above it.
+    pub fn show_line(&mut self, n: u64) {
+        let pos = self.line_start(n.saturating_sub(3).max(1));
+        self.goto(pos, Some(0));
+    }
+
+    /// The lines shown in the last frame.
+    pub fn visible_lines(&mut self) -> (u64, u64) {
+        let first = self.rows.first().map_or(self.top, |r| r.start);
+        let last = self.rows.last().map_or(self.top, |r| r.start);
+        (self.line_of(first), self.line_of(last))
+    }
+
+    /// The selection as lines.
+    pub fn selection_lines(&mut self) -> Option<(u64, u64)> {
+        let (from, to) = self.selection?;
+        Some((
+            self.line_of(from),
+            self.line_of(to.saturating_sub(1).max(from)),
+        ))
+    }
+
+    /// The text of lines `from..=to` (at most `limit` bytes).
+    pub fn lines_text(&mut self, from: u64, to: u64, limit: usize) -> String {
+        let start = self.line_start(from);
+        let end = self.line_start(to + 1).max(start);
+        let bytes = self
+            .src
+            .read_vec(start, ((end - start) as usize).min(limit));
+        self.decode(&bytes)
+    }
+
+    fn decode(&self, bytes: &[u8]) -> String {
+        let mut out = String::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let (ch, n) = self.codec.decode(&bytes[i..]);
+            out.push(ch);
+            i += n.max(1);
+        }
+        out
+    }
+
+    /// The first line from `from` matching `re`, going through the file.
+    pub fn find_line(&mut self, re: &regex::Regex, from: u64) -> Option<u64> {
+        let total = self.line_count();
+        let mut n = from.max(1);
+        while n <= total {
+            // A batch of lines at a time.
+            let last = (n + 255).min(total);
+            let text = self.lines_text(n, last, 8 << 20);
+            for (k, line) in text.split('\n').enumerate() {
+                if re.is_match(line) {
+                    return Some(n + k as u64);
+                }
             }
-            let len = chunk.len();
-            let mut k = 0;
-            while k + unit <= len {
-                if chunk[k..k + unit] == nl[..] {
-                    line += 1;
-                    if line == n {
-                        pos += (k + unit) as u64;
-                        break 'scan;
+            n = last + 1;
+        }
+        None
+    }
+
+    /// To the next (previous) marked place from the top line.
+    fn jump_mark(&mut self, forward: bool) {
+        let here = self.line_of(self.top);
+        // The place shown with context: it is `here + 3` when jumped to.
+        let at = here + 3;
+        let target = if forward {
+            self.marks.iter().map(|m| m.from).filter(|f| *f > at).min()
+        } else {
+            self.marks.iter().map(|m| m.from).filter(|f| *f < at).max()
+        };
+        if let Some(line) = target {
+            self.show_line(line);
+        }
+    }
+
+    /// Adds marks; `replace` drops the agent's earlier ones first.
+    pub fn add_marks(&mut self, marks: Vec<Mark>, replace: bool) {
+        if replace {
+            self.marks.retain(|m| !m.agent);
+        }
+        self.marks.extend(marks);
+    }
+
+    /// Drops the marks whose time ran out; `true`: something is drawn
+    /// differently now (also while a mark blinks).
+    pub fn marks_tick(&mut self) -> bool {
+        let now = Instant::now();
+        let before = self.marks.len();
+        self.marks.retain(|m| m.expires.is_none_or(|t| t > now));
+        before != self.marks.len()
+            || self
+                .marks
+                .iter()
+                .any(|m| m.flash_until.is_some_and(|t| t > now))
+    }
+
+    fn read_snapshot(&mut self) -> Option<Vec<u8>> {
+        let size = self.src.size();
+        (size <= SNAPSHOT_LIMIT).then(|| self.src.read_vec(0, size as usize))
+    }
+
+    /// The file changed: what lines are new or rewritten (in the new
+    /// text), the marks moved with their lines (or stale).
+    fn changed_lines(&mut self) -> Vec<(u64, u64)> {
+        self.lines = lines::LineIndex::new();
+        let new = self.read_snapshot();
+        let (Some(old), Some(new_bytes)) = (self.snapshot.take(), new.clone()) else {
+            self.snapshot = new;
+            return Vec::new();
+        };
+        self.snapshot = new;
+        let (old_t, new_t) = (self.decode(&old), self.decode(&new_bytes));
+        let diff = similar::TextDiff::from_lines(&old_t, &new_t);
+        let mut changed = Vec::new();
+        // Old line → new line (from 0), for moving marks.
+        let mut map: Vec<Option<u64>> = vec![None; old_t.lines().count() + 1];
+        for op in diff.ops() {
+            use similar::DiffTag;
+            let (o, n) = (op.old_range(), op.new_range());
+            match op.tag() {
+                DiffTag::Equal => {
+                    for (k, ol) in o.clone().enumerate() {
+                        if let Some(slot) = map.get_mut(ol) {
+                            *slot = Some((n.start + k) as u64);
+                        }
                     }
                 }
-                k += unit;
+                DiffTag::Insert | DiffTag::Replace => {
+                    if !n.is_empty() {
+                        changed.push((n.start as u64 + 1, n.end as u64));
+                    }
+                }
+                DiffTag::Delete => {
+                    // A deletion shows on the line after it.
+                    let l = n.start as u64 + 1;
+                    changed.push((l, l));
+                }
             }
-            pos += len as u64;
         }
-        self.goto(pos, Some(0));
+        for m in &mut self.marks {
+            let f = map.get((m.from - 1) as usize).copied().flatten();
+            let t = map.get((m.to - 1) as usize).copied().flatten();
+            match (f, t) {
+                (Some(f), Some(t)) if t >= f => {
+                    m.from = f + 1;
+                    m.to = t + 1;
+                }
+                _ => m.stale = true,
+            }
+        }
+        changed
     }
 
     pub fn goto(&mut self, pos: u64, left: Option<usize>) {
@@ -637,16 +830,17 @@ impl Viewer {
 
     /// Checks the file for growth (Far's reload timer). A file that grew
     /// while its end was shown keeps the end in view (`tail -f`).
-    pub fn check_changed(&mut self) -> bool {
+    pub fn check_changed(&mut self) -> Option<Vec<(u64, u64)>> {
         let was_last = self.last_page;
         if !self.src.refresh() {
-            return false;
+            return None;
         }
+        let changed = self.changed_lines();
         let size = self.src.size();
         if self.top > size || was_last {
             self.go_end();
         }
-        true
+        Some(changed)
     }
 
     /// Runs a viewer command; those needing dialogs or the panels go back
@@ -662,6 +856,8 @@ impl Viewer {
         }
         let text = self.mode == Mode::Text;
         match cmd {
+            NextMark => self.jump_mark(true),
+            PrevMark => self.jump_mark(false),
             Up => self.up(1),
             Down => self.down(1),
             PageUp => self.up(self.height().saturating_sub(1).max(1)),
@@ -950,13 +1146,63 @@ impl Viewer {
         };
         self.rows.clear();
         let mut p = self.top;
+        // The line of each row, for the marks.
+        let mut line = if self.marks.is_empty() {
+            0
+        } else {
+            self.line_of(p)
+        };
+        self.shown_label = None;
+        let mut prev = p;
+        let now = Instant::now();
         for y in 0..a.height {
             if p >= self.src.size() {
                 break;
             }
+            if !self.marks.is_empty() && p > prev {
+                line += lines::count_feeds(&mut self.src, &self.codec, prev, p);
+                prev = p;
+            }
             let row = layout::read_row(&mut self.src, &self.codec, p, &opts);
             p = row.end;
             let ry = a.y + y;
+            let mark_style = self
+                .marks
+                .iter()
+                .rev()
+                .find(|m| line >= m.from && line <= m.to)
+                .map(|m| {
+                    let mut st = match m.kind {
+                        MarkKind::Info => theme::VIEWER_MARK_INFO,
+                        MarkKind::Warning => theme::VIEWER_MARK_WARNING,
+                        MarkKind::Error => theme::VIEWER_MARK_ERROR,
+                        MarkKind::Changed => theme::VIEWER_MARK_CHANGED,
+                    };
+                    if m.stale {
+                        st = st.add_modifier(ratatui::style::Modifier::DIM);
+                    }
+                    // Blinking: the colors swap four times a second.
+                    let phase = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() / 250);
+                    if m.flash_until.is_some_and(|t| t > now) && phase.is_multiple_of(2) {
+                        st = st.add_modifier(ratatui::style::Modifier::REVERSED);
+                    }
+                    st
+                });
+            if let Some(st) = mark_style {
+                for x in a.left()..a.right() {
+                    buf[(x, ry)].set_style(st);
+                }
+                if self.shown_label.is_none() {
+                    self.shown_label = self
+                        .marks
+                        .iter()
+                        .rev()
+                        .find(|m| line >= m.from && line <= m.to && !m.label.is_empty())
+                        .map(|m| m.label.clone());
+                }
+            }
             for cell in &row.cells {
                 let cw = usize::from(cell.width);
                 if cell.col + cw <= left || cell.col >= left + width {
@@ -1199,7 +1445,18 @@ impl Viewer {
             status = status.chars().take(available).collect();
         }
         let name_w = available - status.chars().count();
-        let name = crate::panel::truncate_path(&self.path().display().to_string(), name_w);
+        // A mark on the screen: its label instead of the name; following
+        // the agent: a sign in front.
+        let shown = match &self.shown_label {
+            Some(label) => format!("◆ {label}"),
+            None => self.path().display().to_string(),
+        };
+        let shown = if self.follow {
+            format!("⇢ {shown}")
+        } else {
+            shown
+        };
+        let name = crate::panel::truncate_path(&shown, name_w);
         let mut text = format!("{name:<name_w$}{status}");
         if clock > 0 {
             text.push('│');

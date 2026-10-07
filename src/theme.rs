@@ -47,6 +47,8 @@ pub const PANEL_TITLE_SELECTED: Style = c(con::BLACK, con::CYAN);
 pub const AGENT_WAITING: Style = c(con::BLACK, con::YELLOW);
 pub const PANEL_COLUMN_TITLE: Style = c(con::YELLOW, con::BLUE);
 pub const PANEL_INFO_SELECTED: Style = c(con::YELLOW, con::CYAN);
+/// Values in the information panel (Far's `Panel.Text.Info`).
+pub const PANEL_INFO_TEXT: Style = c(con::YELLOW, con::BLUE);
 pub const PANEL_BOX: Style = c(con::LIGHTCYAN, con::BLUE);
 
 // Dialogs.
@@ -103,6 +105,12 @@ pub const VIEWER_SELECTED: Style = c(con::BLACK, con::CYAN);
 pub const VIEWER_STATUS: Style = c(con::BLACK, con::CYAN);
 pub const VIEWER_ARROWS: Style = c(con::YELLOW, con::BLUE);
 pub const VIEWER_SCROLLBAR: Style = c(con::LIGHTCYAN, con::BLUE);
+/// Lines the agent marked in the viewer (afar's): info, warning, error;
+/// lines changed on the disk.
+pub const VIEWER_MARK_INFO: Style = c(con::WHITE, con::CYAN);
+pub const VIEWER_MARK_WARNING: Style = c(con::BLACK, con::YELLOW);
+pub const VIEWER_MARK_ERROR: Style = c(con::WHITE, con::RED);
+pub const VIEWER_MARK_CHANGED: Style = c(con::BLACK, con::GREEN);
 
 // Bottom bars.
 pub const KEYBAR_NUM: Style = c(con::LIGHTGRAY, con::BLACK);

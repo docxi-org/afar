@@ -82,6 +82,16 @@ pub enum Event {
         summary: String,
         paths: Vec<PathBuf>,
     },
+    /// A file opened in the viewer.
+    FileViewed {
+        path: PathBuf,
+    },
+    /// Lines selected in the viewer (once the selection stays).
+    ViewerSelection {
+        path: PathBuf,
+        from_line: u64,
+        to_line: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -262,6 +272,12 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 let more = if *count > shown { ", …" } else { "" };
                 format!("fs     {}: {}{more}", dir.display(), parts.join(", "))
             }
+            Event::FileViewed { path } => format!("view   {}", path.display()),
+            Event::ViewerSelection {
+                path,
+                from_line,
+                to_line,
+            } => format!("vsel   {}:{from_line}-{to_line}", path.display()),
             Event::AgentToolUsed { tool, summary, .. } => format!("tool   {tool}: {summary}"),
         };
         out.push_str(&format!(

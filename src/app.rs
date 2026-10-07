@@ -35,9 +35,11 @@ mod commands;
 mod farimport;
 mod fileops;
 mod findfiles;
+mod foldertree;
 mod fswatch;
 mod historymenu;
 mod ide;
+mod infopanel;
 mod links;
 mod mainmenu;
 mod outer;
@@ -47,6 +49,8 @@ mod policy;
 mod quicksearch;
 mod quickview;
 mod settings;
+mod viewagent;
+pub use viewagent::MarkSpec;
 mod viewers;
 use crate::{keys, termview, theme, tr};
 use fileops::{Overlay, RunningOp};
@@ -67,6 +71,9 @@ pub enum AppMsg {
     /// Folder sizes counted in the background (F3 on a folder): the
     /// panel's folder and (name, size) pairs.
     DirSizes(PathBuf, Vec<(String, u64)>),
+    /// A part of a drive's folder tree (Alt+F10): the root, the folders,
+    /// whether it is all.
+    TreeRead(PathBuf, Vec<foldertree::Node>, bool),
     /// Ctrl+A's "Set" finished: how many, what failed.
     AttributesDone(usize, Vec<String>),
     /// What the file search (Alt+F7) found or where it is.
@@ -138,8 +145,21 @@ const SYSTEM_PROMPT: &str = "You are running inside afar, a two-panel file manag
 Far Manager; the user sees its two file panels above your pane and works in them while talking to you. \
 The afar_* MCP tools show you what the user did (afar_state, afar_journal, afar_commands, \
 afar_command_output) and let you show things in the panels (afar_navigate, afar_select): when you \
-refer to a file or directory, show it with afar_navigate. Blocks starting with [afar journal] in a \
+refer to a file or directory, show it with afar_navigate. To point at a place inside a file, open it \
+in afar's viewer with afar_view (a line or a pattern) and mark lines with afar_highlight (a label; \
+info / warning / error); afar_viewer_state tells which file and lines the user looks at and what they \
+selected. Blocks starting with [afar journal] in a \
 user message are recent user actions added automatically. In the journal, `ext` entries are file changes made outside afar, `fs` entries by `agent` are changes made by your own commands, and `tool` entries are your own edits; files you change are highlighted in the panels.";
+
+/// The agent's edit waiting while its difference is viewed: the viewer,
+/// the file, the new text, the tab, the answer.
+type ParkedDiff = (
+    u32,
+    PathBuf,
+    String,
+    String,
+    Option<tokio::sync::oneshot::Sender<crate::ide::DiffAnswer>>,
+);
 
 /// Record of a command run from the command line.
 struct CmdRecord {
@@ -228,6 +248,18 @@ pub struct App {
     outer: outer::Outer,
     /// Ctrl+Q: the quick view in place of a panel.
     quick_view: Option<quickview::QuickView>,
+    /// The agent's edit waiting while its difference is viewed: the
+    /// viewer, the file, the new text, the tab, the answer.
+    diff_parked: Option<ParkedDiff>,
+    /// "Follow the agent": its files and edits come to the screen.
+    follow_agent: bool,
+    /// The viewer's selection: the file, the lines, since when, whether it
+    /// went to the journal.
+    view_selection: Option<(PathBuf, (u64, u64), Instant, bool)>,
+    /// Ctrl+L: the information panel in place of a panel.
+    info_panel: Option<infopanel::InfoPanel>,
+    /// Alt+F10: the drives' folder trees read in this session.
+    trees: std::collections::HashMap<PathBuf, foldertree::Tree>,
     /// Alt+F7: the dialog's options; the results window while a viewer
     /// opened from it is shown; the last click in it.
     find_options: findfiles::FindOptions,
@@ -370,6 +402,11 @@ impl App {
             user_lines: (Rect::default(), 0),
             outer: Default::default(),
             quick_view: None,
+            info_panel: None,
+            follow_agent: false,
+            diff_parked: None,
+            view_selection: None,
+            trees: Default::default(),
             find_options: Default::default(),
             find_parked: None,
             find_last_click: None,
@@ -752,6 +789,7 @@ impl App {
             AppMsg::DirSizes(dir, sizes) => self.dir_sizes(&dir, sizes),
             AppMsg::QuickViewStats(dir, stats) => self.quick_view_stats(dir, stats),
             AppMsg::Find(e) => self.find_event(e),
+            AppMsg::TreeRead(root, nodes, done) => self.tree_read(root, nodes, done),
             AppMsg::AttributesDone(n, failed) => self.attributes_done(n, failed),
             AppMsg::CommandOutput => self.on_command_output(),
             AppMsg::Mcp(McpMsg {
@@ -1776,6 +1814,20 @@ impl App {
                 Ok(self.on_post_tool(&input))
             }
             Request::ChannelWait => unreachable!("answered in handle"),
+            Request::View {
+                path,
+                line,
+                pattern,
+                highlight,
+            } => self.agent_view(&path, line, pattern, highlight),
+            Request::Highlight {
+                path,
+                marks,
+                flash,
+                ttl_s,
+                clear,
+            } => self.agent_highlight(&path, marks, flash, ttl_s, clear),
+            Request::ViewerState => Ok(self.agent_viewer_state()),
             Request::HookSessionStart(input) => {
                 self.on_session_start(&input);
                 Ok(self.session_start_context())
@@ -2146,6 +2198,13 @@ impl App {
         let Some(side) = (0..2).find(|&s| l.panels[s].contains(pos)) else {
             return;
         };
+        // The information panel's description: a click opens the file.
+        if ev.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.info_panel.as_ref().is_some_and(|i| i.side == side)
+        {
+            self.info_panel_click(ev.column, ev.row);
+            return;
+        }
         // The sort mode letter (Far's FileList::ProcessMouse): the left
         // button opens the drive menu, the right one the sort menu.
         let r = l.panels[side];
@@ -2324,6 +2383,10 @@ impl App {
                     && !self.panel_hidden(side)
                 {
                     self.draw_quick_view(l.panels[side], buf);
+                } else if self.info_panel.as_ref().is_some_and(|i| i.side == side)
+                    && !self.panel_hidden(side)
+                {
+                    self.draw_info_panel(l.panels[side], buf);
                 } else if !self.panel_hidden(side) {
                     self.panels[side].draw(
                         l.panels[side],

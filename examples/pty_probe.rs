@@ -47,8 +47,9 @@ fn main() -> anyhow::Result<()> {
             cwd: Some(&std::env::current_dir()?),
             env: &env,
             env_remove: &[],
-            rows: 30,
-            cols: 110,
+            // PROBE_ROWS / PROBE_COLS: another screen size.
+            rows: size_from_env("PROBE_ROWS", 30),
+            cols: size_from_env("PROBE_COLS", 110),
             capture_lines: true,
         },
         || {},
@@ -108,4 +109,11 @@ fn main() -> anyhow::Result<()> {
     }
     drop(p);
     Ok(())
+}
+
+fn size_from_env(name: &str, default: u16) -> u16 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }

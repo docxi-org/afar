@@ -205,6 +205,8 @@ impl App {
             HistoryNext => self.history_step(false),
             QuickView => self.toggle_quick_view(),
             Attributes => self.attributes_dialog(),
+            InfoPanel => self.toggle_info_panel(),
+            FindFolder => self.folder_tree(),
             FindFile => self.find_dialog("", ""),
             CommandHistory => self.history_menu(super::historymenu::HistoryMenu::Commands, None),
             ViewHistory => self.history_menu(super::historymenu::HistoryMenu::Views, None),

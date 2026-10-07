@@ -202,8 +202,10 @@ impl App {
         self.remember(i);
         let v = self.viewers.remove(i);
         self.wm.remove_screen(ScreenId::Viewer(v.id));
-        // A viewer opened from Alt+F7's results: back to them.
+        // A viewer opened from Alt+F7's results: back to them; one showing
+        // the agent's edit: back to the question.
         self.find_unpark();
+        self.ide_diff_unpark(v.id);
     }
 
     /// Saves the positions of all open viewers (on quit).
@@ -224,6 +226,15 @@ impl App {
             && let Some(s) = self.viewer_search.take()
         {
             s.cancel.store(true, Ordering::Relaxed);
+            return;
+        }
+        // Esc first takes the marks away (then closes, as in Far).
+        if key.code == crossterm::event::KeyCode::Esc
+            && key.modifiers.is_empty()
+            && !self.viewers[i].marks.is_empty()
+        {
+            self.viewers[i].marks.clear();
+            self.say(tr!("view-marks-cleared"));
             return;
         }
         let Some(chord) = Chord::from_event(&key) else {
@@ -700,7 +711,16 @@ impl App {
                     self.viewers
                         .iter()
                         .find(|v| v.id == *id)
-                        .map(|v| v.path().display().to_string())
+                        .map(|v| {
+                            // The agent's marks in it, as Far marks a
+                            // modified file.
+                            let marks = v.marks.iter().filter(|m| m.agent).count();
+                            if marks > 0 {
+                                format!("{}  ◆{marks}", v.path().display())
+                            } else {
+                                v.path().display().to_string()
+                            }
+                        })
                         .unwrap_or_default(),
                 ),
                 _ => (
@@ -760,7 +780,12 @@ impl App {
             && self.viewer_checked.elapsed() >= Duration::from_secs(1)
         {
             self.viewer_checked = std::time::Instant::now();
-            self.viewers[i].check_changed();
+            let _ = i;
+            self.viewers_tick();
+        }
+        // Marks blink and expire between the checks.
+        if let Some(i) = self.shown_viewer() {
+            self.viewers[i].marks_tick();
         }
     }
 

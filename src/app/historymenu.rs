@@ -306,6 +306,12 @@ impl App {
         let folder = self.panels[self.active].path.display().to_string();
         let text = path.display().to_string();
         self.store.add(Kind::View, "", &text, &folder, "user");
+        self.journal.push(
+            crate::journal::Actor::User,
+            crate::journal::Event::FileViewed {
+                path: path.to_path_buf(),
+            },
+        );
     }
 }
 

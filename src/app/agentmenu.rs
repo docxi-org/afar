@@ -36,6 +36,7 @@ pub(super) enum AgentAction {
     Observe(bool),
     ToggleIde,
     ToggleChannels,
+    Follow,
     ShowIdeLog,
     ShowJournal,
     AgentSettings,
@@ -173,6 +174,12 @@ impl App {
                 None,
                 Some(ToggleChannels),
                 self.config.agent.channels,
+            ),
+            (
+                tr!("agent-menu-follow"),
+                None,
+                Some(Follow),
+                self.follow_agent,
             ),
             sep(),
             item("agent-menu-ide-log", ShowIdeLog),
@@ -426,6 +433,7 @@ impl App {
                 self.set_ide(on);
                 self.save_settings_and_say_restart();
             }
+            Follow => self.toggle_follow_agent(),
             ToggleChannels => {
                 self.config.agent.channels = !self.config.agent.channels;
                 self.save_settings_and_say_restart();

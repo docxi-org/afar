@@ -62,9 +62,18 @@ fn panel_menu(side: usize) -> Vec<Entry> {
         ("MMenuLinksView", Some("Ctrl+9"), None),
         ("MMenuAlternativeView", Some("Ctrl+0"), None),
         SEP,
-        ("MMenuInfoPanel", Some("Ctrl+L"), None),
+        // Shown on this side: the command shows it on the other one.
+        (
+            "MMenuInfoPanel",
+            Some("Ctrl+L"),
+            Some(OnSide(1 - side, InfoPanel)),
+        ),
         ("MMenuTreePanel", Some("Ctrl+T"), None),
-        ("MMenuQuickView", Some("Ctrl+Q"), None),
+        (
+            "MMenuQuickView",
+            Some("Ctrl+Q"),
+            Some(OnSide(1 - side, QuickView)),
+        ),
         SEP,
         (
             "MMenuSortModes",
@@ -141,7 +150,7 @@ fn commands_menu() -> Vec<Entry> {
         ("MMenuFindFile", Some("Alt+F7"), Some(Run(FindFile))),
         ("MMenuHistory", Some("Alt+F8"), Some(Run(CommandHistory))),
         ("MMenuVideoMode", Some("Alt+F9"), None),
-        ("MMenuFindFolder", Some("Alt+F10"), None),
+        ("MMenuFindFolder", Some("Alt+F10"), Some(Run(FindFolder))),
         ("MMenuViewHistory", Some("Alt+F11"), Some(Run(ViewHistory))),
         (
             "MMenuFoldersHistory",

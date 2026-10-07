@@ -83,6 +83,20 @@ pub enum Request {
     /// `afar channel` waits for events for the agent (answered when there
     /// are some, or with none after a while).
     ChannelWait,
+    View {
+        path: String,
+        line: Option<u64>,
+        pattern: Option<String>,
+        highlight: Option<crate::app::MarkSpec>,
+    },
+    Highlight {
+        path: String,
+        marks: Vec<crate::app::MarkSpec>,
+        flash: bool,
+        ttl_s: Option<u64>,
+        clear: bool,
+    },
+    ViewerState,
 }
 
 pub type Reply = Result<String, String>;
@@ -143,6 +157,33 @@ pub struct NavigateParams {
     pub path: String,
     /// Name of the item to put the cursor on.
     pub cursor: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct ViewParams {
+    /// File to open; absolute or relative to the active panel's directory.
+    pub path: String,
+    /// Line to show (from 1).
+    pub line: Option<u64>,
+    /// A regular expression: show its first match (from `line`, if given).
+    pub pattern: Option<String>,
+    /// Mark the place too.
+    pub highlight: Option<crate::app::MarkSpec>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct HighlightParams {
+    /// The file (opened in the viewer if it is not).
+    pub path: String,
+    /// The places to mark.
+    pub marks: Vec<crate::app::MarkSpec>,
+    /// Blink them for a moment to draw the eye.
+    pub flash: Option<bool>,
+    /// Take them away after this many seconds (by default they stay until
+    /// the user presses Esc or the file is closed).
+    pub ttl_s: Option<u64>,
+    /// Remove your earlier marks in this file first.
+    pub clear: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -298,6 +339,62 @@ impl AfarMcp {
             )
             .await,
         )
+    }
+
+    #[tool(
+        description = "Open a file in afar's viewer for the user at a line or at the first \
+        match of a regular expression, optionally marking the place. The viewer comes to the \
+        screen if the user is on the panels (or follows you); otherwise it opens behind and the \
+        user is told. Use it to point at a place in a file."
+    )]
+    async fn afar_view(
+        &self,
+        Parameters(p): Parameters<ViewParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask(
+                &self.tx,
+                Request::View {
+                    path: p.path,
+                    line: p.line,
+                    pattern: p.pattern,
+                    highlight: p.highlight,
+                },
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "Mark lines in a file in afar's viewer with labels (kind: info, warning \
+        or error) so the user sees them; flash to draw the eye, ttl_s to remove them later. The \
+        user goes from mark to mark with Alt+Down / Alt+Up and removes them with Esc."
+    )]
+    async fn afar_highlight(
+        &self,
+        Parameters(p): Parameters<HighlightParams>,
+    ) -> Result<CallToolResult, McpError> {
+        result(
+            ask(
+                &self.tx,
+                Request::Highlight {
+                    path: p.path,
+                    marks: p.marks,
+                    flash: p.flash.unwrap_or(false),
+                    ttl_s: p.ttl_s,
+                    clear: p.clear.unwrap_or(false),
+                },
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "What the user has open in afar's viewer: the files, which one is on the \
+        screen, the visible lines, the selection (lines and text) and the marks."
+    )]
+    async fn afar_viewer_state(&self) -> Result<CallToolResult, McpError> {
+        result(ask(&self.tx, Request::ViewerState).await)
     }
 
     #[tool(

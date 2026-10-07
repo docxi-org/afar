@@ -35,30 +35,15 @@ impl App {
                 new_contents,
                 tab_name,
                 reply,
-            } => {
-                let old = std::fs::read_to_string(&path).unwrap_or_default();
-                let lines = tr!(
-                    "ide-diff-lines",
-                    old = old.lines().count(),
-                    new = new_contents.lines().count()
-                );
-                let dialog = Dialog::message(
-                    &tr!("ide-diff-title"),
-                    &[path.display().to_string(), lines],
-                    &[&tr!("ide-diff-accept"), &tr!("ide-diff-reject")],
-                    false,
-                );
-                self.overlays.push(Overlay::Dialog {
-                    dialog,
-                    purpose: Purpose::IdeDiff {
-                        tab_name,
-                        new_contents,
-                        reply: Some(reply),
-                    },
-                });
-            }
+            } => self.ide_diff_dialog(path, new_contents, tab_name, Some(reply)),
             // Answered in the agent's terminal: the dialog goes.
             IdeMsg::CloseTab { tab_name } => {
+                // Answered while its difference was being viewed.
+                if self.diff_parked.as_ref().is_some_and(|p| p.3 == tab_name)
+                    && let Some((_, _, _, _, Some(reply))) = self.diff_parked.take()
+                {
+                    let _ = reply.send(DiffAnswer::Closed);
+                }
                 if let Some(i) = self.overlays.iter().position(|o| {
                     matches!(o, Overlay::Dialog { purpose: Purpose::IdeDiff { tab_name: t, .. }, .. } if *t == tab_name)
                 }) && let Overlay::Dialog {
@@ -70,6 +55,120 @@ impl App {
                     let _ = reply.send(DiffAnswer::Closed);
                 }
             }
+        }
+    }
+
+    /// The agent's edit to confirm (`openDiff`): the file, how many lines
+    /// are added and removed; "Show the difference" opens it in the viewer
+    /// and the question comes back when the viewer closes.
+    pub(super) fn ide_diff_dialog(
+        &mut self,
+        path: std::path::PathBuf,
+        new_contents: String,
+        tab_name: String,
+        reply: Option<tokio::sync::oneshot::Sender<DiffAnswer>>,
+    ) {
+        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        let diff = similar::TextDiff::from_lines(&old, &new_contents);
+        let (mut added, mut removed) = (0usize, 0usize);
+        for change in diff.iter_all_changes() {
+            match change.tag() {
+                similar::ChangeTag::Insert => added += 1,
+                similar::ChangeTag::Delete => removed += 1,
+                similar::ChangeTag::Equal => {}
+            }
+        }
+        let lines = tr!("ide-diff-counts", added = added, removed = removed);
+        let dialog = Dialog::message(
+            &tr!("ide-diff-title"),
+            &[path.display().to_string(), lines],
+            &[
+                &tr!("ide-diff-accept"),
+                &tr!("ide-diff-reject"),
+                &tr!("ide-diff-show"),
+            ],
+            false,
+        );
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::IdeDiff {
+                path,
+                tab_name,
+                new_contents,
+                reply,
+            },
+        });
+    }
+
+    /// "Show the difference": a unified diff in the viewer, `+` lines
+    /// green, `-` lines red; the question waits for the viewer to close.
+    pub(super) fn ide_diff_show(
+        &mut self,
+        path: std::path::PathBuf,
+        new_contents: String,
+        tab_name: String,
+        reply: Option<tokio::sync::oneshot::Sender<DiffAnswer>>,
+    ) {
+        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        let name = path.display().to_string();
+        let text = similar::TextDiff::from_lines(&old, &new_contents)
+            .unified_diff()
+            .context_radius(3)
+            .header(&name, &format!("{name} (agent)"))
+            .to_string();
+        let file = self
+            .journal
+            .dir()
+            .join(format!("diff-{}.diff", self.next_viewer_id));
+        if std::fs::write(&file, &text).is_err() {
+            self.ide_diff_dialog(path, new_contents, tab_name, reply);
+            return;
+        }
+        let Some(id) = self.open_viewer(&file, vec![file.clone()]) else {
+            self.ide_diff_dialog(path, new_contents, tab_name, reply);
+            return;
+        };
+        // The diff's lines in colors.
+        if let Some(v) = self.viewers.iter_mut().find(|v| v.id == id) {
+            let mut marks = Vec::new();
+            for (k, line) in text.lines().enumerate() {
+                let n = k as u64 + 1;
+                let kind = if line.starts_with("+++") || line.starts_with("---") {
+                    None
+                } else if line.starts_with('+') {
+                    Some(crate::viewer::MarkKind::Changed)
+                } else if line.starts_with('-') {
+                    Some(crate::viewer::MarkKind::Error)
+                } else if line.starts_with("@@") {
+                    Some(crate::viewer::MarkKind::Info)
+                } else {
+                    None
+                };
+                if let Some(kind) = kind {
+                    marks.push(crate::viewer::Mark {
+                        from: n,
+                        to: n,
+                        label: String::new(),
+                        kind,
+                        agent: false,
+                        flash_until: None,
+                        expires: None,
+                        stale: false,
+                    });
+                }
+            }
+            v.add_marks(marks, false);
+        }
+        self.diff_parked = Some((id, path, new_contents, tab_name, reply));
+    }
+
+    /// A viewer closed: if it showed an edit's difference, the question
+    /// comes back.
+    pub(super) fn ide_diff_unpark(&mut self, viewer: u32) {
+        if self.diff_parked.as_ref().is_some_and(|p| p.0 == viewer)
+            && let Some((_, path, new_contents, tab_name, reply)) = self.diff_parked.take()
+        {
+            self.ide_diff_dialog(path, new_contents, tab_name, reply);
         }
     }
 

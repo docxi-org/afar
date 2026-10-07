@@ -101,6 +101,10 @@ pub enum Command {
     QuickView,
     /// Ctrl+A: the attributes and times of files.
     Attributes,
+    /// Ctrl+L: the information panel on the passive panel.
+    InfoPanel,
+    /// Alt+F10: find a folder in the drive's tree.
+    FindFolder,
     /// Alt+F7: find files.
     FindFile,
     // History menus.
@@ -170,6 +174,9 @@ pub enum ViewerCmd {
     AskAgent,
     /// Alt+Shift+F9: the viewer's settings.
     Settings,
+    /// Alt+Down / Alt+Up: the next / previous marked place (afar's).
+    NextMark,
+    PrevMark,
 }
 
 /// A command's name, its default (Far) keys, and whether it works with the
@@ -303,6 +310,8 @@ pub const COMMANDS: &[Def] = &[
     def("cmdline.history_prev", HistoryPrev, &["Ctrl+E"], true),
     def("panel.quick_view", QuickView, &["Ctrl+Q"], false),
     def("file.attributes", Attributes, &["Ctrl+A"], false),
+    def("panel.info", InfoPanel, &["Ctrl+L"], false),
+    def("panel.find_folder", FindFolder, &["Alt+F10"], true),
     def("file.find", FindFile, &["Alt+F7"], true),
     def("history.commands", CommandHistory, &["Alt+F8"], true),
     def("history.views", ViewHistory, &["Alt+F11"], true),
@@ -375,6 +384,8 @@ pub const COMMANDS: &[Def] = &[
     vdef("viewer.keybar", V::KeyBar, &["Ctrl+B"]),
     vdef("viewer.user_screen", V::UserScreen, &["Ctrl+O"]),
     vdef("viewer.ask_agent", V::AskAgent, &["Ctrl+Enter"]),
+    vdef("viewer.next_mark", V::NextMark, &["Alt+Down"]),
+    vdef("viewer.prev_mark", V::PrevMark, &["Alt+Up"]),
     vdef("viewer.settings", V::Settings, &["Alt+Shift+F9"]),
 ];
 

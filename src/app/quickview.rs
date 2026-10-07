@@ -78,7 +78,11 @@ impl App {
     pub(super) fn toggle_quick_view(&mut self) {
         self.quick_view = match self.quick_view {
             Some(_) => None,
-            None => Some(QuickView::new(1 - self.active)),
+            None => {
+                // It replaces the information panel.
+                self.info_panel = None;
+                Some(QuickView::new(1 - self.active))
+            }
         };
     }
 

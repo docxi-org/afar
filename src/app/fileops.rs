@@ -46,6 +46,8 @@ const OVERWRITE_CHOICES: [(&str, Overwrite); 6] = [
     ("MCopyOnlyNewerFiles", Overwrite::ReplaceIfNewer),
 ];
 
+// A few at a time on the stack: their sizes do not matter.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Overlay {
     Dialog {
         dialog: Dialog,
@@ -62,6 +64,8 @@ pub(super) enum Overlay {
     AgentMenu(crate::menubar::MenuBar<super::agentmenu::AgentAction>),
     /// Alt+F7's results.
     Find(Box<super::findfiles::FindView>),
+    /// Alt+F10.
+    FolderTree(Box<super::foldertree::FolderTree>),
 }
 
 /// What a dialog was opened for, i.e. what to do when it closes.
@@ -163,6 +167,7 @@ pub(super) enum Purpose {
     AgentModel,
     /// The agent's edit through the IDE protocol (`openDiff`).
     IdeDiff {
+        path: PathBuf,
         tab_name: String,
         new_contents: String,
         reply: Option<tokio::sync::oneshot::Sender<crate::ide::DiffAnswer>>,
@@ -414,6 +419,7 @@ impl App {
             Some(Overlay::MenuBar(_)) => self.menubar_key(key),
             Some(Overlay::AgentMenu(_)) => self.agent_menu_key(key),
             Some(Overlay::Find(_)) => self.find_key(&key),
+            Some(Overlay::FolderTree(_)) => self.folder_tree_key(&key),
             None => {}
         }
     }
@@ -434,6 +440,10 @@ impl App {
         }
         if let Some(Overlay::Find(_)) = self.overlays.last() {
             self.find_mouse(ev);
+            return;
+        }
+        if let Some(Overlay::FolderTree(_)) = self.overlays.last() {
+            self.folder_tree_mouse(ev);
             return;
         }
         if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {
@@ -578,10 +588,15 @@ impl App {
             }
             Purpose::ViewerSearch { id } => self.viewer_search_dialog_closed(id, button, &dialog),
             Purpose::IdeDiff {
+                path,
                 new_contents,
                 reply,
-                ..
+                tab_name,
             } => {
+                if button == Some(2) {
+                    self.ide_diff_show(path, new_contents, tab_name, reply);
+                    return;
+                }
                 let answer = if button == Some(0) {
                     crate::ide::DiffAnswer::Saved(new_contents)
                 } else {
@@ -685,6 +700,11 @@ impl App {
                 }
                 Overlay::Find(v) => {
                     super::findfiles::draw_find(v, area, buf);
+                    None
+                }
+                Overlay::FolderTree(ft) => {
+                    let tree = self.trees.get(&ft.root);
+                    super::foldertree::draw_folder_tree(ft, tree, area, buf);
                     None
                 }
             };

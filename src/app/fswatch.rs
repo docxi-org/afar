@@ -51,7 +51,7 @@ pub(super) struct FsState {
     /// The first change since the last reload.
     reload_first: Option<Instant>,
     /// Paths the agent's tools touched recently (keys of `path_key`).
-    agent_paths: Vec<(String, Instant)>,
+    pub(super) agent_paths: Vec<(String, Instant)>,
     /// Starts of the agent's Bash commands still running.
     agent_bash: Vec<Instant>,
     agent_bash_done: Option<Instant>,
@@ -308,6 +308,8 @@ impl App {
                 path.to_string()
             }
         };
+        // Open viewers of these files show what changed now.
+        self.viewers_agent_wrote(&paths);
         for p in &paths {
             let key = path_key(p);
             self.fs.agent_paths.push((key.clone(), now));
