@@ -92,7 +92,7 @@ impl Drop for IdeServer {
 }
 
 /// `CLAUDE_CONFIG_DIR` or `~/.claude`.
-fn claude_dir() -> PathBuf {
+pub fn claude_dir() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| {

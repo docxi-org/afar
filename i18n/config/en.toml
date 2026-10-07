@@ -17,6 +17,9 @@ delete_folder = true
 read_only = true
 # Esc during a file operation asks before cancelling it.
 esc = true
+# The agent menu asks before /compact, /clear and before ending the running
+# agent (a new or another session, restart, permission mode).
+agent = true
 
 [agent]
 # The agent in the bottom pane and its extra arguments (afar adds its own:

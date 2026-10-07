@@ -159,6 +159,16 @@ impl Menu {
         self
     }
 
+    /// Rows the menu wants: its items and the frame (thin box).
+    pub fn wanted_height(&self) -> u16 {
+        self.items.len() as u16 + 2
+    }
+
+    /// Moves the frame to row `y` of the area it is drawn in.
+    pub fn set_row(&mut self, y: u16) {
+        self.row = Some(y);
+    }
+
     pub fn select(mut self, index: usize) -> Self {
         if self.items.get(index).is_some_and(Item::selectable) {
             self.selected = index;

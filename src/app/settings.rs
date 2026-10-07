@@ -10,8 +10,8 @@ use crate::dialog::{Dialog, check_at, combo_at, input_at, text_at};
 use crate::tr;
 
 /// Far's confirmations; afar has three of them, the others are shown as
-/// in Far but cannot be changed yet.
-const CONFIRMATIONS: [(&str, Option<usize>); 14] = [
+/// in Far but cannot be changed yet. The last one is afar's own.
+const CONFIRMATIONS: [(&str, Option<usize>); 15] = [
     ("MSetConfirmCopy", None),
     ("MSetConfirmMove", None),
     ("MSetConfirmRO", Some(0)),
@@ -26,6 +26,7 @@ const CONFIRMATIONS: [(&str, Option<usize>); 14] = [
     ("MSetConfirmAllowReedit", None),
     ("MSetConfirmHistoryClear", None),
     ("MSetConfirmExit", None),
+    ("confirm-agent", Some(3)),
 ];
 
 /// The agent's permissions in the dialog: label, whether "ask" is offered.
@@ -47,7 +48,7 @@ impl App {
     /// F9 → Options → Confirmations.
     pub(super) fn confirmations_dialog(&mut self) {
         let c = &self.config.confirm;
-        let values = [c.read_only, c.delete_folder, c.esc];
+        let values = [c.read_only, c.delete_folder, c.esc, c.agent];
         let labels: Vec<String> = CONFIRMATIONS.iter().map(|(id, _)| tr!(id)).collect();
         // A check box is its text and 4 cells.
         let content = labels.iter().map(|l| chars(l) + 4).max().unwrap_or(20);
@@ -75,6 +76,7 @@ impl App {
                 Some(0) => self.config.confirm.read_only = value,
                 Some(1) => self.config.confirm.delete_folder = value,
                 Some(2) => self.config.confirm.esc = value,
+                Some(3) => self.config.confirm.agent = value,
                 _ => {}
             }
         }

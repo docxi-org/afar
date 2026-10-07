@@ -33,6 +33,9 @@ pub struct MenuBar<T> {
     /// Column of each title as last drawn.
     xpos: Vec<u16>,
     row: u16,
+    /// Room above the bar: a submenu that does not fit below opens up
+    /// there (the agent pane's menu at the bottom of the screen).
+    above: Option<Rect>,
 }
 
 impl<T: Clone> MenuBar<T> {
@@ -52,7 +55,14 @@ impl<T: Clone> MenuBar<T> {
             open: None,
             xpos,
             row: 0,
+            above: None,
         }
+    }
+
+    /// Lets submenus open upwards into `area` when they do not fit below.
+    pub fn with_room_above(mut self, area: Rect) -> Self {
+        self.above = Some(area);
+        self
     }
 
     /// The row the bar is on (`draw` sets it too).
@@ -243,7 +253,20 @@ impl<T: Clone> MenuBar<T> {
             }
         }
         if let Some(menu) = &mut self.open {
-            menu.draw(area, buf);
+            let below = area.height.saturating_sub(1);
+            let need = menu.wanted_height();
+            match self.above {
+                Some(up) if need > below && up.height > below => {
+                    // Upwards: the frame's bottom right above the bar.
+                    let room = Rect::new(area.x, up.y, area.width, area.y.saturating_sub(up.y));
+                    menu.set_row(room.height.saturating_sub(need));
+                    menu.draw(room, buf);
+                }
+                _ => {
+                    menu.set_row(1);
+                    menu.draw(area, buf);
+                }
+            }
         }
     }
 }

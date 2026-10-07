@@ -130,6 +130,11 @@ pub(super) enum MenuPurpose {
     },
     /// Shift+F4 in a viewer.
     ViewMode { id: u32 },
+    /// The agent menu's sessions of a folder.
+    Sessions {
+        dir: std::path::PathBuf,
+        ids: Vec<String>,
+    },
 }
 
 /// Items of the sort menu after the modes: separator, then these.
@@ -327,6 +332,11 @@ impl App {
                 }
             }
             MenuPurpose::ViewMode { id } => self.view_mode_chosen(id, i),
+            MenuPurpose::Sessions { dir, ids } => {
+                if let Some(id) = ids.get(i) {
+                    self.resume_session(dir, id.clone());
+                }
+            }
         }
     }
 }

@@ -98,6 +98,13 @@ pub struct DevState {
     /// The agent's Claude Code session, resumed by the next instance.
     #[serde(default)]
     pub agent_session: Option<String>,
+    /// Its folder and name.
+    #[serde(default)]
+    pub agent_cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub agent_permission_mode: Option<String>,
     /// Open viewers (restored only by a restart in development mode).
     #[serde(default)]
     pub viewers: Vec<ViewerState>,

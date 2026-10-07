@@ -58,6 +58,8 @@ pub(super) enum Overlay {
     },
     /// F9.
     MenuBar(crate::menubar::MenuBar<super::mainmenu::MainAction>),
+    /// F9 on the agent pane.
+    AgentMenu(crate::menubar::MenuBar<super::agentmenu::AgentAction>),
 }
 
 /// What a dialog was opened for, i.e. what to do when it closes.
@@ -122,6 +124,18 @@ pub(super) enum Purpose {
     ViewerGoto {
         id: u32,
     },
+    /// The agent menu's "Rename…" and "Other model…".
+    AgentRename,
+    /// The agent menu's "Compact context…": instructions for `/compact`.
+    AgentCompact,
+    /// An agent menu action that asks first.
+    AgentConfirm(super::agentmenu::AgentAction),
+    /// Continue a session of a folder (the running agent ends).
+    AgentResume {
+        dir: PathBuf,
+        id: String,
+    },
+    AgentModel,
     /// The agent's edit through the IDE protocol (`openDiff`).
     IdeDiff {
         tab_name: String,
@@ -340,6 +354,7 @@ impl App {
             }
             Some(Overlay::Menu { .. }) => self.menu_key(key),
             Some(Overlay::MenuBar(_)) => self.menubar_key(key),
+            Some(Overlay::AgentMenu(_)) => self.agent_menu_key(key),
             None => {}
         }
     }
@@ -352,6 +367,10 @@ impl App {
         }
         if let Some(Overlay::MenuBar(_)) = self.overlays.last() {
             self.menubar_mouse(ev);
+            return;
+        }
+        if let Some(Overlay::AgentMenu(_)) = self.overlays.last() {
+            self.agent_menu_mouse(ev);
             return;
         }
         if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut()
@@ -492,6 +511,31 @@ impl App {
                     let _ = reply.send(answer);
                 }
             }
+            Purpose::AgentCompact => {
+                if button == Some(0) {
+                    self.agent_compact(dialog.input_value(0));
+                }
+            }
+            Purpose::AgentResume { dir, id } => {
+                if button == Some(0) {
+                    self.relaunch_agent(dir, super::agent::Launch::Resume(id));
+                }
+            }
+            Purpose::AgentConfirm(action) => {
+                if button == Some(0) {
+                    self.agent_action_now(action);
+                }
+            }
+            Purpose::AgentRename => {
+                if button == Some(0) {
+                    self.agent_renamed(dialog.input_value(0));
+                }
+            }
+            Purpose::AgentModel => {
+                if button == Some(0) {
+                    self.agent_model(dialog.input_value(0));
+                }
+            }
             Purpose::ViewerGoto { id } => {
                 if button == Some(0) {
                     self.viewer_goto_closed(id, &dialog);
@@ -515,6 +559,7 @@ impl App {
         &mut self,
         area: Rect,
         bar: Rect,
+        agent_bar: Rect,
         buf: &mut Buffer,
     ) -> Option<Position> {
         let mut cursor = None;
@@ -531,6 +576,10 @@ impl App {
                 }
                 Overlay::MenuBar(menubar) => {
                     menubar.draw(bar, buf);
+                    None
+                }
+                Overlay::AgentMenu(menubar) => {
+                    menubar.draw(agent_bar, buf);
                     None
                 }
             };

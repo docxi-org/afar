@@ -70,7 +70,7 @@ pub enum Request {
     /// `UserPromptSubmit` hook: journal delta (live) or a summary.
     HookPrompt,
     /// `SessionStart` hook: short description of the environment.
-    HookSessionStart,
+    HookSessionStart(String),
     /// `PreToolUse` hook (Bash): the hook's JSON input.
     HookPreTool(String),
     /// `PostToolUse` hook: the hook's JSON input.
@@ -432,7 +432,7 @@ async fn hook(
 ) -> (StatusCode, String) {
     let request = match event.as_str() {
         "user-prompt" => Request::HookPrompt,
-        "session-start" => Request::HookSessionStart,
+        "session-start" => Request::HookSessionStart(body),
         "pre-tool" => Request::HookPreTool(body),
         "post-tool" => Request::HookPostTool(body),
         // `afar channel` waits here for events (long polling).

@@ -97,6 +97,9 @@ pub struct Confirm {
     pub read_only: bool,
     /// Esc during an operation asks before cancelling.
     pub esc: bool,
+    /// The agent menu asks before losing context or ending the agent
+    /// (`/compact`, `/clear`, new / other session, restart).
+    pub agent: bool,
 }
 
 impl Default for Confirm {
@@ -105,6 +108,7 @@ impl Default for Confirm {
             delete_folder: true,
             read_only: true,
             esc: true,
+            agent: true,
         }
     }
 }

@@ -18,7 +18,8 @@ use ratatui::layout::{Position, Rect};
 pub enum WinId {
     /// File panel 0 (left) or 1 (right).
     Panel(usize),
-    Agent,
+    /// The agent pane (one session now; several later).
+    Agent(u32),
     /// Output of commands (Far's user screen, Ctrl+O).
     UserScreen,
     /// A viewer (F3) by its id.
@@ -226,7 +227,7 @@ impl Wm {
             Extent::SecondFixed(12),
             (5, 5),
             Node::ScreenSlot,
-            Node::Leaf(WinId::Agent),
+            Node::Leaf(WinId::Agent(0)),
         );
         let panels = Node::split(
             PANELS_SPLIT,
@@ -255,7 +256,7 @@ impl Wm {
 
     /// The agent pane is above the screens (otherwise below them).
     pub fn agent_on_top(&self) -> bool {
-        matches!(&self.root, Node::Split(s) if matches!(s.first, Node::Leaf(WinId::Agent)))
+        matches!(&self.root, Node::Split(s) if matches!(s.first, Node::Leaf(WinId::Agent(_))))
     }
 
     /// Moves the agent pane above or below the screens, keeping its size.
@@ -370,7 +371,7 @@ impl Wm {
                 // Nothing to move next to a hidden panel. The hidden agent
                 // pane keeps its boundary: the panels keep their height and
                 // it can still be dragged (Ctrl+O shows the output there).
-                let hidden = |n: &Node| matches!(n, Node::Leaf(w) if self.is_hidden(*w) && *w != WinId::Agent);
+                let hidden = |n: &Node| matches!(n, Node::Leaf(w) if self.is_hidden(*w) && !matches!(w, WinId::Agent(_)));
                 if !hidden(&s.first) && !hidden(&s.second) {
                     out.splitters.push(Splitter {
                         id: s.id,
@@ -454,7 +455,7 @@ mod tests {
         let wm = Wm::new();
         let a = wm.arrange(Rect::new(0, 0, 100, 30));
         assert_eq!(a.screen_area, Rect::new(0, 0, 100, 18));
-        assert_eq!(a.rect(WinId::Agent), Some(Rect::new(0, 18, 100, 12)));
+        assert_eq!(a.rect(WinId::Agent(0)), Some(Rect::new(0, 18, 100, 12)));
         assert_eq!(a.rect(WinId::Panel(0)), Some(Rect::new(0, 0, 50, 18)));
         assert_eq!(a.rect(WinId::Panel(1)), Some(Rect::new(50, 0, 50, 18)));
         assert_eq!(a.rect(WinId::UserScreen), None);
@@ -467,7 +468,7 @@ mod tests {
         let a = wm.arrange(Rect::new(0, 0, 100, 30));
         assert_eq!(a.rect(WinId::UserScreen), Some(Rect::new(0, 0, 100, 18)));
         assert_eq!(a.rect(WinId::Panel(0)), None);
-        assert!(a.rect(WinId::Agent).is_some());
+        assert!(a.rect(WinId::Agent(0)).is_some());
     }
 
     #[test]
@@ -492,7 +493,7 @@ mod tests {
         let s = *wm.arrange(area).splitter(MAIN_SPLIT).unwrap();
         wm.set_first(MAIN_SPLIT, i32::from(s.first()) - 4, s.total());
         let tall = wm.arrange(Rect::new(0, 0, 100, 50));
-        assert_eq!(tall.rect(WinId::Agent).unwrap().height, 16);
+        assert_eq!(tall.rect(WinId::Agent(0)).unwrap().height, 16);
     }
 
     #[test]
@@ -514,23 +515,23 @@ mod tests {
         let mut wm = Wm::new();
         wm.set_agent_on_top(true);
         let a = wm.arrange(Rect::new(0, 0, 100, 30));
-        assert_eq!(a.rect(WinId::Agent), Some(Rect::new(0, 0, 100, 12)));
+        assert_eq!(a.rect(WinId::Agent(0)), Some(Rect::new(0, 0, 100, 12)));
         assert_eq!(a.screen_area, Rect::new(0, 12, 100, 18));
         // A height saved with the agent below.
         wm.set_extent(MAIN_SPLIT, Extent::SecondFixed(8));
         let a = wm.arrange(Rect::new(0, 0, 100, 30));
-        assert_eq!(a.rect(WinId::Agent), Some(Rect::new(0, 0, 100, 8)));
+        assert_eq!(a.rect(WinId::Agent(0)), Some(Rect::new(0, 0, 100, 8)));
         wm.set_agent_on_top(false);
         let a = wm.arrange(Rect::new(0, 0, 100, 30));
-        assert_eq!(a.rect(WinId::Agent), Some(Rect::new(0, 22, 100, 8)));
+        assert_eq!(a.rect(WinId::Agent(0)), Some(Rect::new(0, 22, 100, 8)));
     }
 
     #[test]
     fn hidden_agent_keeps_its_boundary() {
         let mut wm = Wm::new();
-        wm.set_hidden(WinId::Agent, true);
+        wm.set_hidden(WinId::Agent(0), true);
         let a = wm.arrange(Rect::new(0, 0, 100, 30));
-        assert_eq!(a.rect(WinId::Agent), None);
+        assert_eq!(a.rect(WinId::Agent(0)), None);
         assert_eq!(a.screen_area, Rect::new(0, 0, 100, 18));
         assert_eq!(a.splitter(MAIN_SPLIT).map(|s| s.boundary), Some(18));
     }

@@ -26,6 +26,8 @@ use crate::panel::{FilePanel, put};
 use crate::term::{PtySession, SpawnOptions};
 use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
+mod agent;
+mod agentmenu;
 mod cmdline;
 mod commands;
 mod fileops;
@@ -71,7 +73,7 @@ pub enum Restore {
 pub enum Exit {
     Quit,
     /// Development mode: start the new build with this state.
-    Restart(DevState),
+    Restart(Box<DevState>),
 }
 
 /// Development mode (`afar --dev`): build status and restart conditions.
@@ -179,7 +181,8 @@ pub struct App {
     cmdline: String,
     /// Cursor in `cmdline`, in chars.
     cmd_cursor: usize,
-    agent: Option<PtySession>,
+    /// The agent's session (docs/13-agent-sessions.md).
+    agent: agent::AgentSession,
     /// The "user screen": text of finished commands.
     history: Vec<String>,
     running: Option<RunningCommand>,
@@ -187,11 +190,6 @@ pub struct App {
     journal: Journal,
     commands: Vec<CmdRecord>,
     link: AgentLink,
-    /// Journal entries are added to each agent prompt (live) or only
-    /// announced (on-demand).
-    live: bool,
-    /// Last journal entry the agent has been told about.
-    agent_seen_seq: u64,
     selection_changed: [Option<Instant>; 2],
     message: Option<(String, Instant)>,
     quit_armed: Option<Instant>,
@@ -229,14 +227,10 @@ pub struct App {
     viewer_keybar: bool,
     /// The shown viewer last checked its file for changes.
     viewer_checked: Instant,
-    /// afar as the agent's IDE (`[agent] ide`).
-    ide: Option<crate::ide::IdeServer>,
-    ide_connected: bool,
-    /// Events for the agent's channel, and the waiting `afar channel`.
-    channel_events: Vec<serde_json::Value>,
-    channel_waiter: Option<tokio::sync::oneshot::Sender<Reply>>,
-    /// What `selection_changed` last told the agent.
-    ide_sent: Option<ide::SentSelection>,
+    /// A press on the agent pane's top frame that is also a boundary: a
+    /// click there (released without moving) opens the pane's menu, a drag
+    /// moves the boundary.
+    agent_frame_click: Option<Position>,
     /// Modifier keys held now (the key bar shows their labels).
     held: KeyModifiers,
     /// The last Ctrl+O (quick presses go round the hiding states).
@@ -265,13 +259,6 @@ pub struct App {
     config: crate::config::Config,
     /// Keys → commands: Far's, changed by `keymaps/far.toml`.
     keymap: crate::keymap::Keymap,
-    /// Claude Code session id of the agent (`--session-id`), so that a dev
-    /// restart resumes exactly this conversation.
-    agent_session: Option<String>,
-    /// The agent was started with `--resume` at that time: if it exits
-    /// right away (nothing to resume yet), start it afresh.
-    agent_resumed_at: Option<Instant>,
-    agent_started: Instant,
     exit: Option<Exit>,
 }
 
@@ -314,15 +301,13 @@ impl App {
             drag: None,
             cmdline: String::new(),
             cmd_cursor: 0,
-            agent: None,
+            agent: agent::AgentSession::new(config.agent.live),
             history: Vec::new(),
             running: None,
             next_cmd_id: 1,
             journal,
             commands: Vec::new(),
             link,
-            live: config.agent.live,
-            agent_seen_seq: 0,
             selection_changed: [None, None],
             message: None,
             quit_armed: None,
@@ -347,11 +332,7 @@ impl App {
             viewer_peek: false,
             viewer_keybar: true,
             viewer_checked: Instant::now(),
-            ide: None,
-            ide_connected: false,
-            ide_sent: None,
-            channel_events: Vec::new(),
-            channel_waiter: None,
+            agent_frame_click: None,
             held: KeyModifiers::NONE,
             hiding_pressed: None,
             hiding_mode: 1,
@@ -372,9 +353,6 @@ impl App {
             data_dir,
             config,
             keymap,
-            agent_session: None,
-            agent_resumed_at: None,
-            agent_started: Instant::now(),
             exit: None,
         };
         match restore {
@@ -408,14 +386,17 @@ impl App {
             }
         }
         self.active = state.active.min(1);
-        self.live = state.live;
+        self.agent.live = state.live;
         for (id, extent) in state.splits {
             self.wm.set_extent(SplitId(id), extent);
         }
         self.set_panels_visible(state.panels_visible);
         self.restore_viewers(state.viewers, state.viewer_shown);
-        self.wm.set_hidden(WinId::Agent, state.agent_hidden);
-        self.agent_session = state.agent_session;
+        self.wm.set_hidden(WinId::Agent(0), state.agent_hidden);
+        self.agent.session_id = state.agent_session;
+        self.agent.cwd = state.agent_cwd;
+        self.agent.name = state.agent_name;
+        self.agent.permission_mode = state.agent_permission_mode;
         self.restored = true;
         self.layout_restored = true;
     }
@@ -452,6 +433,9 @@ impl App {
     fn save_state(&self) {
         let mut state = self.state();
         state.agent_session = None;
+        state.agent_cwd = None;
+        state.agent_name = None;
+        state.agent_permission_mode = None;
         if let Ok(json) = serde_json::to_vec_pretty(&state) {
             let _ = std::fs::create_dir_all(&self.data_dir);
             let _ = std::fs::write(self.data_dir.join("state.json"), json);
@@ -473,17 +457,20 @@ impl App {
                 .collect(),
             active: self.active,
             panels_visible: self.panels_visible(),
-            live: self.live,
+            live: self.agent.live,
             splits: self
                 .wm
                 .extents()
                 .into_iter()
                 .map(|(id, e)| (id.0, e))
                 .collect(),
-            agent_session: self.agent_session.clone(),
+            agent_session: self.agent.session_id.clone(),
+            agent_cwd: self.agent.cwd.clone(),
+            agent_name: self.agent.name.clone(),
+            agent_permission_mode: self.agent.permission_mode.clone(),
             viewers,
             viewer_shown,
-            agent_hidden: self.wm.is_hidden(WinId::Agent),
+            agent_hidden: self.wm.is_hidden(WinId::Agent(0)),
         }
     }
 
@@ -498,7 +485,7 @@ impl App {
             Some(tr!("dev-blocker-command"))
         } else if self.agent_alive() && dev.last_agent_output.elapsed() < Duration::from_secs(3) {
             Some(tr!("dev-blocker-agent-busy"))
-        } else if self.agent_alive() && self.agent_started.elapsed() < Duration::from_secs(10) {
+        } else if self.agent_alive() && self.agent.started.elapsed() < Duration::from_secs(10) {
             Some(tr!("dev-blocker-agent-starting"))
         } else {
             None
@@ -582,7 +569,7 @@ impl App {
             }
             return;
         }
-        self.exit = Some(Exit::Restart(self.state()));
+        self.exit = Some(Exit::Restart(Box::new(self.state())));
         self.quit = true;
     }
 
@@ -631,7 +618,7 @@ impl App {
             if self.quit {
                 // Let Claude Code exit cleanly: killed while starting, it
                 // falls back to its classic renderer next time.
-                if let Some(agent) = &mut self.agent {
+                if let Some(agent) = &mut self.agent.pty {
                     agent.shutdown(Duration::from_secs(3));
                 }
                 let exit = self.exit.take().unwrap_or(Exit::Quit);
@@ -672,9 +659,10 @@ impl App {
                     dev.last_agent_output = Instant::now();
                 }
                 // `--resume` with nothing to resume exits at once.
-                let quick_exit = self.agent.as_ref().is_some_and(|a| a.has_exited())
+                let quick_exit = self.agent.pty.as_ref().is_some_and(|a| a.has_exited())
                     && self
-                        .agent_resumed_at
+                        .agent
+                        .resumed_at
                         .is_some_and(|t| t.elapsed() < Duration::from_secs(15));
                 if quick_exit {
                     self.restored = false;
@@ -768,6 +756,10 @@ impl App {
         }
         self.viewer_tick();
         self.ide_sync_selection();
+        if self.agent_alive() {
+            self.agent.send_enter();
+            self.agent.refresh_name();
+        }
         self.maybe_restart();
     }
 
@@ -841,9 +833,32 @@ impl App {
         Ok(args)
     }
 
+    /// Starts the agent: after a dev restart the same conversation in its
+    /// folder, otherwise a new one in the active panel's folder.
     fn start_agent(&mut self, cols: u16, rows: u16) {
+        let resume = self.agent.session_id.clone().filter(|_| self.restored);
+        let cwd = match (&resume, &self.agent.cwd) {
+            (Some(_), Some(cwd)) if cwd.is_dir() => cwd.clone(),
+            _ => self.panels[self.active].path.clone(),
+        };
+        let launch = match resume {
+            Some(id) => agent::Launch::Resume(id),
+            None => agent::Launch::Fresh,
+        };
+        self.launch_agent(cwd, launch, &[], cols, rows);
+    }
+
+    /// Starts `claude` in `cwd`: a new conversation or one to continue;
+    /// `extra` arguments go before afar's own.
+    fn launch_agent(
+        &mut self,
+        cwd: PathBuf,
+        launch: agent::Launch,
+        extra: &[String],
+        cols: u16,
+        rows: u16,
+    ) {
         let tx = self.tx.clone();
-        let cwd = self.panels[self.active].path.clone();
         let program = self.config.agent.command.clone();
         let args = match self.agent_args() {
             Ok(args) => args,
@@ -860,25 +875,43 @@ impl App {
             ("AFAR_TOKEN".to_string(), self.link.token.clone()),
         ];
         // The agent connects to afar's IDE server by this port.
-        if let Some(ide) = &self.ide {
+        if let Some(ide) = &self.agent.ide {
             env.push(("CLAUDE_CODE_SSE_PORT".to_string(), ide.port.to_string()));
         }
         // A new agent session has not seen anything yet.
-        self.agent_seen_seq = 0;
+        self.agent.seen_seq = 0;
         // Our own session id; after a dev restart: the same conversation.
         // The configured extra arguments go first.
-        let mut args: Vec<String> = self.config.agent.args.iter().cloned().chain(args).collect();
-        self.agent_resumed_at = None;
-        self.agent_started = Instant::now();
-        match self.agent_session.clone().filter(|_| self.restored) {
-            Some(id) => {
-                args.splice(0..0, ["--resume".to_string(), id]);
-                self.agent_resumed_at = Some(Instant::now());
+        let mut args: Vec<String> = self
+            .config
+            .agent
+            .args
+            .iter()
+            .chain(extra)
+            .cloned()
+            .chain(args)
+            .collect();
+        if let Some(mode) = &self.agent.permission_mode {
+            args.splice(0..0, ["--permission-mode".to_string(), mode.clone()]);
+        }
+        self.agent.resumed_at = None;
+        self.agent.started = Instant::now();
+        self.agent.cwd = Some(cwd.clone());
+        self.agent.ide_sent = None;
+        match launch {
+            agent::Launch::Resume(id) => {
+                self.agent.name = crate::claude_sessions::title_of(
+                    &crate::claude_sessions::project_dir(&cwd).join(format!("{id}.jsonl")),
+                );
+                args.splice(0..0, ["--resume".to_string(), id.clone()]);
+                self.agent.session_id = Some(id);
+                self.agent.resumed_at = Some(Instant::now());
             }
-            None => {
+            agent::Launch::Fresh => {
                 let id = new_uuid();
                 args.splice(0..0, ["--session-id".to_string(), id.clone()]);
-                self.agent_session = Some(id);
+                self.agent.session_id = Some(id);
+                self.agent.name = None;
             }
         }
         match PtySession::spawn(
@@ -896,13 +929,13 @@ impl App {
                 let _ = tx.send(AppMsg::AgentOutput);
             },
         ) {
-            Ok(pty) => self.agent = Some(pty),
+            Ok(pty) => self.agent.pty = Some(pty),
             Err(e) => self.say(tr!("agent-start-failed", error = format!("{e:#}"))),
         }
     }
 
     fn agent_alive(&self) -> bool {
-        self.agent.as_ref().is_some_and(|a| !a.has_exited())
+        self.agent.pty.as_ref().is_some_and(|a| !a.has_exited())
     }
 
     // ------------------------------------------------------------- commands
@@ -949,12 +982,12 @@ impl App {
         }
         if let Some(arg) = lower.strip_prefix("afar:") {
             match arg.trim() {
-                "live" => self.live = !self.live,
-                "live on" => self.live = true,
-                "live off" => self.live = false,
+                "live" => self.agent.live = !self.agent.live,
+                "live on" => self.agent.live = true,
+                "live off" => self.agent.live = false,
                 _ => {}
             }
-            self.say(if self.live {
+            self.say(if self.agent.live {
                 tr!("observe-switched-live")
             } else {
                 tr!("observe-switched-on-demand")
@@ -1181,8 +1214,8 @@ impl App {
                 return;
             }
             // Hidden by Ctrl+O: it comes back to take the input.
-            if self.wm.is_hidden(WinId::Agent) {
-                self.wm.set_hidden(WinId::Agent, false);
+            if self.wm.is_hidden(WinId::Agent(0)) {
+                self.wm.set_hidden(WinId::Agent(0), false);
                 self.focus = Focus::Agent;
                 return;
             }
@@ -1227,6 +1260,11 @@ impl App {
     }
 
     fn agent_key(&mut self, key: KeyEvent) {
+        // F9: the agent pane's menu (Claude Code does not use the key).
+        if key.code == KeyCode::F(9) && key.modifiers.is_empty() {
+            self.agent_menu();
+            return;
+        }
         if !self.agent_alive() {
             if key.code == KeyCode::Enter {
                 let (rows, cols) = self.last_agent_size();
@@ -1234,7 +1272,7 @@ impl App {
             }
             return;
         }
-        let agent = self.agent.as_ref().unwrap();
+        let agent = self.agent.pty.as_ref().unwrap();
         // Typing returns from a scrolled-back view.
         agent.parser().screen_mut().set_scrollback(0);
         let app_cursor = agent.parser().screen().application_cursor();
@@ -1329,7 +1367,7 @@ impl App {
     /// What Ctrl+O has hidden: 0 nothing, 1 the panels, 2 the panels and
     /// the agent pane, 3 the agent pane.
     fn hiding(&self) -> u8 {
-        match (self.panels_visible(), self.wm.is_hidden(WinId::Agent)) {
+        match (self.panels_visible(), self.wm.is_hidden(WinId::Agent(0))) {
             (true, false) => 0,
             (false, false) => 1,
             (false, true) => 2,
@@ -1337,9 +1375,16 @@ impl App {
         }
     }
 
+    /// Hides the agent pane (the agent menu's "hide"): Ctrl+O's states with
+    /// the agent hidden.
+    fn hide_agent(&mut self) {
+        let state = if self.panels_visible() { 3 } else { 2 };
+        self.set_hiding(state);
+    }
+
     fn set_hiding(&mut self, state: u8) {
         self.set_panels_visible(matches!(state, 0 | 3));
-        self.wm.set_hidden(WinId::Agent, matches!(state, 2 | 3));
+        self.wm.set_hidden(WinId::Agent(0), matches!(state, 2 | 3));
         if matches!(state, 2 | 3) && self.focus == Focus::Agent {
             self.focus = Focus::Panels;
         }
@@ -1387,7 +1432,7 @@ impl App {
                 let entries = self.journal.since(since.unwrap_or(0));
                 let start = entries.len().saturating_sub(limit);
                 if let Some(last) = entries.last() {
-                    self.agent_seen_seq = self.agent_seen_seq.max(last.seq);
+                    self.agent.seen_seq = self.agent.seen_seq.max(last.seq);
                 }
                 Ok(format_entries(&entries[start..]))
             }
@@ -1531,19 +1576,43 @@ impl App {
             Request::HookPreTool(input) => Ok(self.on_pre_tool(&input)),
             Request::HookPostTool(input) => Ok(self.on_post_tool(&input)),
             Request::ChannelWait => unreachable!("answered in handle"),
-            Request::HookSessionStart => Ok(format!(
-                "[afar] left panel: {} | right panel: {} | active: {} | journal at #{} | mode: {}",
-                self.panels[0].path.display(),
-                self.panels[1].path.display(),
-                side_name(self.active),
-                self.journal.last_seq(),
-                if self.live {
-                    "live (actions are added to prompts)"
-                } else {
-                    "on-demand (use afar_journal)"
-                }
-            )),
+            Request::HookSessionStart(input) => {
+                self.on_session_start(&input);
+                Ok(self.session_start_context())
+            }
         }
+    }
+
+    /// SessionStart: a new conversation id after `/clear` (and on resume).
+    fn on_session_start(&mut self, input: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(input) else {
+            return;
+        };
+        if let Some(id) = v.get("session_id").and_then(|i| i.as_str())
+            && self.agent.session_id.as_deref() != Some(id)
+        {
+            self.agent.session_id = Some(id.to_string());
+            // A new conversation has no name yet.
+            if v.get("source").and_then(|s| s.as_str()) == Some("clear") {
+                self.agent.name = None;
+            }
+        }
+    }
+
+    /// What SessionStart tells the agent about afar.
+    fn session_start_context(&self) -> String {
+        format!(
+            "[afar] left panel: {} | right panel: {} | active: {} | journal at #{} | mode: {}",
+            self.panels[0].path.display(),
+            self.panels[1].path.display(),
+            side_name(self.active),
+            self.journal.last_seq(),
+            if self.agent.live {
+                "live (actions are added to prompts)"
+            } else {
+                "on-demand (use afar_journal)"
+            }
+        )
     }
 
     fn resolve_side(&self, side: &str) -> Result<usize, String> {
@@ -1592,21 +1661,21 @@ impl App {
                 serde_json::json!({ "cmd_id": r.id, "text": rec.map(|c| c.text.as_str()) })
             }),
             "journal_last_seq": self.journal.last_seq(),
-            "observe_mode": if self.live { "live" } else { "on-demand" },
+            "observe_mode": if self.agent.live { "live" } else { "on-demand" },
         })
     }
 
     /// Text added to the user's prompt by the `UserPromptSubmit` hook.
     fn prompt_context(&mut self) -> String {
-        let new = self.journal.since(self.agent_seen_seq);
+        let new = self.journal.since(self.agent.seen_seq);
         let (Some(first), Some(last)) = (new.first(), new.last()) else {
             return String::new();
         };
         let (first, last) = (first.seq, last.seq);
         let count = new.len();
-        let since = self.agent_seen_seq;
-        self.agent_seen_seq = last;
-        if !self.live {
+        let since = self.agent.seen_seq;
+        self.agent.seen_seq = last;
+        if !self.agent.live {
             return format!(
                 "[afar: {count} new journal {} #{first}–#{last}; call afar_journal(since={since}) if relevant]",
                 if count == 1 { "entry" } else { "entries" }
@@ -1681,6 +1750,7 @@ impl App {
         if let Some((id, offset)) = self.drag {
             match ev.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
+                    self.agent_frame_click = None;
                     if let Some(sp) = l.arrangement.splitter(id) {
                         let first = sp.first_for(pos, offset);
                         self.wm.set_first(id, i32::from(first), sp.total());
@@ -1689,10 +1759,33 @@ impl App {
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
                     self.drag = None;
+                    // Released where pressed: a click on the agent's frame.
+                    if let Some(at) = self.agent_frame_click.take() {
+                        self.agent_menu_at(at);
+                    }
                     return;
                 }
-                _ => self.drag = None,
+                _ => {
+                    self.drag = None;
+                    self.agent_frame_click = None;
+                }
             }
+        }
+        // The agent pane's top frame opens its menu at the title under the
+        // mouse; where it is also a boundary, only a click (not a drag).
+        let f = l.agent_frame;
+        if ev.kind == MouseEventKind::Down(MouseButton::Left)
+            && pos.y == f.y
+            && (f.x..f.right()).contains(&pos.x)
+        {
+            match l.arrangement.grab(pos) {
+                Some(grab) => {
+                    self.drag = Some(grab);
+                    self.agent_frame_click = Some(pos);
+                }
+                None => self.agent_menu_at(pos),
+            }
+            return;
         }
         // The top row of the screen opens Far's menu bar (not over a
         // viewer, which has no menu).
@@ -1716,7 +1809,7 @@ impl App {
             if pressed {
                 self.focus = Focus::Agent;
             }
-            let Some(agent) = &self.agent else { return };
+            let Some(agent) = &self.agent.pty else { return };
             let mut parser = agent.parser();
             let screen = parser.screen_mut();
             let mode = screen.mouse_protocol_mode();
@@ -1892,14 +1985,14 @@ impl App {
         let desktop = Rect::new(area.x, area.y, area.width, cmdline.y.saturating_sub(area.y));
         let arrangement = self.wm.arrange(desktop);
         let rect = |w| arrangement.rect(w).unwrap_or_default();
-        let agent_frame = rect(WinId::Agent);
+        let agent_frame = rect(WinId::Agent(0));
         let agent = Rect::new(
             agent_frame.x + 1,
             agent_frame.y + 1,
             agent_frame.width.saturating_sub(2),
             agent_frame.height.saturating_sub(2),
         );
-        let user = if self.wm.is_hidden(WinId::Agent) {
+        let user = if self.wm.is_hidden(WinId::Agent(0)) {
             desktop
         } else {
             arrangement.screen_area
@@ -1945,7 +2038,7 @@ impl App {
         self.last_layout = Some(l.clone());
         let mut cursor = None;
 
-        if let Some(agent) = &self.agent
+        if let Some(agent) = &self.agent.pty
             && l.agent.height > 0
             && l.agent.width > 0
         {
@@ -2010,7 +2103,7 @@ impl App {
 
         // Agent pane: a Far-style frame on the panel's blue background.
         let agent_focused = self.focus == Focus::Agent && !self.has_overlay();
-        let status = match &self.agent {
+        let status = match &self.agent.pty {
             None => tr!("agent-not-started"),
             Some(a) if a.has_exited() => tr!(
                 "agent-exited",
@@ -2025,16 +2118,18 @@ impl App {
         } else {
             theme::PANEL_TITLE
         };
-        let title = format!(" {} ", tr!("agent-title", status = status));
+        let name = self.agent.name.clone().unwrap_or_else(|| "claude".into());
+        let title = format!(" {} ", tr!("agent-title", name = name, status = status));
         crate::panel::put_title(buf, frame, frame.y, &title, title_style);
-        let unseen = self.journal.last_seq().saturating_sub(self.agent_seen_seq);
-        let mode = if self.live {
+        let unseen = self.journal.last_seq().saturating_sub(self.agent.seen_seq);
+        let mode = if self.agent.live {
             tr!("observe-live")
         } else {
             tr!("observe-on-demand")
         };
         let scrolled = self
             .agent
+            .pty
             .as_ref()
             .map_or(0, |a| a.parser().screen().scrollback());
         let scroll_note = if scrolled > 0 {
@@ -2066,7 +2161,7 @@ impl App {
         // Only the frame is blue: inside, the program keeps the terminal's
         // own colors.
         buf.set_style(l.agent, Style::reset());
-        if let Some(agent) = &self.agent {
+        if let Some(agent) = &self.agent.pty {
             let c = termview::draw_rows(
                 &crate::term::view(&agent.parser()),
                 0,
@@ -2135,7 +2230,14 @@ impl App {
                 area.width,
                 l.cmdline.y.saturating_sub(l.top.y),
             );
-            cursor = self.draw_overlays(over, bar, buf);
+            // The agent pane's menu bar: on the pane's top row.
+            let agent_bar = Rect::new(
+                area.x,
+                l.agent_frame.y,
+                area.width,
+                l.cmdline.y.saturating_sub(l.agent_frame.y),
+            );
+            cursor = self.draw_overlays(over, bar, agent_bar, buf);
         }
         cursor
     }

@@ -19,16 +19,16 @@ impl App {
     pub(super) fn on_ide(&mut self, msg: IdeMsg) {
         match msg {
             IdeMsg::Connected { .. } => {
-                self.ide_connected = true;
+                self.agent.ide_connected = true;
                 // Tell it what is shown now.
-                self.ide_sent = None;
+                self.agent.ide_sent = None;
                 self.say(tr!("ide-connected"));
             }
             IdeMsg::Disconnected => {
-                if self.ide_connected {
+                if self.agent.ide_connected {
                     self.say(tr!("ide-disconnected"));
                 }
-                self.ide_connected = false;
+                self.agent.ide_connected = false;
             }
             IdeMsg::OpenDiff {
                 path,
@@ -76,7 +76,7 @@ impl App {
     /// `selection_changed` when the shown viewer, its found text or its
     /// position changes (called from the main loop's tick).
     pub(super) fn ide_sync_selection(&mut self) {
-        if !self.ide_connected {
+        if !self.agent.ide_connected {
             return;
         }
         let Some(i) = self.shown_viewer() else {
@@ -84,11 +84,11 @@ impl App {
         };
         let v = &mut self.viewers[i];
         let now = (v.path().to_path_buf(), v.selection, v.top);
-        if self.ide_sent.as_ref() == Some(&now) {
+        if self.agent.ide_sent.as_ref() == Some(&now) {
             return;
         }
         let (path, selection, top) = now.clone();
-        self.ide_sent = Some(now);
+        self.agent.ide_sent = Some(now);
         let (from, to) = selection.unwrap_or((top, top));
         let (l1, c1) = v.line_col(from);
         let (l2, c2) = v.line_col(to);
@@ -97,7 +97,7 @@ impl App {
         } else {
             String::new()
         };
-        if let Some(ide) = &self.ide {
+        if let Some(ide) = &self.agent.ide {
             ide.notify(
                 "selection_changed",
                 json!({
@@ -117,7 +117,7 @@ impl App {
     /// Ctrl+Enter in a viewer: `@file#Lа-b` of the found text (or of the
     /// shown lines) into the agent's input, and the focus to the agent.
     pub(super) fn ide_mention(&mut self, i: usize) {
-        let Some(ide) = &self.ide else {
+        let Some(ide) = &self.agent.ide else {
             self.say(tr!("viewer-not-yet"));
             return;
         };
@@ -145,10 +145,11 @@ impl App {
             .iter()
             .map(|(k, v)| (k.to_string(), json!(v)))
             .collect();
-        self.channel_events
+        self.agent
+            .channel_events
             .push(json!({"content": content, "meta": meta}));
-        if let Some(waiter) = self.channel_waiter.take() {
-            let events = std::mem::take(&mut self.channel_events);
+        if let Some(waiter) = self.agent.channel_waiter.take() {
+            let events = std::mem::take(&mut self.agent.channel_events);
             let _ = waiter.send(Ok(json!(events).to_string()));
         }
     }
@@ -156,13 +157,13 @@ impl App {
     /// `afar channel` asks for events: now if there are some, else when
     /// one comes (the request times out empty in the bridge's loop).
     pub(super) fn channel_wait(&mut self, reply: tokio::sync::oneshot::Sender<crate::mcp::Reply>) {
-        if self.channel_events.is_empty() {
+        if self.agent.channel_events.is_empty() {
             // A newer request replaces an older one (its bridge gave up).
-            if let Some(old) = self.channel_waiter.replace(reply) {
+            if let Some(old) = self.agent.channel_waiter.replace(reply) {
                 let _ = old.send(Ok("[]".into()));
             }
         } else {
-            let events = std::mem::take(&mut self.channel_events);
+            let events = std::mem::take(&mut self.agent.channel_events);
             let _ = reply.send(Ok(json!(events).to_string()));
         }
     }
@@ -170,18 +171,18 @@ impl App {
     /// Starts or stops afar's IDE server (`[agent] ide`); the agent finds it
     /// when it starts next time.
     pub(super) fn set_ide(&mut self, enabled: bool) {
-        if enabled == self.ide.is_some() {
+        if enabled == self.agent.ide.is_some() {
             return;
         }
         if !enabled {
             // Dropping it removes the lock file.
-            self.ide = None;
-            self.ide_connected = false;
+            self.agent.ide = None;
+            self.agent.ide_connected = false;
             return;
         }
         let dir = self.journal.dir().to_path_buf();
         match crate::ide::start(self.tx.clone(), super::new_uuid(), &dir) {
-            Ok(server) => self.ide = Some(server),
+            Ok(server) => self.agent.ide = Some(server),
             Err(e) => self.say(tr!("ide-start-failed", error = format!("{e:#}"))),
         }
     }
