@@ -40,6 +40,7 @@ mod links;
 mod mainmenu;
 mod outer;
 mod panelcmds;
+mod paste;
 mod policy;
 mod quicksearch;
 mod settings;
@@ -682,11 +683,10 @@ impl App {
             }
             match rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(msg) => {
-                    self.handle(msg);
-                    // Coalesce bursts (PTY output) into one redraw.
-                    while let Ok(msg) = rx.try_recv() {
-                        self.handle(msg);
-                    }
+                    // Coalesce bursts (PTY output) into one redraw; a paste
+                    // into the agent's pane goes as one piece.
+                    let batch = self.take_messages(msg, &rx);
+                    self.handle_batch(batch);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(Exit::Quit),
