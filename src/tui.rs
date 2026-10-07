@@ -109,7 +109,18 @@ impl Tui {
     }
 }
 
+impl Tui {
+    /// Writes to the terminal outside a frame (OSC: title, progress).
+    pub fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let mut out = io::stdout().lock();
+        out.write_all(bytes)?;
+        out.flush()
+    }
+}
+
 pub fn restore() {
+    // No progress left on the taskbar button.
+    let _ = io::stdout().write_all(b"\x1b]9;4;0;0\x07");
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
 }

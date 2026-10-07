@@ -14,19 +14,27 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-const TEXT_MODE_INTENSITY: u8 = 0b0000_0011;
-const TEXT_MODE_BOLD: u8 = 0b0000_0001;
-const TEXT_MODE_DIM: u8 = 0b0000_0010;
-const TEXT_MODE_ITALIC: u8 = 0b0000_0100;
-const TEXT_MODE_UNDERLINE: u8 = 0b0000_1000;
-const TEXT_MODE_INVERSE: u8 = 0b0001_0000;
+// AFAR-PATCH begin: `mode` is u16 (blink, hidden, strikethrough,
+// overline); `link` — the cell's hyperlink (OSC 8), 0: none.
+const TEXT_MODE_INTENSITY: u16 = 0b0000_0011;
+const TEXT_MODE_BOLD: u16 = 0b0000_0001;
+const TEXT_MODE_DIM: u16 = 0b0000_0010;
+const TEXT_MODE_ITALIC: u16 = 0b0000_0100;
+const TEXT_MODE_UNDERLINE: u16 = 0b0000_1000;
+const TEXT_MODE_INVERSE: u16 = 0b0001_0000;
+const TEXT_MODE_BLINK: u16 = 0b0010_0000;
+const TEXT_MODE_HIDDEN: u16 = 0b0100_0000;
+const TEXT_MODE_STRIKETHROUGH: u16 = 0b1000_0000;
+const TEXT_MODE_OVERLINE: u16 = 0b1_0000_0000;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Attrs {
     pub fgcolor: Color,
     pub bgcolor: Color,
-    pub mode: u8,
+    pub mode: u16,
+    pub link: u16,
 }
+// AFAR-PATCH end
 
 impl Attrs {
     pub fn bold(&self) -> bool {
@@ -37,7 +45,7 @@ impl Attrs {
         self.mode & TEXT_MODE_DIM != 0
     }
 
-    fn intensity(&self) -> u8 {
+    fn intensity(&self) -> u16 {
         self.mode & TEXT_MODE_INTENSITY
     }
 
@@ -91,6 +99,58 @@ impl Attrs {
         }
     }
 
+    // AFAR-PATCH begin
+    fn set_mode(&mut self, bit: u16, on: bool) {
+        if on {
+            self.mode |= bit;
+        } else {
+            self.mode &= !bit;
+        }
+    }
+
+    pub fn blink(&self) -> bool {
+        self.mode & TEXT_MODE_BLINK != 0
+    }
+
+    pub fn set_blink(&mut self, on: bool) {
+        self.set_mode(TEXT_MODE_BLINK, on);
+    }
+
+    pub fn hidden(&self) -> bool {
+        self.mode & TEXT_MODE_HIDDEN != 0
+    }
+
+    pub fn set_hidden(&mut self, on: bool) {
+        self.set_mode(TEXT_MODE_HIDDEN, on);
+    }
+
+    pub fn strikethrough(&self) -> bool {
+        self.mode & TEXT_MODE_STRIKETHROUGH != 0
+    }
+
+    pub fn set_strikethrough(&mut self, on: bool) {
+        self.set_mode(TEXT_MODE_STRIKETHROUGH, on);
+    }
+
+    pub fn overline(&self) -> bool {
+        self.mode & TEXT_MODE_OVERLINE != 0
+    }
+
+    pub fn set_overline(&mut self, on: bool) {
+        self.set_mode(TEXT_MODE_OVERLINE, on);
+    }
+
+    /// SGR 0: everything but the hyperlink (OSC 8 is not SGR).
+    pub fn reset_keeping_link(&mut self) {
+        *self = Self {
+            link: self.link,
+            ..Self::default()
+        };
+    }
+    // AFAR-PATCH end
+
+    // The new modes and links are not written (afar does not use the
+    // formatted output).
     pub fn write_escape_code_diff(
         &self,
         contents: &mut Vec<u8>,

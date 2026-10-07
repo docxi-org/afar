@@ -26,6 +26,8 @@ pub struct Cell {
     inverse: bool,
     /// Covered by the wide character to the left.
     wide_continuation: bool,
+    /// Part of a hyperlink (OSC 8).
+    link: bool,
 }
 
 /// The visible part of a screen.
@@ -50,6 +52,9 @@ impl Snapshot {
                     modifier.set(Modifier::DIM, cell.dim());
                     modifier.set(Modifier::ITALIC, cell.italic());
                     modifier.set(Modifier::UNDERLINED, cell.underline());
+                    modifier.set(Modifier::SLOW_BLINK, cell.blink());
+                    modifier.set(Modifier::HIDDEN, cell.hidden());
+                    modifier.set(Modifier::CROSSED_OUT, cell.strikethrough());
                     Cell {
                         text: cell.contents().to_string(),
                         fg: color(cell.fgcolor()),
@@ -57,6 +62,7 @@ impl Snapshot {
                         modifier,
                         inverse: cell.inverse(),
                         wide_continuation: cell.is_wide_continuation(),
+                        link: cell.hyperlink() != 0,
                     }
                 });
                 cells.push(cell);
@@ -87,6 +93,19 @@ pub fn draw_rows(
     buf: &mut Buffer,
     defaults: Style,
 ) -> Option<Position> {
+    draw_rows_links(view, first_row, area, buf, defaults, false)
+}
+
+/// `draw_rows`; `show_links`: hyperlinks are underlined (while Ctrl is
+/// held: Ctrl+click opens them).
+pub fn draw_rows_links(
+    view: &Snapshot,
+    first_row: u16,
+    area: Rect,
+    buf: &mut Buffer,
+    defaults: Style,
+    show_links: bool,
+) -> Option<Position> {
     let default_fg = defaults.fg.unwrap_or(Color::Reset);
     let default_bg = defaults.bg.unwrap_or(Color::Reset);
     for y in 0..area.height {
@@ -115,7 +134,11 @@ pub fn draw_rows(
             } else {
                 &cell.text
             });
-            target.set_style(Style::default().fg(fg).bg(bg).add_modifier(cell.modifier));
+            let mut modifier = cell.modifier;
+            if show_links && cell.link {
+                modifier |= Modifier::UNDERLINED;
+            }
+            target.set_style(Style::default().fg(fg).bg(bg).add_modifier(modifier));
         }
     }
     let (cy, cx) = view.cursor;

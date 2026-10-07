@@ -36,6 +36,7 @@ pub struct Replies {
     sync_since: Option<Instant>,
     /// The screen as it was when the frame started: shown until it ends.
     frozen: Option<Snapshot>,
+    signals: Signals,
 }
 
 impl Replies {
@@ -53,7 +54,29 @@ pub fn view(parser: &Parser) -> Cow<'_, Snapshot> {
     }
 }
 
+/// What a program tells the terminal besides its screen (docs/16): the
+/// taskbar progress, notifications, the bell, its title — collected until
+/// afar takes them (`PtySession::take_signals`).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Signals {
+    /// OSC 9;4 since the last take: state (0 none, 1 normal, 2 error,
+    /// 3 indeterminate, 4 paused) and percent.
+    pub progress: Option<(u8, u8)>,
+    /// OSC 9 / OSC 777;notify texts.
+    pub notes: Vec<String>,
+    pub bell: bool,
+    pub title: Option<String>,
+}
+
 impl vt100::Callbacks for Replies {
+    fn audible_bell(&mut self, _screen: &mut vt100::Screen) {
+        self.signals.bell = true;
+    }
+
+    fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
+        self.signals.title = Some(String::from_utf8_lossy(title).into_owned());
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
@@ -94,6 +117,32 @@ impl vt100::Callbacks for Replies {
     }
 
     fn unhandled_osc(&mut self, _screen: &mut vt100::Screen, params: &[&[u8]]) {
+        let num = |p: &[u8]| {
+            std::str::from_utf8(p)
+                .ok()
+                .and_then(|s| s.parse::<u8>().ok())
+        };
+        let text = |parts: &[&[u8]]| String::from_utf8_lossy(&parts.join(&b';')).into_owned();
+        match params {
+            // ConEmu / Windows Terminal progress: 9;4;state[;percent].
+            [b"9", b"4", state, rest @ ..] => {
+                let state = num(state).unwrap_or(0).min(4);
+                let percent = rest.first().and_then(|p| num(p)).unwrap_or(0).min(100);
+                self.signals.progress = Some((state, percent));
+                return;
+            }
+            // 9;9 is a shell's current folder (not a notification).
+            [b"9", b"9", ..] => return,
+            [b"9", body @ ..] if !body.is_empty() => {
+                self.signals.notes.push(text(body));
+                return;
+            }
+            [b"777", b"notify", body @ ..] => {
+                self.signals.notes.push(text(body));
+                return;
+            }
+            _ => {}
+        }
         // OSC 10/11 ? — default foreground / background color queries: a
         // dark terminal, so programs pick a dark-background theme.
         if let [code, b"?"] = params {
@@ -138,6 +187,14 @@ pub struct SpawnOptions<'a> {
 }
 
 impl PtySession {
+    /// What the program signalled since the last call.
+    pub fn take_signals(&self) -> Signals {
+        self.parser
+            .lock()
+            .map(|mut p| std::mem::take(&mut p.callbacks_mut().signals))
+            .unwrap_or_default()
+    }
+
     /// Spawns the program; `on_output` is called from a background thread
     /// after each chunk of output has been parsed and when the session ends.
     pub fn spawn(

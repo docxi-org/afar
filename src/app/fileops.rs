@@ -252,6 +252,24 @@ fn hms(d: Duration) -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
+impl App {
+    /// The file operations' progress for the taskbar button: percent of the
+    /// first one shown; paused (yellow) while a question waits over it.
+    pub(super) fn ops_progress(&self) -> Option<(u8, u8)> {
+        let p = self.overlays.iter().find_map(|o| match o {
+            Overlay::Progress(p) => Some(p),
+            _ => None,
+        })?;
+        let percent = (100 * p.bytes_done)
+            .checked_div(p.bytes_total)
+            .or_else(|| (100 * p.done as u64).checked_div(p.total as u64))
+            .unwrap_or(0)
+            .min(100) as u8;
+        let waiting = !matches!(self.overlays.last(), Some(Overlay::Progress(_)));
+        Some((if waiting { 4 } else { 1 }, percent))
+    }
+}
+
 /// Far's progress bar: 61 cells and the percentage.
 fn bar(done: u64, total: u64) -> String {
     const CELLS: u64 = 61;

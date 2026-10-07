@@ -1,7 +1,8 @@
 use unicode_width::UnicodeWidthChar as _;
 
 // chosen to make the size of the cell struct 32 bytes
-const CONTENT_BYTES: usize = 22;
+// AFAR-PATCH: 19 (was 22) — Attrs grew by 3 bytes (mode u16, link).
+const CONTENT_BYTES: usize = 19;
 
 const IS_WIDE: u8 = 0b1000_0000;
 const IS_WIDE_CONTINUATION: u8 = 0b0100_0000;
@@ -76,6 +77,8 @@ impl Cell {
     pub(crate) fn clear(&mut self, attrs: crate::attrs::Attrs) {
         self.len = 0;
         self.attrs = attrs;
+        // AFAR-PATCH: erased cells are not part of a hyperlink.
+        self.attrs.link = 0;
     }
 
     /// Returns the text contents of the cell.
@@ -176,4 +179,37 @@ impl Cell {
     pub fn inverse(&self) -> bool {
         self.attrs.inverse()
     }
+
+    // AFAR-PATCH begin
+    /// Returns whether the cell should be rendered blinking.
+    #[must_use]
+    pub fn blink(&self) -> bool {
+        self.attrs.blink()
+    }
+
+    /// Returns whether the cell should be rendered hidden (concealed).
+    #[must_use]
+    pub fn hidden(&self) -> bool {
+        self.attrs.hidden()
+    }
+
+    /// Returns whether the cell should be rendered struck through.
+    #[must_use]
+    pub fn strikethrough(&self) -> bool {
+        self.attrs.strikethrough()
+    }
+
+    /// Returns whether the cell should be rendered overlined.
+    #[must_use]
+    pub fn overline(&self) -> bool {
+        self.attrs.overline()
+    }
+
+    /// The cell's hyperlink (OSC 8) as an id for `Screen::hyperlink`; 0:
+    /// none.
+    #[must_use]
+    pub fn hyperlink(&self) -> u16 {
+        self.attrs.link
+    }
+    // AFAR-PATCH end
 }

@@ -62,6 +62,9 @@ pub struct Screen {
     modes: u8,
     mouse_protocol_mode: MouseProtocolMode,
     mouse_protocol_encoding: MouseProtocolEncoding,
+
+    // AFAR-PATCH: hyperlinks' URIs (OSC 8); a cell's link n is links[n - 1].
+    links: Vec<String>,
 }
 
 impl Screen {
@@ -81,6 +84,8 @@ impl Screen {
             modes: 0,
             mouse_protocol_mode: MouseProtocolMode::default(),
             mouse_protocol_encoding: MouseProtocolEncoding::default(),
+
+            links: Vec::new(),
         }
     }
 
@@ -633,6 +638,29 @@ impl Screen {
     }
 
     // AFAR-PATCH begin
+    /// OSC 8: the text written next is a hyperlink to `uri` (empty: no
+    /// link). The same URI keeps its id; when ids run out, new links are
+    /// dropped.
+    pub(crate) fn set_hyperlink(&mut self, uri: &str) {
+        self.attrs.link = if uri.is_empty() {
+            0
+        } else if let Some(i) = self.links.iter().position(|l| l == uri) {
+            u16::try_from(i + 1).unwrap_or(0)
+        } else if self.links.len() < usize::from(u16::MAX) {
+            self.links.push(uri.to_string());
+            u16::try_from(self.links.len()).unwrap_or(0)
+        } else {
+            0
+        };
+    }
+
+    /// The URI of a cell's hyperlink (`Cell::hyperlink`).
+    #[must_use]
+    pub fn hyperlink(&self, id: u16) -> Option<&str> {
+        let i = usize::from(id).checked_sub(1)?;
+        self.links.get(i).map(String::as_str)
+    }
+
     /// Enables capturing the text of lines that scroll off the top of the
     /// main (non-alternate) screen.
     pub fn set_line_capture(&mut self, enabled: bool) {
@@ -1237,7 +1265,7 @@ impl Screen {
         // instance with a 0 in it, but vte doesn't allow creating new Params
         // instances
         if params.is_empty() {
-            self.attrs = crate::attrs::Attrs::default();
+            self.attrs.reset_keeping_link();
             return;
         }
 
@@ -1274,7 +1302,7 @@ impl Screen {
 
         loop {
             match next_param!() {
-                [0] => self.attrs = crate::attrs::Attrs::default(),
+                [0] => self.attrs.reset_keeping_link(),
                 [1] => self.attrs.set_bold(),
                 [2] => self.attrs.set_dim(),
                 [3] => self.attrs.set_italic(true),
@@ -1284,6 +1312,34 @@ impl Screen {
                 [23] => self.attrs.set_italic(false),
                 [24] => self.attrs.set_underline(false),
                 [27] => self.attrs.set_inverse(false),
+                // AFAR-PATCH begin: blink, hidden, strikethrough, overline;
+                // underline styles (4:x, double 21) as plain underline; the
+                // underline color (58) is read and dropped.
+                [5 | 6] => self.attrs.set_blink(true),
+                [8] => self.attrs.set_hidden(true),
+                [9] => self.attrs.set_strikethrough(true),
+                [21] => self.attrs.set_underline(true),
+                [25] => self.attrs.set_blink(false),
+                [28] => self.attrs.set_hidden(false),
+                [29] => self.attrs.set_strikethrough(false),
+                [53] => self.attrs.set_overline(true),
+                [55] => self.attrs.set_overline(false),
+                [4, style, ..] => self.attrs.set_underline(*style != 0),
+                [58] => match next_param!() {
+                    [2] => {
+                        let _ = (next_param!(), next_param!(), next_param!());
+                    }
+                    [5] => {
+                        let _ = next_param!();
+                    }
+                    _ => {
+                        unhandled(self);
+                        return;
+                    }
+                },
+                [58, ..] => {}
+                [59] => {}
+                // AFAR-PATCH end
                 [n] if (30..=37).contains(n) => {
                     self.attrs.fgcolor = crate::Color::Idx(to_u8!(*n) - 30);
                 }

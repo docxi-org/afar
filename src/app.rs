@@ -35,7 +35,9 @@ mod farimport;
 mod fileops;
 mod fswatch;
 mod ide;
+mod links;
 mod mainmenu;
+mod outer;
 mod panelcmds;
 mod policy;
 mod quicksearch;
@@ -203,6 +205,10 @@ pub struct App {
     last_layout: Option<Layout>,
     /// Where the running command's live screen was drawn.
     last_live: Rect,
+    /// A Ctrl+click opened a link: its release is not passed on.
+    link_pressed: bool,
+    /// What afar last told the outer terminal (title, progress).
+    outer: outer::Outer,
     /// Last left click (time, panel, item) to detect double clicks.
     last_click: Option<(Instant, usize, usize)>,
     /// F-key pressed with the mouse on the key bar (acts on release).
@@ -333,6 +339,8 @@ impl App {
             tx,
             last_layout: None,
             last_live: Rect::default(),
+            link_pressed: false,
+            outer: Default::default(),
             last_click: None,
             keybar_pressed: None,
             select_mask: "*.*".into(),
@@ -631,6 +639,11 @@ impl App {
                     frame.set_cursor_position(pos);
                 }
             })?;
+            self.poll_signals();
+            let outer = self.outer_update();
+            if !outer.is_empty() {
+                let _ = terminal.send(&outer);
+            }
             if let Some(log) = &mut frame_log {
                 use std::io::Write as _;
                 let _ = writeln!(
@@ -929,6 +942,9 @@ impl App {
                 format!("http://127.0.0.1:{}", self.link.port),
             ),
             ("AFAR_TOKEN".to_string(), self.link.token.clone()),
+            // Links to files in the agent's output: afar opens them on
+            // Ctrl+click (docs/16), whatever terminal afar runs in.
+            ("FORCE_HYPERLINK".to_string(), "1".to_string()),
         ];
         // The agent connects to afar's IDE server by this port.
         if let Some(ide) = &self.agent.ide {
@@ -1912,6 +1928,15 @@ impl App {
         }
 
         if l.agent_frame.contains(pos) {
+            // Ctrl+click on a link opens it (the program does not get it).
+            if let Some(uri) = self.link_click(&ev, l.agent, true) {
+                self.open_link(&uri);
+                return;
+            }
+            if self.link_pressed && matches!(ev.kind, MouseEventKind::Up(_)) {
+                self.link_pressed = false;
+                return;
+            }
             if pressed {
                 self.focus = Focus::Agent;
             }
@@ -1992,7 +2017,16 @@ impl App {
             return;
         }
         if !self.panels_visible() || l.top.height < 5 || !l.top.contains(pos) {
-            // User screen: the running command gets the mouse if it wants it.
+            // User screen: the running command gets the mouse if it wants
+            // it; Ctrl+click on a link opens it.
+            if let Some(uri) = self.link_click(&ev, self.last_live, false) {
+                self.open_link(&uri);
+                return;
+            }
+            if self.link_pressed && matches!(ev.kind, MouseEventKind::Up(_)) {
+                self.link_pressed = false;
+                return;
+            }
             let Some(run) = &self.running else { return };
             if pressed {
                 self.focus = Focus::Command;
@@ -2267,13 +2301,15 @@ impl App {
         // Only the frame is blue: inside, the program keeps the terminal's
         // own colors.
         buf.set_style(l.agent, Style::reset());
+        let show_links = self.held.contains(KeyModifiers::CONTROL);
         if let Some(agent) = &self.agent.pty {
-            let c = termview::draw_rows(
+            let c = termview::draw_rows_links(
                 &crate::term::view(&agent.parser()),
                 0,
                 l.agent,
                 buf,
                 Style::reset(),
+                show_links,
             );
             if agent_focused {
                 cursor = c;
@@ -2391,8 +2427,14 @@ impl App {
                 };
                 let live = Rect::new(area.x, area.bottom() - live_rows, area.width, live_rows);
                 self.last_live = live;
-                cursor =
-                    termview::draw_rows(&crate::term::view(&parser), 0, live, buf, Style::reset());
+                cursor = termview::draw_rows_links(
+                    &crate::term::view(&parser),
+                    0,
+                    live,
+                    buf,
+                    Style::reset(),
+                    self.held.contains(KeyModifiers::CONTROL),
+                );
                 self.history.iter().chain(run.captured.iter()).collect()
             }
             None => self.history.iter().collect(),
