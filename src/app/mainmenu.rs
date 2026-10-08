@@ -21,6 +21,7 @@ pub(super) enum MainAction {
     Confirmations,
     AgentSettings,
     ViewerSettings,
+    EditorSettings,
     AutocompleteSettings,
     FarImport,
 }
@@ -177,7 +178,9 @@ fn commands_menu() -> Vec<Entry> {
 }
 
 fn options_menu() -> Vec<Entry> {
-    use MainAction::{AgentSettings, AutocompleteSettings, Confirmations, ViewerSettings};
+    use MainAction::{
+        AgentSettings, AutocompleteSettings, Confirmations, EditorSettings, ViewerSettings,
+    };
     vec![
         ("MMenuSystemSettings", None, None),
         ("MMenuPanelSettings", None, None),
@@ -203,7 +206,7 @@ fn options_menu() -> Vec<Entry> {
         ("MMenuFolderInfoFiles", None, None),
         SEP,
         ("MMenuViewer", None, Some(ViewerSettings)),
-        ("MMenuEditor", None, None),
+        ("MMenuEditor", None, Some(EditorSettings)),
         ("MMenuCodePages", None, None),
         SEP,
         ("MMenuColors", None, None),
@@ -335,6 +338,7 @@ impl App {
             Some(MainAction::Confirmations) => self.confirmations_dialog(),
             Some(MainAction::AgentSettings) => self.agent_settings_dialog(),
             Some(MainAction::ViewerSettings) => self.viewer_settings_dialog(),
+            Some(MainAction::EditorSettings) => self.editor_settings_dialog(None),
             Some(MainAction::AutocompleteSettings) => self.autocomplete_settings_dialog(),
             Some(MainAction::FarImport) => self.far_import_menu(),
             None => {}

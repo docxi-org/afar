@@ -207,6 +207,8 @@ pub enum EditorCmd {
     /// F8 / Shift+F8: the bytes read in another code page.
     NextCodepage,
     CodepageMenu,
+    /// Alt+Shift+F9: this window's settings.
+    Settings,
     // Clipboard and blocks.
     Copy,
     Cut,
@@ -567,6 +569,7 @@ pub const COMMANDS: &[Def] = &[
     ),
     edef("editor.next_codepage", E::NextCodepage, &["F8"]),
     edef("editor.codepage_menu", E::CodepageMenu, &["Shift+F8"]),
+    edef("editor.settings", E::Settings, &["Alt+Shift+F9"]),
     edef("editor.bookmark_0", E::GotoBookmark(0), &["Ctrl+0"]),
     edef("editor.bookmark_1", E::GotoBookmark(1), &["Ctrl+1"]),
     edef("editor.bookmark_2", E::GotoBookmark(2), &["Ctrl+2"]),

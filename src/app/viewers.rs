@@ -84,7 +84,7 @@ impl App {
             } else {
                 format!("{command} {name}")
             };
-            self.execute(line);
+            self.execute_external(line);
             return true;
         }
         let list: Vec<PathBuf> = panel

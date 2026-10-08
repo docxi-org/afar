@@ -7,6 +7,7 @@
 //! `app/editors.rs`.
 
 mod block;
+mod indent;
 mod recode;
 mod search;
 pub mod text;
@@ -72,6 +73,11 @@ pub struct Settings {
     pub search_cursor_at_end: bool,
     /// Far's `SearchSelFound`: a match is selected.
     pub search_select_found: bool,
+    /// Enter puts the cursor at the indent of the line above.
+    pub auto_indent: bool,
+    /// 0: off; 1: spaces, tabs and line endings; 2: without line endings.
+    pub show_whitespace: u8,
+    pub scrollbar: bool,
 }
 
 impl Default for Settings {
@@ -85,6 +91,9 @@ impl Default for Settings {
             word_div: "~!%^&*()+|{}:\"<>?`-=\\[];',./".to_string(),
             search_cursor_at_end: false,
             search_select_found: false,
+            auto_indent: false,
+            show_whitespace: 0,
+            scrollbar: false,
         }
     }
 }
@@ -161,6 +170,8 @@ pub struct Editor {
     pub highlight: Option<Found>,
     /// The Hex box of Alt+F8 (Far's `m_GotoHex`, per window).
     pub goto_hex: bool,
+    /// The scroll bar's thumb is being dragged.
+    pub dragging_bar: bool,
     /// Ctrl+Shift+0…9 / Ctrl+0…9.
     pub bookmarks: [Option<Bookmark>; 10],
 }
@@ -204,6 +215,7 @@ impl Editor {
             last_found: None,
             highlight: None,
             goto_hex: false,
+            dragging_bar: false,
             bookmarks: [None; 10],
         }
     }
@@ -326,6 +338,91 @@ impl Editor {
         }
     }
 
+    /// The scroll bar is shown: asked for, and the text is taller than the
+    /// window (Far's `ScrollBarRequired`).
+    fn scrollbar_shown(&self) -> bool {
+        self.settings.scrollbar
+            && self.area.height >= 2
+            && self.area.width > 1
+            && self.lines.len() > usize::from(self.area.height)
+    }
+
+    /// The text's columns: the window less the line numbers and the bar.
+    fn text_width(&self) -> u16 {
+        self.area
+            .width
+            .saturating_sub(self.number_width() + u16::from(self.scrollbar_shown()))
+    }
+
+    /// A press on the scroll bar (Far's `Editor::ProcessMouse`): the arrows
+    /// scroll a line (as Ctrl+Up / Ctrl+Down), elsewhere the thumb goes
+    /// there and follows a drag. Returns whether it was taken.
+    pub fn scrollbar_press(&mut self, x: u16, y: u16) -> bool {
+        let a = self.area;
+        if !self.scrollbar_shown() || x + 1 != a.right() || !(a.top()..a.bottom()).contains(&y) {
+            return false;
+        }
+        if y == a.y {
+            self.command(EditorCmd::ScrollUp);
+        } else if y + 1 == a.bottom() {
+            self.command(EditorCmd::ScrollDown);
+        } else {
+            self.dragging_bar = true;
+            self.thumb_to(y);
+        }
+        true
+    }
+
+    /// The thumb dragged to row `y`: that part of the text on the screen.
+    pub fn thumb_to(&mut self, y: u16) {
+        let a = self.area;
+        let field = usize::from(a.height.saturating_sub(2)).max(1);
+        let row = usize::from(y.clamp(a.y + 1, a.bottom().saturating_sub(2)) - (a.y + 1));
+        let last = self.lines.len() - 1;
+        let line = if field <= 1 {
+            0
+        } else {
+            row * last / (field - 1)
+        };
+        let h = usize::from(a.height);
+        self.top = line.min(self.lines.len().saturating_sub(h));
+        let v = self.vcol(self.cursor.line, self.cursor.col);
+        let line = line.min(last);
+        self.cursor = Pos::new(line, self.col_at(line, v));
+        if !self.settings.persistent_blocks {
+            self.unselect();
+        }
+    }
+
+    fn draw_scrollbar(&self, bar: Rect, buf: &mut Buffer) {
+        let style = theme::EDITOR_SCROLLBAR;
+        let h = bar.height;
+        buf[(bar.x, bar.y)].set_symbol("▲").set_style(style);
+        buf[(bar.x, bar.bottom() - 1)]
+            .set_symbol("▼")
+            .set_style(style);
+        let field = h.saturating_sub(2);
+        if field == 0 {
+            return;
+        }
+        let size = self.lines.len().max(1) as u64;
+        let shown = u64::from(h).min(size);
+        let thumb = ((u64::from(field) * shown).div_ceil(size)).clamp(1, u64::from(field)) as u16;
+        let start = if self.top as u64 + u64::from(h) >= size {
+            field - thumb
+        } else {
+            ((u64::from(field) * self.top as u64 / size) as u16).min(field - thumb)
+        };
+        for i in 0..field {
+            let s = if (start..start + thumb).contains(&i) {
+                "█"
+            } else {
+                "░"
+            };
+            buf[(bar.x, bar.y + 1 + i)].set_symbol(s).set_style(style);
+        }
+    }
+
     /// Keeps the cursor on the screen with the least scrolling (Far).
     pub fn scroll_to_cursor(&mut self) {
         let h = usize::from(self.area.height.max(1));
@@ -340,7 +437,7 @@ impl Editor {
         if self.top > max_top {
             self.top = max_top;
         }
-        let w = usize::from(self.area.width.saturating_sub(self.number_width()).max(1));
+        let w = usize::from(self.text_width().max(1));
         let v = self.vcol(self.cursor.line, self.cursor.col);
         if v < self.left {
             self.left = v;
@@ -718,6 +815,9 @@ impl Editor {
         let s = c.encode_utf8(&mut buf);
         if self.overtype && p.col < len {
             self.cursor = self.replace(p, Pos::new(p.line, p.col + 1), s, Eol::None, false);
+        } else if let Some(indent) = self.empty_line_indent(p) {
+            let start = Pos::new(p.line, 0);
+            self.cursor = self.replace(start, start, &format!("{indent}{s}"), Eol::None, false);
         } else {
             self.cursor = self.replace(p, p, s, Eol::None, true);
         }
@@ -741,6 +841,20 @@ impl Editor {
             let eol = ed.lines[at.line].eol;
             let end = ed.replace(at, at, text, eol, true);
             ed.cursor = end;
+            // All tabs as spaces: the pasted ones too.
+            if ed.settings.expand_tabs == 2 && text.contains('\t') {
+                let v = ed.vcol(end.line, end.col);
+                let tab = ed.settings.tab_size.max(1);
+                for l in at.line..=end.line {
+                    if ed.lines[l].text.contains('\t') {
+                        let chars: Vec<char> = ed.lines[l].text.chars().collect();
+                        let new: String = block::expand_tabs(&chars, tab).into_iter().collect();
+                        let len = ed.line_len(l);
+                        ed.replace(Pos::new(l, 0), Pos::new(l, len), &new, Eol::None, false);
+                    }
+                }
+                ed.cursor = Pos::new(end.line, ed.real_col(end.line, v));
+            }
             // The pasted text stays selected only with persistent blocks.
             if persistent {
                 ed.mark_stream(at);
@@ -754,11 +868,7 @@ impl Editor {
             if !ed.settings.persistent_blocks {
                 ed.delete_selection_inner();
             }
-            let p = ed.cursor;
-            let len = ed.line_len(p.line);
-            let at = Pos::new(p.line, p.col.min(len));
-            let eol = ed.lines[p.line].eol;
-            ed.cursor = ed.replace(at, at, "\n", eol, false);
+            ed.split_line();
         });
         self.history.break_merge();
     }
@@ -1411,7 +1521,8 @@ impl Editor {
         buf.set_style(area, theme::EDITOR_TEXT);
         let nw = self.number_width();
         let text_x = area.x + nw;
-        let text_w = area.width.saturating_sub(nw);
+        let text_w = self.text_width();
+        let ws = self.settings.show_whitespace;
         let sel = self
             .highlight
             .map(|h| (h.start, h.end))
@@ -1487,9 +1598,17 @@ impl Editor {
                         for k in 0..shown {
                             let x = x0 + k as u16;
                             if x < text_x + text_w && v + k >= self.left {
-                                buf[(x, y)].set_symbol(" ").set_style(style);
+                                // White space shown: a tab as `→` (Far).
+                                let sym = if c == '\t' && ws > 0 && k == 0 && v >= self.left {
+                                    "→"
+                                } else {
+                                    " "
+                                };
+                                buf[(x, y)].set_symbol(sym).set_style(style);
                             }
                         }
+                    } else if c == ' ' && ws > 0 {
+                        buf[(x0, y)].set_symbol("·").set_style(style);
                     } else if x0 + w as u16 <= text_x + text_w {
                         let mut b = [0u8; 4];
                         buf[(x0, y)]
@@ -1502,6 +1621,38 @@ impl Editor {
                 }
                 v += w;
             }
+            // White space shown: the line's ending (Far's ♪ for CR, ◙ for
+            // LF), and `□` after the text's last line.
+            if ws > 0 {
+                let mark = if line + 1 == self.lines.len() && l.eol == Eol::None {
+                    "□"
+                } else if ws == 1 {
+                    match l.eol {
+                        Eol::Cr => "♪",
+                        Eol::Lf => "◙",
+                        Eol::CrLf => "♪◙",
+                        Eol::CrCrLf => "♪♪◙",
+                        Eol::None => "",
+                    }
+                } else {
+                    ""
+                };
+                for (k, ch) in mark.chars().enumerate() {
+                    let vx = v + k;
+                    if vx >= self.left && vx < self.left + usize::from(text_w) {
+                        let x = text_x + (vx - self.left) as u16;
+                        let mut b = [0u8; 4];
+                        let style = if l.by_agent {
+                            theme::EDITOR_AGENT
+                        } else {
+                            theme::EDITOR_TEXT
+                        };
+                        buf[(x, y)]
+                            .set_symbol(ch.encode_utf8(&mut b))
+                            .set_style(style);
+                    }
+                }
+            }
             // Selection past the text (the line's end selected).
             if let Some((a, b)) = sel_v {
                 let from = a.max(v).max(self.left);
@@ -1511,6 +1662,9 @@ impl Editor {
                     buf[(x, y)].set_style(theme::EDITOR_SELECTED);
                 }
             }
+        }
+        if self.scrollbar_shown() {
+            self.draw_scrollbar(Rect::new(area.right() - 1, area.y, 1, area.height), buf);
         }
         let v = self.vcol(self.cursor.line, self.cursor.col);
         let row = self.cursor.line.checked_sub(self.top)?;

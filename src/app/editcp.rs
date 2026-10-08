@@ -44,7 +44,7 @@ impl App {
             CpChoice::Page(cp) => cp,
             // Far's CP_REDETECT: detected again from the file.
             CpChoice::Detect => {
-                let fallback = match self.config.viewer.default_codepage {
+                let fallback = match self.config.editor.default_codepage {
                     0 => codepage::ansi(),
                     cp => cp,
                 };

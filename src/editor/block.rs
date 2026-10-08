@@ -50,7 +50,7 @@ fn char_width(c: char, x: usize, tab: usize) -> usize {
 }
 
 /// Tabs replaced by the spaces they show as (Far's `ReplaceTabs`).
-fn expand_tabs(chars: &[char], tab: usize) -> Vec<char> {
+pub(super) fn expand_tabs(chars: &[char], tab: usize) -> Vec<char> {
     let mut out = Vec::with_capacity(chars.len());
     let mut x = 0;
     for &c in chars {

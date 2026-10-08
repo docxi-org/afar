@@ -255,7 +255,7 @@ impl Editor {
             from_top = 0;
         }
         self.top = m.start.line.saturating_sub(from_top as usize);
-        let w = usize::from(self.area.width.saturating_sub(self.number_width()).max(1));
+        let w = usize::from(self.text_width().max(1));
         let v_end = self.vcol(m.end.line, m.end.col);
         if v_end + 8 > self.left + w {
             self.left = (v_end + 8).saturating_sub(w);

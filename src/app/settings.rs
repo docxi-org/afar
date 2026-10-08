@@ -342,6 +342,257 @@ impl App {
         self.save_config();
     }
 
+    /// F9 → Options → Editor settings (`id` `None`), or Alt+Shift+F9 in an
+    /// editor — only that window's part, applied to it at once (Far's
+    /// `EditorConfig`, docs/17 §9).
+    pub(super) fn editor_settings_dialog(&mut self, id: Option<u32>) {
+        use crate::config::{ExpandTabs, ShowWhitespace};
+        let t = |id: &str| tr!(id);
+        // The values: the window's own, or the configured ones.
+        let c = self.config.editor.clone();
+        let local = id.and_then(|id| self.editor_index(id));
+        let (
+            expand,
+            tab_size,
+            persistent,
+            del_removes,
+            auto_indent,
+            ws,
+            beyond,
+            sel_found,
+            at_end,
+            bar,
+            numbers,
+        ) = match local {
+            Some(i) => {
+                let e = &self.editors[i];
+                let s = &e.settings;
+                (
+                    usize::from(s.expand_tabs.min(2)),
+                    s.tab_size,
+                    s.persistent_blocks,
+                    s.del_removes_blocks,
+                    s.auto_indent,
+                    s.show_whitespace,
+                    s.cursor_beyond_eol,
+                    s.search_select_found,
+                    s.search_cursor_at_end,
+                    s.scrollbar,
+                    e.line_numbers,
+                )
+            }
+            None => (
+                match c.expand_tabs {
+                    ExpandTabs::Keep => 0,
+                    ExpandTabs::New => 1,
+                    ExpandTabs::All => 2,
+                },
+                c.tab_size,
+                c.persistent_blocks,
+                c.del_removes_blocks,
+                c.auto_indent,
+                match c.show_whitespace {
+                    ShowWhitespace::Off => 0,
+                    ShowWhitespace::All => 1,
+                    ShowWhitespace::NoEol => 2,
+                },
+                c.cursor_beyond_eol,
+                c.search_select_found,
+                c.search_cursor_at_end,
+                c.scrollbar,
+                c.line_numbers,
+            ),
+        };
+        let left = [
+            t("MEditConfigPersistentBlocks"),
+            t("MEditConfigDelRemovesBlocks"),
+            t("MEditConfigAutoIndent"),
+            t("MEditShowWhiteSpace"),
+        ];
+        let tab_label = t("MEditConfigTabSize");
+        let left_w = left
+            .iter()
+            .map(|l| chars(l) + 4)
+            .chain([6 + chars(&tab_label)])
+            .max()
+            .unwrap_or(20);
+        let right_x = 5 + left_w + 2;
+        let right = [
+            t("MEditCursorBeyondEnd"),
+            t("MEditConfigSelFound"),
+            t("MEditConfigCursorAtEnd"),
+            t("MEditConfigScrollbar"),
+            t("MEditConfigLineNumbers"),
+        ];
+        let right_w = right.iter().map(|l| chars(l) + 4).max().unwrap_or(20);
+        let expand_label = t("MEditConfigExpandTabsTitle");
+        let expand_items: Vec<Option<String>> = [
+            "MEditConfigDoNotExpandTabs",
+            "MEditConfigExpandTabs",
+            "MEditConfigConvertAllTabsToSpaces",
+        ]
+        .iter()
+        .map(|id| Some(t(id)))
+        .collect();
+        let expand_w = expand_items
+            .iter()
+            .flatten()
+            .map(|s| chars(s))
+            .max()
+            .unwrap_or(30)
+            + 3;
+        let content = (left_w + 2 + right_w)
+            .max(chars(&expand_label) + 1 + expand_w + 1)
+            .max(if local.is_none() { 65 } else { 0 });
+        let mut d = Dialog::new(t("MEditConfigTitle"), content);
+        if local.is_none() {
+            d = d
+                .row(vec![check_at(5, t("MEditConfigEditorF4"), c.external_f4)])
+                .row(vec![text_at(5, t("MEditConfigEditorCommand"))])
+                .row(vec![
+                    input_at(5, 64, c.external_command.clone(), Some("ExternalEditor")).exec(),
+                ])
+                .caption(t("MEditConfigInternal"));
+        }
+        let ws_check = check_at(5, left[3].clone(), ws == 1).three_state(ws == 2);
+        d = d
+            .row(vec![
+                text_at(5, expand_label.clone()),
+                combo_at(5 + chars(&expand_label) + 1, expand_w, expand_items, expand),
+            ])
+            .row(vec![
+                check_at(5, left[0].clone(), persistent),
+                check_at(right_x, right[0].clone(), beyond),
+            ])
+            .row(vec![
+                check_at(5, left[1].clone(), del_removes),
+                check_at(right_x, right[1].clone(), sel_found),
+            ])
+            .row(vec![
+                check_at(5, left[2].clone(), auto_indent),
+                check_at(right_x, right[2].clone(), at_end),
+            ])
+            .row(vec![
+                input_at(5, 5, tab_size.to_string(), None),
+                text_at(11, tab_label),
+                check_at(right_x, right[3].clone(), bar),
+            ])
+            .row(vec![ws_check, check_at(right_x, right[4].clone(), numbers)]);
+        if local.is_none() {
+            let (pages, labels) = default_codepages();
+            let selected = pages
+                .iter()
+                .position(|cp| *cp == c.default_codepage)
+                .unwrap_or(0);
+            d = d
+                .separator()
+                .row(vec![check_at(5, t("MEditConfigSavePos"), c.save_position)])
+                .row(vec![check_at(
+                    5,
+                    t("MEditConfigSaveShortPos"),
+                    c.save_bookmarks,
+                )])
+                .row(vec![check_at(
+                    5,
+                    t("MEditAutoDetectCodePage"),
+                    c.autodetect_codepage,
+                )])
+                .row(vec![text_at(5, t("MEditConfigDefaultCodePage"))])
+                .row(vec![combo_at(
+                    5,
+                    64,
+                    labels.into_iter().map(Some).collect(),
+                    selected,
+                )]);
+        }
+        let dialog = d.separator().buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::EditorSettings { id },
+        });
+    }
+
+    pub(super) fn editor_settings_from_dialog(&mut self, id: Option<u32>, dialog: &Dialog) {
+        use crate::config::{ExpandTabs, ShowWhitespace};
+        // Check boxes and fields in reading order; the global dialog has
+        // the external editor first.
+        let g = usize::from(id.is_none());
+        let c = |n: usize| dialog.checked(n + g);
+        let expand = dialog.combo(0).min(2) as u8;
+        let tab_size = dialog
+            .input_value(g)
+            .trim()
+            .parse::<usize>()
+            .map(|n| n.clamp(1, 512));
+        let ws = match dialog.check_state(7 + g) {
+            None => 2,
+            Some(true) => 1,
+            Some(false) => 0,
+        };
+        let (persistent, beyond, del_removes, sel_found, auto_indent, at_end, bar, numbers) =
+            (c(0), c(1), c(2), c(3), c(4), c(5), c(6), c(8));
+        match id {
+            Some(id) => {
+                let Some(i) = self.editor_index(id) else {
+                    return;
+                };
+                let e = &mut self.editors[i];
+                let was_all = e.settings.expand_tabs == 2;
+                let s = &mut e.settings;
+                s.expand_tabs = expand;
+                if let Ok(n) = tab_size {
+                    s.tab_size = n;
+                }
+                s.persistent_blocks = persistent;
+                s.cursor_beyond_eol = beyond;
+                s.del_removes_blocks = del_removes;
+                s.search_select_found = sel_found;
+                s.auto_indent = auto_indent;
+                s.search_cursor_at_end = at_end;
+                s.scrollbar = bar;
+                s.show_whitespace = ws;
+                e.line_numbers = numbers;
+                // Far: "all tabs as spaces" rewrites the text at once.
+                if expand == 2 && !was_all {
+                    e.expand_all_tabs(true);
+                }
+                e.scroll_to_cursor();
+            }
+            None => {
+                let ed = &mut self.config.editor;
+                ed.external_f4 = dialog.checked(0);
+                ed.external_command = dialog.input_value(0).trim().to_string();
+                ed.expand_tabs = match expand {
+                    0 => ExpandTabs::Keep,
+                    1 => ExpandTabs::New,
+                    _ => ExpandTabs::All,
+                };
+                if let Ok(n) = tab_size {
+                    ed.tab_size = n;
+                }
+                ed.persistent_blocks = persistent;
+                ed.cursor_beyond_eol = beyond;
+                ed.del_removes_blocks = del_removes;
+                ed.search_select_found = sel_found;
+                ed.auto_indent = auto_indent;
+                ed.search_cursor_at_end = at_end;
+                ed.scrollbar = bar;
+                ed.show_whitespace = match ws {
+                    0 => ShowWhitespace::Off,
+                    1 => ShowWhitespace::All,
+                    _ => ShowWhitespace::NoEol,
+                };
+                ed.line_numbers = numbers;
+                ed.save_position = dialog.checked(10);
+                ed.save_bookmarks = dialog.checked(11);
+                ed.autodetect_codepage = dialog.checked(12);
+                let (pages, _) = default_codepages();
+                ed.default_codepage = pages.get(dialog.combo(1)).copied().unwrap_or(0);
+                self.save_config();
+            }
+        }
+    }
+
     /// F9 → Options → AutoComplete settings: Far's three check boxes,
     /// where completion works and its sources (always / Ctrl+Space / never).
     pub(super) fn autocomplete_settings_dialog(&mut self) {

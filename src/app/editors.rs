@@ -206,6 +206,18 @@ impl App {
             return true;
         }
         let path = panel.path.join(&entry.name);
+        // Far's UseExternalEditor: the configured program instead.
+        let command = self.config.editor.external_command.trim().to_string();
+        if self.config.editor.external_f4 && !command.is_empty() {
+            let name = format!("\"{}\"", path.display());
+            let line = if command.contains("!.!") {
+                command.replace("!.!", &name)
+            } else {
+                format!("{command} {name}")
+            };
+            self.execute_external(line);
+            return true;
+        }
         self.edit_file(&path, None);
         true
     }
@@ -266,7 +278,7 @@ impl App {
         // typed into it then goes to the disk in 1251, which other tools
         // (the agent's Read and Edit) read as UTF-8 and break. A page set
         // in the settings wins.
-        let default_cp = match self.config.viewer.default_codepage {
+        let default_cp = match self.config.editor.default_codepage {
             0 => codepage::UTF8,
             cp => cp,
         };
@@ -283,7 +295,7 @@ impl App {
                 let l = text::load(
                     &data,
                     want,
-                    self.config.viewer.autodetect_codepage,
+                    self.config.editor.autodetect_codepage,
                     default_cp,
                 );
                 let mut e = Editor::new(id, path, l.lines, l.cp, l.bom, l.eol.unwrap_or(Eol::CrLf));
@@ -315,12 +327,16 @@ impl App {
                 return None;
             }
         };
-        editor.settings.persistent_blocks = self.config.editor.persistent_blocks;
-        editor.settings.del_removes_blocks = self.config.editor.del_removes_blocks;
-        if let Some(r) = &remembered {
+        editor.settings = self.editor_settings();
+        editor.line_numbers = self.config.editor.line_numbers;
+        if editor.settings.expand_tabs == 2 {
+            editor.expand_all_tabs(false);
+        }
+        let ed_config = &self.config.editor;
+        if let Some(r) = remembered.as_ref().filter(|_| ed_config.save_bookmarks) {
             editor.bookmarks = r.bookmarks;
         }
-        if let Some(r) = remembered.filter(|_| line.is_none()) {
+        if let Some(r) = remembered.filter(|_| line.is_none() && ed_config.save_position) {
             let last = editor.line_count() - 1;
             editor.cursor = Pos::new(r.line.min(last), r.col);
             editor.top = r.top.min(last);
@@ -357,6 +373,33 @@ impl App {
                 path: path.to_path_buf(),
             },
         );
+    }
+
+    /// The configured settings of a new editor window.
+    pub(super) fn editor_settings(&self) -> crate::editor::Settings {
+        use crate::config::{ExpandTabs, ShowWhitespace};
+        let c = &self.config.editor;
+        crate::editor::Settings {
+            tab_size: c.tab_size.clamp(1, 512),
+            expand_tabs: match c.expand_tabs {
+                ExpandTabs::Keep => 0,
+                ExpandTabs::New => 1,
+                ExpandTabs::All => 2,
+            },
+            cursor_beyond_eol: c.cursor_beyond_eol,
+            persistent_blocks: c.persistent_blocks,
+            del_removes_blocks: c.del_removes_blocks,
+            search_cursor_at_end: c.search_cursor_at_end,
+            search_select_found: c.search_select_found,
+            auto_indent: c.auto_indent,
+            show_whitespace: match c.show_whitespace {
+                ShowWhitespace::Off => 0,
+                ShowWhitespace::All => 1,
+                ShowWhitespace::NoEol => 2,
+            },
+            scrollbar: c.scrollbar,
+            ..crate::editor::Settings::default()
+        }
     }
 
     fn remember_editor(&mut self, i: usize) {
@@ -504,6 +547,10 @@ impl App {
             SearchPrev => self.editor_search_continue(i, true),
             Goto => self.editor_goto_dialog(i),
             NextCodepage => self.editor_next_codepage(i),
+            Settings => {
+                let id = self.editors[i].id;
+                self.editor_settings_dialog(Some(id));
+            }
             CodepageMenu => self.editor_codepage_menu(i),
             _ => {}
         }
@@ -1193,7 +1240,7 @@ impl App {
     /// Far's editor key bar (`MEditF1…`), keys not made yet left blank.
     pub(super) fn editor_keybar_labels(&self, i: usize, group: &str) -> Vec<String> {
         let t = |id: &str| crate::i18n::plain(&tr!(id));
-        let not_yet: &[(&str, u8)] = &[("", 11), ("Alt", 9), ("Alt", 11), ("AltShift", 9)];
+        let not_yet: &[(&str, u8)] = &[("", 11), ("Alt", 9), ("Alt", 11)];
         (1..=12u8)
             .map(|n| {
                 if not_yet.contains(&(group, n)) {
@@ -1230,7 +1277,9 @@ impl App {
                         && x == ev.column
                         && y == ev.row
                 });
-                if double {
+                if e.scrollbar_press(ev.column, ev.row) {
+                    self.editor_last_click = None;
+                } else if double {
                     e.select_word(ev.column, ev.row);
                     self.editor_last_click = None;
                 } else {
@@ -1240,7 +1289,9 @@ impl App {
                 }
                 self.focus = Focus::Panels;
             }
+            MouseEventKind::Drag(MouseButton::Left) if e.dragging_bar => e.thumb_to(ev.row),
             MouseEventKind::Drag(MouseButton::Left) => e.drag(ev.column, ev.row),
+            MouseEventKind::Up(_) => e.dragging_bar = false,
             MouseEventKind::Down(_) => self.focus = Focus::Panels,
             _ => {}
         }

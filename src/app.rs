@@ -1285,8 +1285,19 @@ impl App {
     // ------------------------------------------------------------- commands
 
     fn execute(&mut self, text: String) {
+        self.execute_as(text, true);
+    }
+
+    /// An external viewer or editor (Far's `ProcessExternal`): run like a
+    /// command, but not kept in the command history.
+    fn execute_external(&mut self, text: String) {
+        self.execute_as(text, false);
+    }
+
+    fn execute_as(&mut self, text: String, history: bool) {
         // A blank in front: not kept in the history (bash's ignorespace).
-        let private = text.starts_with(' ') && self.config.history.skip_leading_space;
+        let private =
+            !history || text.starts_with(' ') && self.config.history.skip_leading_space;
         let text = text.trim().to_string();
         if text.is_empty() {
             return;

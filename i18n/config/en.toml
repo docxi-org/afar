@@ -97,9 +97,27 @@ autodetect_codepage = true
 default_codepage = 0          # 0: the Windows ANSI code page, else a number (866, 65001…)
 
 [editor]
-# As "Options → Editor settings" in Far.
+# As "Options → Editor settings" in Far (the same dialog is there; Alt+Shift+F9
+# in the editor changes the settings of that window only).
+# External editor: on F4 instead of the built-in one; !.! is the file name,
+# without it the name goes at the end.
+external_f4 = false
+external_command = ""
+expand_tabs = "keep"          # keep: tabs stay, new: typed tabs as spaces, all: every tab as spaces
+tab_size = 8
 persistent_blocks = false     # persistent blocks: the selection stays when the cursor moves
 del_removes_blocks = true     # Del and BS delete the selected block
+auto_indent = false           # Enter puts the cursor at the indent of the line above
+show_whitespace = "off"       # off, all: spaces, tabs and line endings, no_eol: without line endings
+cursor_beyond_eol = true      # the cursor may go past the end of a line
+search_select_found = false   # select what search finds
+search_cursor_at_end = false  # the cursor after the match, not on it
+scrollbar = false
+line_numbers = false
+save_position = true          # remember where a file was left (and its code page)
+save_bookmarks = true
+autodetect_codepage = true
+default_codepage = 0          # 0: the Windows ANSI code page, else a number (866, 65001…)
 
 [autocomplete]
 # Autocompletion as in Far ("Options → AutoComplete settings").

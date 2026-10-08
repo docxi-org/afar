@@ -143,23 +143,83 @@ impl Default for Autocomplete {
     }
 }
 
-/// The editor (F4; Far's editor settings, docs/17 §9 — the rest comes
-/// with its settings dialog).
+/// Far's `ExpandTabs`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpandTabs {
+    /// Tabs stay tabs.
+    #[default]
+    Keep,
+    /// A typed Tab goes in as spaces.
+    New,
+    /// Every tab becomes spaces, those of the file too.
+    All,
+}
+
+/// Far's `ShowWhiteSpace`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShowWhitespace {
+    #[default]
+    Off,
+    /// Spaces, tabs and line endings.
+    All,
+    /// Spaces and tabs.
+    NoEol,
+}
+
+/// The editor (F4; Far's editor settings, docs/17 §9).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Editor {
+    /// F4 runs the external editor (Far's `UseExternalEditor`).
+    pub external_f4: bool,
+    /// The external editor; `!.!` is replaced by the file name, otherwise
+    /// the name goes at the end.
+    pub external_command: String,
+    pub expand_tabs: ExpandTabs,
+    pub tab_size: usize,
     /// Blocks stay when the cursor moves and typing does not replace them
     /// (Far's `PersistentBlocks`).
     pub persistent_blocks: bool,
     /// Del and BS remove a block (Far's `DelRemovesBlocks`).
     pub del_removes_blocks: bool,
+    pub auto_indent: bool,
+    pub show_whitespace: ShowWhitespace,
+    pub cursor_beyond_eol: bool,
+    /// A match is selected (Far's `SearchSelFound`).
+    pub search_select_found: bool,
+    /// The cursor after a match, not on it (Far's `SearchCursorAtEnd`).
+    pub search_cursor_at_end: bool,
+    pub scrollbar: bool,
+    pub line_numbers: bool,
+    pub save_position: bool,
+    pub save_bookmarks: bool,
+    pub autodetect_codepage: bool,
+    /// 0: the system's ANSI code page.
+    pub default_codepage: u32,
 }
 
 impl Default for Editor {
     fn default() -> Self {
         Self {
+            external_f4: false,
+            external_command: String::new(),
+            expand_tabs: ExpandTabs::Keep,
+            tab_size: 8,
             persistent_blocks: false,
             del_removes_blocks: true,
+            auto_indent: false,
+            show_whitespace: ShowWhitespace::Off,
+            cursor_beyond_eol: true,
+            search_select_found: false,
+            search_cursor_at_end: false,
+            scrollbar: false,
+            line_numbers: false,
+            save_position: true,
+            save_bookmarks: true,
+            autodetect_codepage: true,
+            default_codepage: 0,
         }
     }
 }

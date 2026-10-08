@@ -116,6 +116,10 @@ pub(super) enum Purpose {
     /// F9 → Options → the agent and its permissions.
     AgentSettings,
     /// F9 → Options → Viewer settings, Alt+Shift+F9 in a viewer.
+    /// The editor's settings: all (F9 → Options) or one window's.
+    EditorSettings {
+        id: Option<u32>,
+    },
     ViewerSettings,
     /// F9 → Options → AutoComplete settings.
     AutocompleteSettings,
@@ -595,6 +599,11 @@ impl App {
             Purpose::ViewerSettings => {
                 if button == Some(0) {
                     self.viewer_settings_from_dialog(&dialog);
+                }
+            }
+            Purpose::EditorSettings { id } => {
+                if button == Some(0) {
+                    self.editor_settings_from_dialog(id, &dialog);
                 }
             }
             Purpose::AgentSettings => {

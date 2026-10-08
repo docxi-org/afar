@@ -2329,15 +2329,16 @@ pub fn check_at(x: u16, label: impl Into<String>, checked: bool) -> Elem {
 }
 
 /// Space or a click on a check box: a three-state one goes
-/// "?" → on → off → "?" (Far's order), a two-state one flips.
+/// off → on → "?" → off (Far's `toggle_checkbox_state`: 0, 1, 2), a
+/// two-state one flips.
 fn toggle_check(checked: &mut bool, mixed: &mut Option<bool>) {
     match mixed {
         Some(true) => {
             *mixed = Some(false);
-            *checked = true;
+            *checked = false;
         }
-        Some(false) if *checked => *checked = false,
-        Some(false) => *mixed = Some(true),
+        Some(false) if *checked => *mixed = Some(true),
+        Some(false) => *checked = true,
         None => *checked = !*checked,
     }
 }

@@ -97,9 +97,27 @@ autodetect_codepage = true
 default_codepage = 0          # 0 — ANSI Windows, иначе номер (866, 65001…)
 
 [editor]
-# Как «Параметры → Настройки редактора» в Far.
+# Как «Параметры → Настройки редактора» в Far (там же — диалог; Alt+Shift+F9
+# в редакторе меняет настройки только этого окна).
+# Внешний редактор: по F4 вместо встроенного; !.! — имя файла, без него
+# имя дописывается в конец.
+external_f4 = false
+external_command = ""
+expand_tabs = "keep"          # keep — оставлять Tab, new — новые Tab пробелами, all — все Tab пробелами
+tab_size = 8
 persistent_blocks = false     # постоянные блоки: выделение остаётся, когда курсор уходит
 del_removes_blocks = true     # Del и BS удаляют выделенный блок
+auto_indent = false           # Enter ставит курсор на отступ строки выше
+show_whitespace = "off"       # off, all — пробелы, Tab и концы строк, no_eol — без концов строк
+cursor_beyond_eol = true      # курсор за пределами строки
+search_select_found = false   # выделять найденное
+search_cursor_at_end = false  # курсор в конце найденного
+scrollbar = false
+line_numbers = false
+save_position = true          # помнить позицию файла (и кодовую страницу)
+save_bookmarks = true
+autodetect_codepage = true
+default_codepage = 0          # 0 — ANSI Windows, иначе номер (866, 65001…)
 
 [autocomplete]
 # Автозавершение, как в Far («Параметры → Настройки автозавершения»).
