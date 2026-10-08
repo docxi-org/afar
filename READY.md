@@ -4,7 +4,7 @@
 
 ## 2026-10-08
 
-### Редактор, этап 3, часть 2 — блоки ([docs/17](docs/17-far-editor-reference.md) §4, `src/editor/block.rs`)
+### Редактор, этап 3, часть 2 — блоки ([docs/17](docs/17-far-editor-reference.md) §4, `src/editor/block.rs`) — `cabc6a1`
 - [x] Вертикальный блок — строки и экранные столбцы: `Alt`+стрелки (и с `Shift`), `Alt+Home/End/PgUp/PgDn`, `Ctrl+Alt+←/→` (по словам), `Ctrl+Alt+Home/PgUp/End/PgDn` (до первой / последней строки), `Ctrl+Alt+↑/↓` = `Alt+↑/↓`; подсветка и за концом текста
 - [x] Вертикальный блок: `Ctrl+C` — столбец, дополненный пробелами до ширины (в буфере обмена — пометки Far `FAR_VerticalBlock_Unicode`, Visual Studio и Borland), `Ctrl+X`, `Ctrl+D` / `Del` — удалить столбцы, `Ctrl+V` столбца — вставка столбцом с добавлением строк в конце (Far `VPaste`)
 - [x] `Alt+U` / `Alt+I`: строки блока (или текущая) на символ влево / вправо; вертикальный блок сдвигается внутри строк (Far `BlockLeft/Right`, `VBlockShift`); `Ctrl+P` / `Ctrl+M` — копировать / перенести блок к курсору мимо буфера обмена
