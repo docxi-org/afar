@@ -4,6 +4,10 @@
 //! arrive in one burst, with a line break followed by more text, are a
 //! paste: they go to the agent as one bracketed paste (`ESC[200~ … ESC[201~`)
 //! when it asks for that.
+//!
+//! In the editor such a burst is a paste too (Windows Terminal keeps
+//! Ctrl+V for itself): it goes in as one undo step, and when it is the
+//! clipboard's text marked as a column (Far's vertical block), as a column.
 
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -49,10 +53,29 @@ fn pasted_text<'a>(keys: impl Iterator<Item = &'a KeyEvent>) -> Option<String> {
     text[i + 1..].chars().any(|c| c != '\r').then_some(text)
 }
 
+/// Where a burst of typed keys is gathered as a paste.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Agent,
+    Editor(usize),
+}
+
+/// Line breaks as Windows Terminal sends them (each as Enter, `\r`).
+fn breaks_as_enter(text: &str) -> String {
+    text.replace("\r\n", "\r").replace('\n', "\r")
+}
+
 impl App {
-    /// The agent's pane takes the keys (where a paste is gathered).
-    fn paste_target(&self) -> bool {
-        self.focus == Focus::Agent && !self.has_overlay() && self.agent_alive()
+    /// Where the keys go, if that is a place a paste is gathered for.
+    fn paste_target(&self) -> Option<Target> {
+        if self.has_overlay() {
+            return None;
+        }
+        match self.focus {
+            Focus::Agent if self.agent_alive() => Some(Target::Agent),
+            Focus::Panels => self.shown_editor().map(Target::Editor),
+            _ => None,
+        }
     }
 
     /// The messages that came with `first`; typing into the agent waits a
@@ -62,7 +85,7 @@ impl App {
         while let Ok(m) = rx.try_recv() {
             batch.push(m);
         }
-        if self.paste_target() && batch.iter().any(|m| typed(m).is_some()) {
+        if self.paste_target().is_some() && batch.iter().any(|m| typed(m).is_some()) {
             while batch.len() < BURST_MAX {
                 match rx.recv_timeout(BURST_GAP) {
                     Ok(m) => batch.push(m),
@@ -92,15 +115,34 @@ impl App {
         if run.is_empty() {
             return;
         }
-        if self.paste_target()
+        if let Some(target) = self.paste_target()
             && let Some(text) = pasted_text(run.iter().filter_map(typed))
         {
-            self.paste_to_agent(&text);
+            match target {
+                Target::Agent => self.paste_to_agent(&text),
+                Target::Editor(i) => self.paste_to_editor(i, &text),
+            }
             return;
         }
         for msg in run {
             self.handle(msg);
         }
+    }
+
+    /// A paste in the editor: the clipboard's own text when it is what
+    /// came (a column goes in as a column), else what came; one undo step.
+    fn paste_to_editor(&mut self, i: usize, text: &str) {
+        match self.clip_get_block() {
+            Some((clip, vertical)) if breaks_as_enter(&clip) == text => {
+                if vertical {
+                    self.editors[i].paste_vertical(&clip);
+                } else {
+                    self.editors[i].insert_text(&clip);
+                }
+            }
+            _ => self.editors[i].insert_text(text),
+        }
+        self.editors[i].scroll_to_cursor();
     }
 
     fn paste_to_agent(&mut self, text: &str) {
@@ -127,6 +169,13 @@ mod tests {
                 c => KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
             })
             .collect()
+    }
+
+    #[test]
+    fn clipboard_text_compares_as_windows_terminal_sends_it() {
+        let came = pasted_text(keys("ab \ncd\n").iter()).unwrap();
+        assert_eq!(breaks_as_enter("ab \r\ncd\r\n"), came);
+        assert_eq!(breaks_as_enter("ab \ncd\n"), came);
     }
 
     #[test]

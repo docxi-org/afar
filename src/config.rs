@@ -16,6 +16,7 @@ pub struct Config {
     pub confirm: Confirm,
     pub agent: Agent,
     pub viewer: Viewer,
+    pub editor: Editor,
     pub autocomplete: Autocomplete,
     pub history: History,
 }
@@ -138,6 +139,27 @@ impl Default for Autocomplete {
             files: Use::Always,
             variables: Use::Always,
             programs: Use::Always,
+        }
+    }
+}
+
+/// The editor (F4; Far's editor settings, docs/17 §9 — the rest comes
+/// with its settings dialog).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Editor {
+    /// Blocks stay when the cursor moves and typing does not replace them
+    /// (Far's `PersistentBlocks`).
+    pub persistent_blocks: bool,
+    /// Del and BS remove a block (Far's `DelRemovesBlocks`).
+    pub del_removes_blocks: bool,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            persistent_blocks: false,
+            del_removes_blocks: true,
         }
     }
 }

@@ -198,7 +198,7 @@ impl Editor {
             end = ed.replace(m.start, m.end, new, eol, false);
             ed.cursor = end;
         });
-        self.anchor = None;
+        self.unselect();
         end
     }
 
@@ -231,7 +231,7 @@ impl Editor {
                 m = ed.find(f, next, backward);
             }
         });
-        self.anchor = None;
+        self.unselect();
         count
     }
 
@@ -240,11 +240,11 @@ impl Editor {
     /// visible; selected with `select`.
     pub fn show_found(&mut self, m: Found, cursor_at_end: bool, select: bool, screen_rows: usize) {
         if !self.settings.persistent_blocks || select {
-            self.anchor = None;
+            self.unselect();
         }
         self.cursor = if cursor_at_end { m.end } else { m.start };
         if select {
-            self.anchor = Some(if cursor_at_end { m.start } else { m.end });
+            self.mark_stream(if cursor_at_end { m.start } else { m.end });
         }
         self.want_vcol = None;
         self.history.break_merge();

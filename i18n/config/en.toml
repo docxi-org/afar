@@ -96,6 +96,11 @@ detect_dump = true            # open binary files as a dump
 autodetect_codepage = true
 default_codepage = 0          # 0: the Windows ANSI code page, else a number (866, 65001…)
 
+[editor]
+# As "Options → Editor settings" in Far.
+persistent_blocks = false     # persistent blocks: the selection stays when the cursor moves
+del_removes_blocks = true     # Del and BS delete the selected block
+
 [autocomplete]
 # Autocompletion as in Far ("Options → AutoComplete settings").
 dialogs = true            # in dialogs' fields with a history or a path

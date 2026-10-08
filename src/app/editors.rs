@@ -309,6 +309,8 @@ impl App {
                 return None;
             }
         };
+        editor.settings.persistent_blocks = self.config.editor.persistent_blocks;
+        editor.settings.del_removes_blocks = self.config.editor.del_removes_blocks;
         if let Some(r) = remembered.filter(|_| line.is_none()) {
             let last = editor.line_count() - 1;
             editor.cursor = Pos::new(r.line.min(last), r.col);
@@ -438,17 +440,18 @@ impl App {
             Copy => {
                 let e = &self.editors[i];
                 // Far: without a block, the current line with its ending
-                // (the cursor stays).
-                let text = e
-                    .selected_text()
-                    .unwrap_or_else(|| e.line_with_eol(e.cursor.line));
-                if let Err(err) = self.clip_set(&text) {
+                // (the cursor stays); a vertical block goes as a column.
+                let (text, vertical) = match e.block_text() {
+                    Some(b) => (b.text, b.vertical),
+                    None => (e.line_with_eol(e.cursor.line), false),
+                };
+                if let Err(err) = self.clip_set_block(&text, vertical) {
                     self.say(err);
                 }
             }
             Cut => {
-                if let Some(text) = self.editors[i].selected_text() {
-                    match self.clip_set(&text) {
+                if let Some(b) = self.editors[i].block_text() {
+                    match self.clip_set_block(&b.text, b.vertical) {
                         Ok(()) => {
                             self.editors[i].delete_selection();
                         }
@@ -457,8 +460,11 @@ impl App {
                 }
             }
             Paste => {
-                if let Some(text) = self.clip_get() {
-                    self.editors[i].insert_text(&text);
+                // A column (Far's mark on the clipboard) goes in as one.
+                match self.clip_get_block() {
+                    Some((text, true)) => self.editors[i].paste_vertical(&text),
+                    Some((text, false)) => self.editors[i].insert_text(&text),
+                    None => {}
                 }
             }
             InsertFileName => {

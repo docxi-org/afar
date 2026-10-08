@@ -325,7 +325,7 @@ pub struct App {
     /// The cells the overlays covered in the last frame (the test tools).
     overlay_area: Option<Rect>,
     /// The clipboard of a test run (the user's is left alone).
-    test_clipboard: Option<String>,
+    test_clipboard: Option<(String, bool)>,
     /// The last left click in an editor (double click: a word).
     editor_last_click: Option<(Instant, u16, u16)>,
     /// Wrapping and bars carried to the next viewer (Far's
@@ -3040,9 +3040,10 @@ impl App {
         true
     }
 
-    /// The user screen shown: the panels hidden and no viewer on top.
+    /// The user screen shown: the panels hidden and no viewer or editor
+    /// on top.
     fn user_screen_shown(&self) -> bool {
-        !self.panels_visible() && self.shown_viewer().is_none()
+        !self.panels_visible() && self.shown_viewer().is_none() && self.shown_editor().is_none()
     }
 
     fn is_screen_scroll(command: crate::command::Command) -> bool {

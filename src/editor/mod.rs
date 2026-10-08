@@ -6,6 +6,7 @@
 //! The window around it (status line, key bar, dialogs) is in
 //! `app/editors.rs`.
 
+mod block;
 mod search;
 pub mod text;
 mod undo;
@@ -19,6 +20,7 @@ use unicode_width::UnicodeWidthChar as _;
 
 use crate::command::EditorCmd;
 use crate::theme;
+pub use block::{BlockText, VBlock};
 pub use search::{Finder, Found};
 pub use text::{Eol, Line};
 use undo::{Change, History};
@@ -35,6 +37,13 @@ impl Pos {
     pub fn new(line: usize, col: usize) -> Self {
         Self { line, col }
     }
+}
+
+/// A block that no longer follows the cursor (persistent blocks).
+#[derive(Clone, Copy, Debug)]
+enum Frozen {
+    Stream(Pos, Pos),
+    Vertical(VBlock),
 }
 
 /// The editor's settings (Far's `EditorOptions`, docs/17 §9).
@@ -96,6 +105,11 @@ pub struct Editor {
     pub cursor: Pos,
     /// The selection's other end (stream selection from it to the cursor).
     anchor: Option<Pos>,
+    /// The live block is vertical: `anchor`'s line and this screen column
+    /// are its other corner (Alt+arrows).
+    vblock_vcol: Option<usize>,
+    /// A block that no longer follows the cursor (persistent blocks).
+    frozen: Option<Frozen>,
     /// The column to keep on up / down (screen columns).
     want_vcol: Option<usize>,
     pub top: usize,
@@ -153,6 +167,8 @@ impl Editor {
             default_eol: eol,
             cursor: Pos::default(),
             anchor: None,
+            vblock_vcol: None,
+            frozen: None,
             want_vcol: None,
             top: 0,
             left: 0,
@@ -219,7 +235,7 @@ impl Editor {
         self.bom = bom;
         self.default_eol = eol;
         self.history = History::default();
-        self.anchor = None;
+        self.unselect();
         self.version += 1;
         self.disk_changed = false;
         let last = self.lines.len() - 1;
@@ -322,7 +338,15 @@ impl Editor {
 
     /// The stream selection, start ≤ end; `None` when empty.
     pub fn selection(&self) -> Option<(Pos, Pos)> {
-        let a = self.anchor?;
+        if self.vblock_vcol.is_some() {
+            return None;
+        }
+        let Some(a) = self.anchor else {
+            return match self.frozen {
+                Some(Frozen::Stream(s, e)) if s != e => Some((s, e)),
+                _ => None,
+            };
+        };
         let (s, e) = if a <= self.cursor {
             (a, self.cursor)
         } else {
@@ -372,9 +396,11 @@ impl Editor {
         out
     }
 
+    /// Shift+movement: a stream block from where marking began (a new
+    /// one replaces a vertical or finished block, as in Far).
     fn select_to(&mut self, to: Pos) {
-        if self.anchor.is_none() {
-            self.anchor = Some(self.cursor);
+        if self.anchor.is_none() || self.vblock_vcol.is_some() {
+            self.mark_stream(self.cursor);
         }
         self.cursor = to;
     }
@@ -382,7 +408,7 @@ impl Editor {
     /// Far's Ctrl+C without a block: the current line with its ending.
     pub fn select_line(&mut self) {
         let line = self.cursor.line;
-        self.anchor = Some(Pos::new(line, 0));
+        self.mark_stream(Pos::new(line, 0));
         self.cursor = if line + 1 < self.lines.len() {
             Pos::new(line + 1, 0)
         } else {
@@ -404,13 +430,37 @@ impl Editor {
 
     pub fn unselect(&mut self) {
         self.anchor = None;
+        self.vblock_vcol = None;
+        self.frozen = None;
+    }
+
+    /// The live block stops following the cursor: it stays where it is
+    /// with persistent blocks, and goes otherwise (Far).
+    fn stop_marking(&mut self) {
+        if !self.settings.persistent_blocks {
+            self.unselect();
+            return;
+        }
+        if let Some(b) = self.vblock() {
+            self.frozen = Some(Frozen::Vertical(b));
+        } else if let Some((s, e)) = self.selection() {
+            self.frozen = Some(Frozen::Stream(s, e));
+        }
+        self.anchor = None;
+        self.vblock_vcol = None;
+    }
+
+    /// A new stream block from `from` to the cursor (it follows the
+    /// cursor while marking).
+    fn mark_stream(&mut self, from: Pos) {
+        self.anchor = Some(from);
+        self.vblock_vcol = None;
+        self.frozen = None;
     }
 
     /// A move without Shift: the selection goes unless blocks persist.
     fn move_to(&mut self, to: Pos) {
-        if !self.settings.persistent_blocks {
-            self.anchor = None;
-        }
+        self.stop_marking();
         self.cursor = to;
         self.history.break_merge();
     }
@@ -534,10 +584,38 @@ impl Editor {
             segments[n - 1].chars().count()
         };
         let end = Pos::new(s.line + n - 1, end_col);
+        let removed = e.line - s.line + 1;
+        let delta = n as isize - removed as isize;
         let old: Vec<Line> = self
             .lines
             .splice(s.line..=e.line, new_lines.clone())
             .collect();
+        // A finished block moves with the text after the change.
+        let after = |p: Pos| -> Pos {
+            if p < e {
+                if p > s { s } else { p }
+            } else if p.line == e.line {
+                Pos::new(end.line, end.col + (p.col - e.col))
+            } else {
+                Pos::new((p.line as isize + delta) as usize, p.col)
+            }
+        };
+        self.frozen = match self.frozen {
+            Some(Frozen::Stream(a, b)) => Some(Frozen::Stream(after(a), after(b))),
+            Some(Frozen::Vertical(mut b)) => {
+                let line = |l: usize| {
+                    if l > e.line {
+                        (l as isize + delta) as usize
+                    } else {
+                        l
+                    }
+                };
+                b.top = line(b.top);
+                b.bottom = line(b.bottom);
+                Some(Frozen::Vertical(b))
+            }
+            None => None,
+        };
         self.history.record(Change {
             at: s.line,
             old,
@@ -564,15 +642,19 @@ impl Editor {
             return false;
         };
         let (s, e) = (self.clamp(s), self.clamp(e));
-        self.anchor = None;
+        self.unselect();
         self.cursor = self.replace(s, e, "", Eol::None, false);
         true
     }
 
     /// Deletes the selection (Ctrl+D, Del with a block).
     pub fn delete_selection(&mut self) -> bool {
-        if !self.editable() || self.selection().is_none() {
+        if !self.editable() || !self.has_block() {
             return false;
+        }
+        if let Some(b) = self.vblock() {
+            self.step(|ed| ed.delete_vblock_inner(b));
+            return true;
         }
         self.step(|ed| {
             ed.delete_selection_inner();
@@ -592,9 +674,7 @@ impl Editor {
                 ed.insert_char_inner(c);
             });
         } else {
-            if !self.settings.persistent_blocks {
-                self.anchor = None;
-            }
+            self.stop_marking();
             let at = self.cursor;
             let merge = self.history.can_merge(at);
             if merge {
@@ -631,12 +711,17 @@ impl Editor {
             if !persistent {
                 ed.delete_selection_inner();
             }
+            // Far: any block (a vertical one too) goes; the pasted text is
+            // the block only with persistent blocks.
+            ed.unselect();
             let at = ed.cursor;
             let eol = ed.lines[at.line].eol;
             let end = ed.replace(at, at, text, eol, true);
             ed.cursor = end;
             // The pasted text stays selected only with persistent blocks.
-            ed.anchor = persistent.then_some(at);
+            if persistent {
+                ed.mark_stream(at);
+            }
         });
         self.want_vcol = None;
     }
@@ -656,7 +741,7 @@ impl Editor {
     }
 
     fn delete(&mut self) {
-        if self.settings.del_removes_blocks && self.selection().is_some() {
+        if self.settings.del_removes_blocks && self.has_block() {
             self.delete_selection();
             return;
         }
@@ -675,7 +760,7 @@ impl Editor {
     }
 
     fn backspace(&mut self) {
-        if self.settings.del_removes_blocks && self.selection().is_some() {
+        if self.settings.del_removes_blocks && self.has_block() {
             self.delete_selection();
             return;
         }
@@ -754,7 +839,7 @@ impl Editor {
     pub fn undo(&mut self) {
         if let Some(pos) = self.history.undo(&mut self.lines) {
             self.cursor = pos;
-            self.anchor = None;
+            self.unselect();
             self.version += 1;
         }
     }
@@ -762,7 +847,7 @@ impl Editor {
     pub fn redo(&mut self) {
         if let Some(pos) = self.history.redo(&mut self.lines) {
             self.cursor = pos;
-            self.anchor = None;
+            self.unselect();
             self.version += 1;
         }
     }
@@ -1002,6 +1087,12 @@ impl Editor {
                 | SelLastLine
                 | ScrollUp
                 | ScrollDown
+                | VSelUp
+                | VSelDown
+                | VSelPageUp
+                | VSelPageDown
+                | VSelFirstLine
+                | VSelLastLine
         );
         if !vertical {
             self.want_vcol = None;
@@ -1092,10 +1183,56 @@ impl Editor {
                 self.select_to(to);
             }
             SelectAll => {
-                self.anchor = Some(Pos::default());
+                self.mark_stream(Pos::default());
                 self.cursor = self.file_end();
             }
-            Unselect => self.anchor = None,
+            Unselect => self.unselect(),
+            VSelLeft => {
+                if p.col > 0 {
+                    self.vmark(Pos::new(p.line, p.col - 1));
+                }
+            }
+            VSelRight => {
+                if self.settings.cursor_beyond_eol || p.col < self.line_len(p.line) {
+                    self.vmark(Pos::new(p.line, p.col + 1));
+                }
+            }
+            VSelUp | VSelDown | VSelPageUp | VSelPageDown | VSelFirstLine | VSelLastLine => {
+                let d = match cmd {
+                    VSelUp => -1,
+                    VSelDown => 1,
+                    VSelPageUp => -page,
+                    VSelPageDown => page,
+                    VSelFirstLine => isize::MIN / 2,
+                    _ => isize::MAX / 2,
+                };
+                let to = self.vertical(d);
+                if to.line != p.line {
+                    self.vmark(to);
+                }
+            }
+            VSelHome => self.vmark(Pos::new(p.line, 0)),
+            VSelEnd => self.vmark(Pos::new(p.line, self.line_len(p.line))),
+            VSelWordLeft => {
+                let c = p.col.min(self.line_len(p.line));
+                let to = if c == 0 {
+                    Pos::new(p.line, 0)
+                } else {
+                    self.word_left(Pos::new(p.line, c))
+                };
+                if to != p {
+                    self.vmark(to);
+                }
+            }
+            VSelWordRight => {
+                if p.col < self.line_len(p.line) {
+                    self.vmark(self.vword_right(p));
+                }
+            }
+            BlockLeft => self.shift_block(false),
+            BlockRight => self.shift_block(true),
+            BlockCopyHere => self.copy_block_here(false),
+            BlockMoveHere => self.copy_block_here(true),
             DeleteBlock => {
                 self.delete_selection();
             }
@@ -1177,7 +1314,8 @@ impl Editor {
         if shift {
             self.select_to(p);
         } else {
-            self.anchor = None;
+            // Far: a click takes a block away unless blocks persist.
+            self.stop_marking();
             self.cursor = p;
         }
         self.history.break_merge();
@@ -1208,7 +1346,7 @@ impl Editor {
         while e < chars.len() && self.is_word(chars[e]) {
             e += 1;
         }
-        self.anchor = Some(Pos::new(p.line, s));
+        self.mark_stream(Pos::new(p.line, s));
         self.cursor = Pos::new(p.line, e);
         self.scroll_to_cursor();
     }
@@ -1239,6 +1377,7 @@ impl Editor {
             .highlight
             .map(|h| (h.start, h.end))
             .or_else(|| self.selection());
+        let vb = self.highlight.is_none().then(|| self.vblock()).flatten();
         for row in 0..area.height {
             let y = area.y + row;
             for x in area.left()..area.right() {
@@ -1262,22 +1401,28 @@ impl Editor {
             let Some(l) = self.lines.get(line) else {
                 continue;
             };
-            // The selected screen columns of this line.
-            let sel_v = sel.and_then(|(s, e)| {
-                if line < s.line || line > e.line {
-                    return None;
-                }
-                let from = if line == s.line {
-                    self.vcol(line, s.col)
-                } else {
-                    0
-                };
-                let to = if line == e.line {
-                    self.vcol(line, e.col)
-                } else {
-                    usize::MAX
-                };
-                Some((from, to))
+            // The selected screen columns of this line (a vertical block:
+            // its columns, past the text too).
+            let vsel = vb
+                .filter(|b| line >= b.top && line <= b.bottom && b.right > b.left)
+                .map(|b| (b.left, b.right));
+            let sel_v = vsel.or_else(|| {
+                sel.and_then(|(s, e)| {
+                    if line < s.line || line > e.line {
+                        return None;
+                    }
+                    let from = if line == s.line {
+                        self.vcol(line, s.col)
+                    } else {
+                        0
+                    };
+                    let to = if line == e.line {
+                        self.vcol(line, e.col)
+                    } else {
+                        usize::MAX
+                    };
+                    Some((from, to))
+                })
             });
             let mut v = 0usize;
             for c in l.text.chars() {

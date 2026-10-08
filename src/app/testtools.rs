@@ -396,19 +396,27 @@ impl App {
     /// The clipboard: while a test runs, afar's own (the user's stays
     /// untouched).
     pub(super) fn clip_set(&mut self, text: &str) -> Result<(), String> {
+        self.clip_set_block(text, false)
+    }
+
+    /// Text on the clipboard, marked as a vertical block when `vertical`.
+    pub(super) fn clip_set_block(&mut self, text: &str, vertical: bool) -> Result<(), String> {
         if self.test_run.is_some() {
-            self.test_clipboard = Some(text.to_string());
+            self.test_clipboard = Some((text.to_string(), vertical));
             Ok(())
+        } else if vertical {
+            crate::clipboard::set_vertical(text)
         } else {
             crate::clipboard::set_text(text)
         }
     }
 
-    pub(super) fn clip_get(&self) -> Option<String> {
+    /// The clipboard's text and whether it is a vertical block.
+    pub(super) fn clip_get_block(&self) -> Option<(String, bool)> {
         if self.test_run.is_some() {
             self.test_clipboard.clone()
         } else {
-            crate::clipboard::get_text()
+            crate::clipboard::get_block()
         }
     }
 

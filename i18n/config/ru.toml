@@ -96,6 +96,11 @@ detect_dump = true            # двоичный файл открывать д�
 autodetect_codepage = true
 default_codepage = 0          # 0 — ANSI Windows, иначе номер (866, 65001…)
 
+[editor]
+# Как «Параметры → Настройки редактора» в Far.
+persistent_blocks = false     # постоянные блоки: выделение остаётся, когда курсор уходит
+del_removes_blocks = true     # Del и BS удаляют выделенный блок
+
 [autocomplete]
 # Автозавершение, как в Far («Параметры → Настройки автозавершения»).
 dialogs = true            # в полях диалогов с историей или путём

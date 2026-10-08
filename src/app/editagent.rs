@@ -204,6 +204,22 @@ impl App {
                     item["selection"] = serde_json::json!({
                         "from_line": s.line + 1, "to_line": t.line + 1, "text": text,
                     });
+                } else if let Some(b) = e.vblock().filter(|b| b.width() > 0) {
+                    // A vertical block: screen columns from 1, the text as
+                    // its lines (padded to its width).
+                    let text: String = e
+                        .block_text()
+                        .map(|t| t.text)
+                        .unwrap_or_default()
+                        .chars()
+                        .take(4000)
+                        .collect();
+                    item["selection"] = serde_json::json!({
+                        "vertical": true,
+                        "from_line": b.top + 1, "to_line": b.bottom + 1,
+                        "from_column": b.left + 1, "to_column": b.right,
+                        "text": text,
+                    });
                 }
                 item
             })
