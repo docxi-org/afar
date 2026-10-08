@@ -291,6 +291,14 @@ impl App {
             }
             AskAgent => self.ide_mention(i),
             Settings => self.viewer_settings_dialog(),
+            Syntax => {
+                let text = match self.viewers[i].syntax() {
+                    (true, Some(name)) => tr!("editor-syntax-on", name = name),
+                    (true, None) => tr!("editor-syntax-none"),
+                    (false, _) => tr!("editor-syntax-off"),
+                };
+                self.say(text);
+            }
             // F6: the editor on the same place (the top line of the screen).
             Edit => {
                 let v = &mut self.viewers[i];

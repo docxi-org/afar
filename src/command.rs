@@ -329,6 +329,8 @@ pub enum ViewerCmd {
     /// Alt+Down / Alt+Up: the next / previous marked place (afar's).
     NextMark,
     PrevMark,
+    /// Alt+F3: syntax highlighting on / off in this window.
+    Syntax,
 }
 
 /// A command's name, its default (Far) keys, and whether it works with the
@@ -702,6 +704,7 @@ pub const COMMANDS: &[Def] = &[
     vdef("viewer.next_mark", V::NextMark, &["Alt+Down"]),
     vdef("viewer.prev_mark", V::PrevMark, &["Alt+Up"]),
     vdef("viewer.settings", V::Settings, &["Alt+Shift+F9"]),
+    vdef("viewer.syntax", V::Syntax, &["Alt+F3"]),
 ];
 
 impl Command {

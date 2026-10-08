@@ -87,6 +87,7 @@ tab_size = 8
 show_arrows = true            # стрелки сдвига у краёв строк
 show_zero = false             # нулевой символ как «·»
 scrollbar = false
+syntax = true                 # подсветка синтаксиса (Alt+F3 — в окне)
 # Что запоминать о файле: позицию, кодовую страницу, закладки, режим
 # (текст, hex, дамп), перенос.
 save_position = true

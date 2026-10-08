@@ -4,6 +4,7 @@
 //! code pages with detection, wrapping, Far's status line.
 
 pub mod codepage;
+pub mod highlight;
 pub mod layout;
 pub mod lines;
 pub mod positions;
@@ -220,6 +221,8 @@ pub struct Viewer {
     pub follow: bool,
     /// The label of the first mark the last frame showed.
     shown_label: Option<String>,
+    /// Syntax highlighting (Alt+F3).
+    highlight: highlight::Highlight,
 }
 
 impl Viewer {
@@ -260,6 +263,7 @@ impl Viewer {
             .unwrap_or((defaults.wrap, defaults.word_wrap));
         let restored_mode = remembered.and_then(|r| r.mode);
         let mode = restored_mode.unwrap_or(if binary { Mode::Dump } else { Mode::Text });
+        let highlight = highlight::Highlight::new(settings.syntax, path, &head, &codec);
         let mut v = Self {
             id,
             src,
@@ -300,6 +304,7 @@ impl Viewer {
             snapshot: None,
             follow: false,
             shown_label: None,
+            highlight,
         };
         v.snapshot = v.read_snapshot();
         if let Some(r) = remembered {
@@ -800,8 +805,14 @@ impl Viewer {
             return false;
         };
         self.codec = codec;
+        self.highlight.reset();
         self.adjust_top();
         true
+    }
+
+    /// Syntax highlighting is on, and the file's syntax.
+    pub fn syntax(&self) -> (bool, Option<&'static str>) {
+        (self.highlight.on, self.highlight.name())
     }
 
     /// Detects the code page again (Shift+F8, "Automatic detection").
@@ -842,6 +853,7 @@ impl Viewer {
         if !self.src.refresh() {
             return None;
         }
+        self.highlight.reset();
         let changed = self.changed_lines();
         let size = self.src.size();
         if self.top > size || was_last {
@@ -983,6 +995,11 @@ impl Viewer {
             Unselect => self.selection = None,
             Scrollbar => self.scrollbar = !self.scrollbar,
             StatusLine => self.status_line = !self.status_line,
+            // The window says what it is now.
+            Syntax => {
+                self.highlight.on = !self.highlight.on;
+                return Outcome::App(cmd);
+            }
             other => return Outcome::App(other),
         }
         Outcome::Done
@@ -1162,17 +1179,25 @@ impl Viewer {
         self.shown_label = None;
         let mut prev = p;
         let now = Instant::now();
-        for y in 0..a.height {
-            if p >= self.src.size() {
-                break;
-            }
-            if !self.marks.is_empty() && p > prev {
-                line += lines::count_feeds(&mut self.src, &self.codec, prev, p);
-                prev = p;
-            }
+        // The rows first: the syntax colors are found for their bytes.
+        let mut rows = Vec::new();
+        while rows.len() < usize::from(a.height) && p < self.src.size() {
             let row = layout::read_row(&mut self.src, &self.codec, p, &opts);
             p = row.end;
-            let ry = a.y + y;
+            rows.push(row);
+        }
+        let syn = match (rows.first(), rows.last()) {
+            (Some(f), Some(l)) => self
+                .highlight
+                .ranges(&mut self.src, &self.codec, f.start, l.end),
+            _ => Vec::new(),
+        };
+        for (y, row) in rows.into_iter().enumerate() {
+            if !self.marks.is_empty() && row.start > prev {
+                line += lines::count_feeds(&mut self.src, &self.codec, prev, row.start);
+                prev = row.start;
+            }
+            let ry = a.y + y as u16;
             let mark_style = self
                 .marks
                 .iter()
@@ -1215,10 +1240,16 @@ impl Viewer {
                 if cell.col + cw <= left || cell.col >= left + width {
                     continue;
                 }
+                // Selection over the agent's marks over the syntax.
                 let style = if self.selected(cell.pos) {
                     theme::VIEWER_SELECTED
+                } else if let Some(st) = mark_style {
+                    st
                 } else {
-                    theme::VIEWER_TEXT
+                    match highlight::color_at(&syn, cell.pos) {
+                        Some(c) => theme::VIEWER_TEXT.fg(c),
+                        None => theme::VIEWER_TEXT,
+                    }
                 };
                 let x0 = cell.col.max(left) - left;
                 // A character cut by an edge, and tabs: blanks.
@@ -1480,6 +1511,9 @@ impl Viewer {
         if !group.is_empty() {
             let mut labels: [String; 12] =
                 std::array::from_fn(|i| t(&format!("MView{group}F{}", i + 1)));
+            if group == "Alt" {
+                labels[2] = t("editor-keybar-syntax");
+            }
             if group == "Shift" {
                 labels[1] = match self.mode {
                     Mode::Text if self.word_wrap => t("MViewF2"),

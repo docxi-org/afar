@@ -304,6 +304,8 @@ pub struct Viewer {
     /// The zero character shown as `·`.
     pub show_zero: bool,
     pub scrollbar: bool,
+    /// Syntax highlighting (Alt+F3 in a window).
+    pub syntax: bool,
     pub save_position: bool,
     pub save_codepage: bool,
     pub save_bookmarks: bool,
@@ -328,6 +330,7 @@ impl Default for Viewer {
             show_arrows: true,
             show_zero: false,
             scrollbar: false,
+            syntax: true,
             save_position: true,
             save_codepage: true,
             save_bookmarks: true,

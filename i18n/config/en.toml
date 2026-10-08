@@ -87,6 +87,7 @@ tab_size = 8
 show_arrows = true            # scrolling arrows at the ends of lines
 show_zero = false             # the zero character as "·"
 scrollbar = false
+syntax = true                 # syntax highlighting (Alt+F3 in a window)
 # What to remember about a file: position, code page, bookmarks, mode
 # (text, hex, dump), wrapping.
 save_position = true
