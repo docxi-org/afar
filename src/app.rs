@@ -246,6 +246,8 @@ pub struct App {
     cmdline: String,
     /// Cursor in `cmdline`, in chars.
     cmd_cursor: usize,
+    /// Where the command line's selection began (`crate::lineedit`).
+    cmd_anchor: Option<usize>,
     /// The agent's session (docs/13-agent-sessions.md).
     agent: agent::AgentSession,
     /// The "user screen": text of finished commands.
@@ -446,6 +448,7 @@ impl App {
             panel_drag: None,
             cmdline: String::new(),
             cmd_cursor: 0,
+            cmd_anchor: None,
             agent: agent::AgentSession::new(config.agent.live),
             history: Vec::new(),
             running: None,
@@ -1648,12 +1651,17 @@ impl App {
     fn clear_cmdline(&mut self) {
         self.cmdline.clear();
         self.cmd_cursor = 0;
+        self.cmd_anchor = None;
     }
 
+    /// Text at the cursor, in place of the selection.
     fn cmdline_insert(&mut self, s: &str) {
-        let byte = char_to_byte(&self.cmdline, self.cmd_cursor);
-        self.cmdline.insert_str(byte, s);
-        self.cmd_cursor += s.chars().count();
+        crate::lineedit::insert(
+            &mut self.cmdline,
+            &mut self.cmd_cursor,
+            &mut self.cmd_anchor,
+            s,
+        );
     }
 
     // --------------------------------------------------------------- keys
@@ -3044,6 +3052,18 @@ impl App {
                 theme::COMMAND_LINE,
             );
             // The ghost suggestion after the line, with the cursor at its end.
+            // The selection (Far's CommandLine.Selected).
+            if let Some((from, to)) =
+                crate::lineedit::range(&self.cmdline, self.cmd_cursor, self.cmd_anchor)
+            {
+                let x0 = prompt.chars().count();
+                for i in from..to {
+                    let x = (x0 + i) as u16;
+                    if x < l.cmdline.width {
+                        buf[(l.cmdline.x + x, l.cmdline.y)].set_style(theme::COMMAND_LINE_SELECTED);
+                    }
+                }
+            }
             if let Some(rest) = self.shown_cmd_ghost() {
                 let x = line.chars().count() as u16;
                 if x < l.cmdline.width {
@@ -3562,10 +3582,6 @@ fn quote(name: &str) -> String {
     } else {
         name.to_string()
     }
-}
-
-fn char_to_byte(s: &str, chars: usize) -> usize {
-    s.char_indices().nth(chars).map_or(s.len(), |(i, _)| i)
 }
 
 /// Windows' "lines per wheel notch" (SPI_GETWHEELSCROLLLINES); 3 when it

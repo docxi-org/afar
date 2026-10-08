@@ -12,14 +12,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, quote};
 use crate::command::Command;
+use crate::lineedit::{self, Done};
 
-/// Far's WordDiv (config.cpp) plus blanks.
-const WORD_DIV: &str = "~!%^&*()+|{}:\"<>?`-=\\[];',./";
 const HISTORY_SIZE: usize = 1000;
-
-fn is_div(c: char) -> bool {
-    c.is_whitespace() || WORD_DIV.contains(c)
-}
 
 /// Commands run from the command line, oldest first; kept in the history
 /// database (`crate::history`), this is its copy for browsing.
@@ -134,12 +129,8 @@ impl History {
 impl App {
     /// The line's own keys; `false` when it does not take `key`.
     pub(super) fn cmdline_key(&mut self, key: &KeyEvent) -> bool {
-        let m = key.modifiers;
-        let ctrl = m.contains(KeyModifiers::CONTROL);
-        let alt = m.contains(KeyModifiers::ALT);
-        let shift = m.contains(KeyModifiers::SHIFT);
-        let mut chars: Vec<char> = self.cmdline.chars().collect();
-        let len = chars.len();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let len = self.cmdline.chars().count();
         let cur = self.cmd_cursor.min(len);
         // Panels hidden: Up/Down browse the history, as in Far.
         let browse = match key.code {
@@ -159,63 +150,39 @@ impl App {
             return true;
         }
         self.cmd_history.complete = None;
-        match key.code {
-            // Ctrl+Alt is AltGr on many layouts.
-            KeyCode::Char(c) if !(ctrl || alt) || (ctrl && alt) => {
-                self.cmdline_insert(&c.to_string());
+        if key.code == KeyCode::Esc {
+            self.clear_cmdline();
+            return true;
+        }
+        // The selection (Far's `Edit`), then the editing keys.
+        match lineedit::key(
+            &mut self.cmdline,
+            &mut self.cmd_cursor,
+            &mut self.cmd_anchor,
+            key,
+        ) {
+            Done::Yes => return true,
+            Done::Copy(text) => {
+                if let Err(e) = self.clip_set(&text) {
+                    self.say(e);
+                }
                 return true;
             }
-            KeyCode::Backspace if ctrl && shift => {
-                chars.drain(..cur);
-                self.cmd_cursor = 0;
+            Done::Paste => {
+                if let Some((text, _)) = self.clip_get_block() {
+                    self.cmdline_insert(&text);
+                }
+                return true;
             }
-            KeyCode::Backspace if ctrl => {
-                let start = word_start_for_delete(&chars, cur);
-                chars.drain(start..cur);
-                self.cmd_cursor = start;
-            }
-            KeyCode::Backspace if cur > 0 => {
-                chars.remove(cur - 1);
-                self.cmd_cursor = cur - 1;
-            }
-            KeyCode::Delete if ctrl && cur < len => {
-                let end = word_end_for_delete(&chars, cur);
-                chars.drain(cur..end);
-            }
-            KeyCode::Char('t') if ctrl && cur < len => {
-                let end = word_end_for_delete(&chars, cur);
-                chars.drain(cur..end);
-            }
-            KeyCode::Delete if cur < len => {
-                chars.remove(cur);
-            }
-            KeyCode::Char('y') if ctrl => {
-                chars.clear();
-                self.cmd_cursor = 0;
-            }
-            KeyCode::Char('k') if ctrl => chars.truncate(cur),
-            KeyCode::Left if ctrl => self.cmd_cursor = word_left(&chars, cur),
-            KeyCode::Right if ctrl => self.cmd_cursor = word_right(&chars, cur),
-            KeyCode::Left => self.cmd_cursor = cur.saturating_sub(1),
-            KeyCode::Char('s') if ctrl => self.cmd_cursor = cur.saturating_sub(1),
-            KeyCode::Right => self.cmd_cursor = (cur + 1).min(len),
-            KeyCode::Char('d') if ctrl => self.cmd_cursor = (cur + 1).min(len),
-            KeyCode::Home => self.cmd_cursor = 0,
-            KeyCode::End => self.cmd_cursor = len,
-            KeyCode::Esc => {
-                chars.clear();
-                self.cmd_cursor = 0;
-            }
-            _ => return false,
+            Done::No => {}
         }
-        self.cmdline = chars.into_iter().collect();
-        self.cmd_cursor = self.cmd_cursor.min(self.cmdline.chars().count());
-        true
+        lineedit::edit(&mut self.cmdline, &mut self.cmd_cursor, key)
     }
 
     fn set_cmdline(&mut self, text: &str) {
         self.cmdline = text.to_string();
         self.cmd_cursor = self.cmdline.chars().count();
+        self.cmd_anchor = None;
     }
 
     /// Ctrl+E / Ctrl+X: the previous / next command of the history.
@@ -271,81 +238,9 @@ pub(super) fn folder_text(path: &Path) -> String {
     quote(&s)
 }
 
-/// Far's Ctrl+←: to the start of the previous word.
-fn word_left(s: &[char], cur: usize) -> usize {
-    let mut p = cur.min(s.len()).saturating_sub(1);
-    while p > 0 && !(!is_div(s[p]) && is_div(s[p - 1]) && !s[p].is_whitespace()) {
-        if !s[p].is_whitespace() && s[p - 1].is_whitespace() {
-            break;
-        }
-        p -= 1;
-    }
-    p
-}
-
-/// Far's Ctrl+→: to the end of the word.
-fn word_right(s: &[char], cur: usize) -> usize {
-    if cur >= s.len() {
-        return cur;
-    }
-    let mut p = cur + 1;
-    while p < s.len() && !(is_div(s[p]) && !is_div(s[p - 1])) {
-        if !s[p].is_whitespace() && s[p - 1].is_whitespace() {
-            break;
-        }
-        p += 1;
-    }
-    p
-}
-
-/// Far's Ctrl+Backspace: deletes back to a word boundary.
-fn word_start_for_delete(s: &[char], cur: usize) -> usize {
-    let mut p = cur.min(s.len());
-    while p > 0 {
-        let stop = p > 1 && s[p - 1].is_whitespace() != s[p - 2].is_whitespace();
-        p -= 1;
-        if p == 0 || stop || is_div(s[p - 1]) {
-            break;
-        }
-    }
-    p
-}
-
-/// Far's Ctrl+T / Ctrl+Del: deletes forward to a word boundary.
-fn word_end_for_delete(s: &[char], cur: usize) -> usize {
-    let mut end = cur;
-    while end < s.len() {
-        let stop = end + 1 < s.len() && s[end].is_whitespace() && !s[end + 1].is_whitespace();
-        end += 1;
-        if end >= s.len() || stop || is_div(s[end]) {
-            break;
-        }
-    }
-    end
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn chars(s: &str) -> Vec<char> {
-        s.chars().collect()
-    }
-
-    #[test]
-    fn words_like_far() {
-        let s = chars("copy foo.txt d:\\x");
-        assert_eq!(word_left(&s, s.len()), 16);
-        assert_eq!(word_left(&s, 16), 13);
-        assert_eq!(word_left(&s, 9), 5);
-        assert_eq!(word_left(&s, 5), 0);
-        assert_eq!(word_right(&s, 0), 4);
-        assert_eq!(word_right(&s, 4), 5);
-        assert_eq!(word_right(&s, 5), 8);
-        let s = chars("git commit");
-        assert_eq!(word_start_for_delete(&s, s.len()), 4);
-        assert_eq!(word_end_for_delete(&s, 0), 3);
-    }
 
     #[test]
     fn history_browses_and_completes() {

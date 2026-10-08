@@ -146,6 +146,8 @@ pub const KEYBAR_TEXT: Style = c(con::BLACK, con::CYAN);
 /// The command line and the user screen use the terminal's own colors.
 pub const COMMAND_LINE: Style = Style::new().fg(Color::Reset).bg(Color::Reset);
 /// The ghost suggestion after the typed text (afar's).
+/// Far's CommandLine.Selected.
+pub const COMMAND_LINE_SELECTED: Style = c(con::BLACK, con::CYAN);
 pub const GHOST_COMMAND_LINE: Style = Style::new().fg(con::DARKGRAY).bg(Color::Reset);
 pub const GHOST_EDIT: Style = c(con::DARKGRAY, con::CYAN);
 /// Hyperlinks in program output (docs/16): this color where the program

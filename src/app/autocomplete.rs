@@ -53,6 +53,7 @@ impl App {
             Owner::Cmdline => {
                 self.cmdline = text.to_string();
                 self.cmd_cursor = self.cmdline.chars().count();
+                self.cmd_anchor = None;
             }
             Owner::Dialog => {
                 if let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut() {

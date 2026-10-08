@@ -16,6 +16,7 @@ pub mod ide;
 pub mod journal;
 pub mod keymap;
 pub mod keys;
+pub mod lineedit;
 pub mod masks;
 pub mod mcp;
 pub mod menu;

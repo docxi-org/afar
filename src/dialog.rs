@@ -50,6 +50,8 @@ pub enum Kind {
     Input {
         value: String,
         cursor: usize,
+        /// Where the selection began (`crate::lineedit`).
+        anchor: Option<usize>,
         /// Not edited yet: dimmed, replaced by the first typed character.
         unchanged: bool,
         width: u16,
@@ -127,6 +129,10 @@ pub enum Outcome {
     Pending,
     /// Closed with a button (its number in the dialog) or cancelled.
     Closed(Option<usize>),
+    /// Text of a field for the clipboard (Ctrl+Ins, Shift+Del).
+    Copy(String),
+    /// Shift+Ins: the clipboard's text for the field (`paste`).
+    Paste,
     /// The focused field's history is needed (the owner keeps it).
     History(HistoryRequest),
     /// An item button (`button_at`) was pressed: its number among the
@@ -866,6 +872,7 @@ impl Dialog {
                     Kind::Input {
                         value,
                         cursor,
+                        anchor,
                         unchanged,
                         ..
                     },
@@ -874,7 +881,34 @@ impl Dialog {
         {
             *value = text.to_string();
             *cursor = value.chars().count();
+            *anchor = None;
             *unchanged = false;
+        }
+    }
+
+    /// Text from the clipboard into the focused field, in place of its
+    /// selection (or of untouched text).
+    pub fn paste(&mut self, text: &str) {
+        if let Some(Target::Elem(r, e)) = self.focus()
+            && let Some(Elem {
+                kind:
+                    Kind::Input {
+                        value,
+                        cursor,
+                        anchor,
+                        unchanged,
+                        readonly: false,
+                        ..
+                    },
+                ..
+            }) = self.elem_mut(r, e)
+        {
+            if *unchanged {
+                value.clear();
+                *cursor = 0;
+                *unchanged = false;
+            }
+            crate::lineedit::insert(value, cursor, anchor, text);
         }
     }
 
@@ -889,6 +923,7 @@ impl Dialog {
                 if let Kind::Input {
                     value,
                     cursor,
+                    anchor,
                     unchanged,
                     ..
                 } = &mut e.kind
@@ -898,12 +933,7 @@ impl Dialog {
                             value.clear();
                             *cursor = 0;
                         }
-                        let b = value
-                            .char_indices()
-                            .nth(*cursor)
-                            .map_or(value.len(), |(i, _)| i);
-                        value.insert_str(b, text);
-                        *cursor += text.chars().count();
+                        crate::lineedit::insert(value, cursor, anchor, text);
                         *unchanged = false;
                         at = Some((r, ei));
                         break 'rows;
@@ -926,6 +956,7 @@ impl Dialog {
                 if let Kind::Input {
                     value,
                     cursor,
+                    anchor,
                     unchanged,
                     ..
                 } = &mut e.kind
@@ -933,6 +964,7 @@ impl Dialog {
                     if k == n {
                         *value = text.to_string();
                         *cursor = value.chars().count();
+                        *anchor = None;
                         *unchanged = false;
                         return;
                     }
@@ -1343,13 +1375,13 @@ impl Dialog {
                 KeyCode::Right => self.move_focus(1),
                 _ => {}
             },
-            Some(Target::Elem(r, e)) => self.elem_key(r, e, key),
+            Some(Target::Elem(r, e)) => return self.elem_key(r, e, key),
             Some(Target::Arrow(..)) | None => {}
         }
         Outcome::Pending
     }
 
-    fn elem_key(&mut self, r: usize, e: usize, key: &KeyEvent) {
+    fn elem_key(&mut self, r: usize, e: usize, key: &KeyEvent) -> Outcome {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match self.elem(r, e).map(|e| &e.kind) {
@@ -1360,18 +1392,18 @@ impl Dialog {
                     KeyCode::Right => self.move_focus(1),
                     _ => {}
                 }
-                return;
+                return Outcome::Pending;
             }
             Some(Kind::Combo { .. }) => {
                 if matches!(key.code, KeyCode::F(4) | KeyCode::Char(' ')) {
                     self.open_list(r, e);
                 }
-                return;
+                return Outcome::Pending;
             }
             _ => {}
         }
         let Some(elem) = self.elem_mut(r, e) else {
-            return;
+            return Outcome::Pending;
         };
         match &mut elem.kind {
             Kind::Check { checked, mixed, .. } => {
@@ -1382,47 +1414,42 @@ impl Dialog {
             Kind::Input {
                 value,
                 cursor,
+                anchor,
                 unchanged,
+                readonly,
                 ..
             } => {
                 let typing = matches!(key.code, KeyCode::Char(_)) && !(ctrl ^ alt);
                 // Typing over untouched text replaces it.
-                if *unchanged && typing {
+                if *unchanged && typing && !*readonly {
                     value.clear();
                     *cursor = 0;
                 }
                 *unchanged = false;
-                let len = value.chars().count();
-                let byte = |s: &str, c: usize| s.char_indices().nth(c).map_or(s.len(), |(i, _)| i);
-                match key.code {
-                    // Ctrl+Alt is AltGr on many layouts.
-                    KeyCode::Char(c) if !(ctrl ^ alt) => {
-                        let at = byte(value, *cursor);
-                        value.insert(at, c);
-                        *cursor += 1;
+                // A read-only field: moving and copying only.
+                let (mut text, mut at, mut from) = (value.clone(), *cursor, *anchor);
+                let done = crate::lineedit::key(&mut text, &mut at, &mut from, key);
+                if *readonly && text != *value {
+                    return Outcome::Pending;
+                }
+                (*value, *cursor, *anchor) = (text, at, from);
+                match done {
+                    crate::lineedit::Done::Yes => {}
+                    crate::lineedit::Done::Copy(s) => return Outcome::Copy(s),
+                    crate::lineedit::Done::Paste if *readonly => {}
+                    crate::lineedit::Done::Paste => return Outcome::Paste,
+                    crate::lineedit::Done::No => {
+                        let mut text = value.clone();
+                        crate::lineedit::edit(&mut text, cursor, key);
+                        if !*readonly {
+                            *value = text;
+                        }
                     }
-                    KeyCode::Char('y') if ctrl => {
-                        value.clear();
-                        *cursor = 0;
-                    }
-                    KeyCode::Backspace if *cursor > 0 => {
-                        let at = byte(value, *cursor - 1);
-                        value.remove(at);
-                        *cursor -= 1;
-                    }
-                    KeyCode::Delete if *cursor < len => {
-                        let at = byte(value, *cursor);
-                        value.remove(at);
-                    }
-                    KeyCode::Left => *cursor = cursor.saturating_sub(1),
-                    KeyCode::Right => *cursor = (*cursor + 1).min(len),
-                    KeyCode::Home => *cursor = 0,
-                    KeyCode::End => *cursor = len,
-                    _ => {}
                 }
             }
             _ => {}
         }
+        Outcome::Pending
     }
 
     fn open_list(&mut self, r: usize, e: usize) {
@@ -1948,6 +1975,7 @@ impl Dialog {
             Kind::Input {
                 value,
                 cursor: cur,
+                anchor,
                 unchanged,
                 width,
                 history,
@@ -1971,6 +1999,15 @@ impl Dialog {
                     buf[(at + i, y)].set_symbol(" ").set_style(style);
                 }
                 put_plain(buf, at, y, *width, &shown, style);
+                // The selection (Far's Dialog.Edit.Selected).
+                if focused && let Some((from, to)) = crate::lineedit::range(value, *cur, *anchor) {
+                    for i in from.max(skip)..to {
+                        let col = (i - skip) as u16;
+                        if col < *width {
+                            buf[(at + col, y)].set_style(theme::DIALOG_EDIT_SELECTED);
+                        }
+                    }
+                }
                 // The ghost after the text, as far as the field goes.
                 if focused
                     && !*unchanged
@@ -2311,6 +2348,7 @@ pub fn input_at(x: u16, width: u16, value: impl Into<String>, history: Option<&s
         x: X::At(x),
         kind: Kind::Input {
             cursor: value.chars().count(),
+            anchor: None,
             unchanged: !value.is_empty(),
             value,
             width,

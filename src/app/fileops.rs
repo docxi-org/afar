@@ -423,6 +423,21 @@ impl App {
                     Outcome::History(request) => self.dialog_history(request),
                     Outcome::Pressed(n) => self.dialog_pressed(n),
                     Outcome::Pending => self.dialog_edited(before),
+                    Outcome::Copy(text) => {
+                        if let Err(e) = self.clip_set(&text) {
+                            self.say(e);
+                        }
+                        // Shift+Del also cut it out.
+                        self.dialog_edited(before);
+                    }
+                    Outcome::Paste => {
+                        if let Some((text, _)) = self.clip_get_block()
+                            && let Some(Overlay::Dialog { dialog, .. }) = self.overlays.last_mut()
+                        {
+                            dialog.paste(&text);
+                        }
+                        self.dialog_edited(before);
+                    }
                 }
             }
             Some(Overlay::Menu { .. }) => self.menu_key(key),
