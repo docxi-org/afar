@@ -109,6 +109,10 @@ pub(super) enum Ask {
     },
     /// Alt+F8.
     Goto { id: u32 },
+    /// F8 / Shift+F8 needing the file read again: unsaved changes go.
+    ReloadCp { id: u32, cp: u32 },
+    /// The new page cannot read the text as it is: Show / OK / Cancel.
+    SwitchCp { id: u32, cp: u32, at: Pos },
 }
 
 /// Where a file was left (Far's editor position cache).
@@ -119,6 +123,8 @@ pub struct EditorPlace {
     pub top: usize,
     pub left: usize,
     pub cp: u32,
+    #[serde(default)]
+    pub bookmarks: [Option<crate::editor::Bookmark>; 10],
 }
 
 /// The position cache of the editor: `history/editor.json`.
@@ -311,6 +317,9 @@ impl App {
         };
         editor.settings.persistent_blocks = self.config.editor.persistent_blocks;
         editor.settings.del_removes_blocks = self.config.editor.del_removes_blocks;
+        if let Some(r) = &remembered {
+            editor.bookmarks = r.bookmarks;
+        }
         if let Some(r) = remembered.filter(|_| line.is_none()) {
             let last = editor.line_count() - 1;
             editor.cursor = Pos::new(r.line.min(last), r.col);
@@ -361,6 +370,7 @@ impl App {
             top: e.top,
             left: e.left,
             cp: e.cp,
+            bookmarks: e.bookmarks,
         };
         let (path, file) = (e.path().to_path_buf(), self.places_file());
         self.editor_places.put(&path, place, &file);
@@ -493,6 +503,8 @@ impl App {
             SearchNext => self.editor_search_continue(i, false),
             SearchPrev => self.editor_search_continue(i, true),
             Goto => self.editor_goto_dialog(i),
+            NextCodepage => self.editor_next_codepage(i),
+            CodepageMenu => self.editor_codepage_menu(i),
             _ => {}
         }
         if let Some(i) = self.shown_editor() {
@@ -971,6 +983,14 @@ impl App {
                     self.editor_goto_closed(id, dialog);
                 }
             }
+            Ask::ReloadCp { id, cp } => {
+                if button == Some(0)
+                    && let Some(i) = self.editor_index(id)
+                {
+                    self.editor_reload_cp(i, cp);
+                }
+            }
+            Ask::SwitchCp { id, cp, at } => self.editor_switch_cp_answer(id, cp, at, button),
             Ask::Reload { id } => {
                 let Some(i) = self.editor_index(id) else {
                     return;
@@ -998,12 +1018,18 @@ impl App {
 
     /// Reads the file again (keeping its code page and the cursor).
     fn editor_reload(&mut self, i: usize) {
+        let cp = self.editors[i].cp;
+        self.editor_reload_cp(i, cp);
+    }
+
+    /// The file read again from the disk, in code page `cp`.
+    pub(super) fn editor_reload_cp(&mut self, i: usize, cp: u32) {
         let e = &self.editors[i];
         let path = e.path().to_path_buf();
         let Ok(data) = std::fs::read(&path) else {
             return;
         };
-        let l = text::load(&data, Some(e.cp), false, e.cp);
+        let l = text::load(&data, Some(cp), false, cp);
         let e = &mut self.editors[i];
         e.reload(l.lines, l.cp, l.bom, l.eol.unwrap_or(e.default_eol));
         e.stamp = stamp(&path);
@@ -1167,14 +1193,7 @@ impl App {
     /// Far's editor key bar (`MEditF1…`), keys not made yet left blank.
     pub(super) fn editor_keybar_labels(&self, i: usize, group: &str) -> Vec<String> {
         let t = |id: &str| crate::i18n::plain(&tr!(id));
-        let not_yet: &[(&str, u8)] = &[
-            ("", 8),
-            ("", 11),
-            ("Shift", 8),
-            ("Alt", 9),
-            ("Alt", 11),
-            ("AltShift", 9),
-        ];
+        let not_yet: &[(&str, u8)] = &[("", 11), ("Alt", 9), ("Alt", 11), ("AltShift", 9)];
         (1..=12u8)
             .map(|n| {
                 if not_yet.contains(&(group, n)) {
@@ -1182,6 +1201,15 @@ impl App {
                 }
                 if group == "Ctrl" && n == 3 && self.editors[i].line_numbers {
                     return t("MEditCtrlF3Hide");
+                }
+                // F8: the page it goes to (Far: "ANSI" / "OEM").
+                if group.is_empty() && n == 8 {
+                    let next = super::editcp::next_f8(self.editors[i].cp);
+                    return if next == codepage::ansi() {
+                        t("MEditF8")
+                    } else {
+                        t("MEditF8DOS")
+                    };
                 }
                 t(&format!("MEdit{group}F{n}"))
             })
@@ -1232,6 +1260,7 @@ impl App {
                 top: e.top,
                 left: e.left,
                 line_numbers: e.line_numbers,
+                bookmarks: e.bookmarks,
             })
             .collect();
         let shown = self.shown_editor().and_then(|i| {
@@ -1261,6 +1290,7 @@ impl App {
                 e.top = s.top.min(last);
                 e.left = s.left;
                 e.line_numbers = s.line_numbers;
+                e.bookmarks = s.bookmarks;
             }
             if shown == Some(n) {
                 shown_id = Some(id);

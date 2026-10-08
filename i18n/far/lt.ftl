@@ -586,3 +586,7 @@ MEditReplace = Pa&keisti
 MEditReplaceAll = &Viską
 MEditSkip = &Praleisti
 MEditCancel = &Atšaukti
+MUnsupportedCodePageSelectedCodepage = Pasirinktas kodo puslapis
+MUnsupportedCodePageDoesNotSupport = nepalaiko { $p0 }
+MUnsupportedCodePageCharacter = simbolio
+MUnsupportedCodePageByteSequence = baitų sekos

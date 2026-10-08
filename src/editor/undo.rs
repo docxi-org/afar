@@ -50,6 +50,19 @@ impl Default for History {
 }
 
 impl History {
+    /// Every line kept for undo and redo passed through `f` (the text read
+    /// in another code page).
+    pub fn map_text(&mut self, f: &impl Fn(&str) -> String) {
+        let steps = self.steps.iter_mut().chain(self.open.as_mut());
+        for step in steps {
+            for c in &mut step.changes {
+                for l in c.old.iter_mut().chain(c.new.iter_mut()) {
+                    l.text = f(&l.text);
+                }
+            }
+        }
+    }
+
     pub fn modified(&self) -> bool {
         self.saved != Some(self.pos)
     }

@@ -7,6 +7,7 @@
 //! `app/editors.rs`.
 
 mod block;
+mod recode;
 mod search;
 pub mod text;
 mod undo;
@@ -21,6 +22,7 @@ use unicode_width::UnicodeWidthChar as _;
 use crate::command::EditorCmd;
 use crate::theme;
 pub use block::{BlockText, VBlock};
+pub use recode::CpProblem;
 pub use search::{Finder, Found};
 pub use text::{Eol, Line};
 use undo::{Change, History};
@@ -37,6 +39,16 @@ impl Pos {
     pub fn new(line: usize, col: usize) -> Self {
         Self { line, col }
     }
+}
+
+/// A bookmark (Far's `m_SavePos`): the cursor's line and position, the
+/// screen's left column and the cursor's row on the screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Bookmark {
+    pub line: usize,
+    pub col: usize,
+    pub left: usize,
+    pub screen_line: usize,
 }
 
 /// A block that no longer follows the cursor (persistent blocks).
@@ -149,6 +161,8 @@ pub struct Editor {
     pub highlight: Option<Found>,
     /// The Hex box of Alt+F8 (Far's `m_GotoHex`, per window).
     pub goto_hex: bool,
+    /// Ctrl+Shift+0…9 / Ctrl+0…9.
+    pub bookmarks: [Option<Bookmark>; 10],
 }
 
 impl Editor {
@@ -190,6 +204,7 @@ impl Editor {
             last_found: None,
             highlight: None,
             goto_hex: false,
+            bookmarks: [None; 10],
         }
     }
 
@@ -590,6 +605,14 @@ impl Editor {
             .lines
             .splice(s.line..=e.line, new_lines.clone())
             .collect();
+        // Bookmarks keep to their lines (Far shifts their numbers).
+        for b in self.bookmarks.iter_mut().flatten() {
+            if b.line > e.line {
+                b.line = (b.line as isize + delta).max(0) as usize;
+            } else if b.line > s.line {
+                b.line = b.line.min(end.line);
+            }
+        }
         // A finished block moves with the text after the change.
         let after = |p: Pos| -> Pos {
             if p < e {
@@ -1227,6 +1250,22 @@ impl Editor {
             VSelWordRight => {
                 if p.col < self.line_len(p.line) {
                     self.vmark(self.vword_right(p));
+                }
+            }
+            SetBookmark(n) => {
+                self.bookmarks[usize::from(n) % 10] = Some(Bookmark {
+                    line: p.line,
+                    col: p.col,
+                    left: self.left,
+                    screen_line: p.line.saturating_sub(self.top),
+                });
+            }
+            GotoBookmark(n) => {
+                if let Some(b) = self.bookmarks[usize::from(n) % 10] {
+                    let line = b.line.min(self.lines.len() - 1);
+                    self.move_to(Pos::new(line, b.col));
+                    self.left = b.left;
+                    self.top = line.saturating_sub(b.screen_line);
                 }
             }
             BlockLeft => self.shift_block(false),

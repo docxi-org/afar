@@ -35,6 +35,7 @@ mod commands;
 mod editagent;
 mod testtools;
 pub use testtools::PNG_MARK;
+mod editcp;
 mod editors;
 mod editsearch;
 mod farimport;
@@ -1593,9 +1594,10 @@ impl App {
         }
         let key = keys::normalize(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        // Ctrl+Space; Ctrl+@ / Ctrl+2 is the same NUL byte on some paths.
+        // Ctrl+Space (Ctrl+@ is the same NUL byte on some paths; Ctrl+2 is a
+        // key of its own: view modes, bookmarks).
         let is_focus_key =
-            key.code == KeyCode::Null || ctrl && matches!(key.code, KeyCode::Char(' ' | '@' | '2'));
+            key.code == KeyCode::Null || ctrl && matches!(key.code, KeyCode::Char(' ' | '@'));
         if is_focus_key {
             // While a menu or dialog is open, the agent pane is out of reach
             // (a dialog takes Ctrl+Space: Far's manual completion).

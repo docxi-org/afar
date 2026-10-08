@@ -817,3 +817,14 @@ MEditReplaceAll
 MEditSkip
 MEditCancel
 MEditSearchStatistics
+
+# Editor code pages
+MEditorReloadCPWarnLost1
+MEditorReloadCPWarnLost2
+MEditorSwitchCPConfirm
+MEditorSaveCPWarnShow
+MEditorCPNotSupported
+MUnsupportedCodePageSelectedCodepage
+MUnsupportedCodePageDoesNotSupport
+MUnsupportedCodePageCharacter
+MUnsupportedCodePageByteSequence

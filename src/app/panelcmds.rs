@@ -153,6 +153,11 @@ pub(super) enum MenuPurpose {
         dir: std::path::PathBuf,
         ids: Vec<String>,
     },
+    /// Shift+F8 in an editor; `None` for separators.
+    EditorCodepage {
+        id: u32,
+        choices: Vec<Option<super::viewers::CpChoice>>,
+    },
     /// "Find all" in an editor: the matches in menu order.
     EditorFound {
         id: u32,
@@ -379,6 +384,11 @@ impl App {
             MenuPurpose::Sessions { dir, ids } => {
                 if let Some(id) = ids.get(i) {
                     self.resume_session(dir, id.clone());
+                }
+            }
+            MenuPurpose::EditorCodepage { id, choices } => {
+                if let Some(Some(choice)) = choices.get(i) {
+                    self.editor_codepage_chosen(id, *choice);
                 }
             }
             MenuPurpose::EditorFound { id, found } => {

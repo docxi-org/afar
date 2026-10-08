@@ -3,7 +3,9 @@
 //!
 //! `PROBE_INPUT`: input steps separated by `||`, typed one per second starting
 //! at a third of the time; `\r` (backslash, r) stands for Enter and `^X` for
-//! Ctrl+X. `PROBE_CMD` is passed to the program as `AFAR_CMD`.
+//! Ctrl+X; `^@` is Ctrl+Space, sent as the key itself (win32-input-mode):
+//! a NUL byte reaches the program as Ctrl+Shift+2. `PROBE_CMD` is passed to
+//! the program as `AFAR_CMD`.
 
 use std::time::{Duration, Instant};
 
@@ -18,7 +20,13 @@ fn encode_step(step: &str) -> Vec<u8> {
                 chars.next();
                 bytes.push(b'\r');
             }
-            ('^', Some(n)) if n.is_ascii_uppercase() || n == '@' || n == '[' => {
+            ('^', Some('@')) => {
+                chars.next();
+                // Ctrl+Space pressed and released (VK_SPACE, scan code 57,
+                // LEFT_CTRL_PRESSED).
+                bytes.extend_from_slice(b"\x1b[32;57;32;1;8;1_\x1b[32;57;32;0;8;1_");
+            }
+            ('^', Some(n)) if n.is_ascii_uppercase() || n == '[' => {
                 chars.next();
                 bytes.push(n as u8 & 0x1f);
             }

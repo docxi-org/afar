@@ -159,3 +159,19 @@ fn lock_blocks_editing() {
     e.command(C::Delete);
     assert_eq!(e.text(), "abc");
 }
+
+#[test]
+fn bookmarks_keep_to_their_lines() {
+    let mut e = ed("one\ntwo\nthree\n");
+    e.cursor = Pos::new(2, 3);
+    e.command(C::SetBookmark(1));
+    e.cursor = Pos::new(0, 0);
+    e.insert_text("new\nlines\n");
+    e.command(C::FileEnd);
+    e.command(C::GotoBookmark(1));
+    assert_eq!(e.cursor, Pos::new(4, 3));
+    assert_eq!(e.lines()[4].text, "three");
+    // An empty bookmark does nothing.
+    e.command(C::GotoBookmark(7));
+    assert_eq!(e.cursor, Pos::new(4, 3));
+}

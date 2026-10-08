@@ -570,3 +570,7 @@ MEditAskReplaceWith = por
 MEditReplace = &Substituir
 MEditReplaceAll = &Todos
 MEditSkip = &Pular
+MUnsupportedCodePageSelectedCodepage = A página de código selecionada
+MUnsupportedCodePageDoesNotSupport = não suporta { $p0 }
+MUnsupportedCodePageCharacter = o caractere
+MUnsupportedCodePageByteSequence = a sequência de bytes

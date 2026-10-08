@@ -383,38 +383,7 @@ impl App {
     /// Shift+F8: Far's code page menu — detection, the system pages,
     /// Unicode, the rest of the installed ones.
     fn codepage_menu(&mut self, i: usize) {
-        let current = self.viewers[i].codepage();
-        let (ansi, oem) = (codepage::ansi(), codepage::oem());
-        let mut items = vec![Item::new(tr!("MEditOpenAutoDetect"))];
-        let mut choices = vec![None];
-        let mut group = |title: String, pages: Vec<u32>, items: &mut Vec<Item>| {
-            if pages.is_empty() {
-                return;
-            }
-            items.push(Item::titled_separator(title));
-            choices.push(None);
-            for cp in pages {
-                let name = codepage::long_name(cp);
-                items.push(Item::new(name).checked((cp == current).then_some('√')));
-                choices.push(Some(CpChoice::Page(cp)));
-            }
-        };
-        group(tr!("MGetCodePageSystem"), vec![ansi, oem], &mut items);
-        group(
-            tr!("MGetCodePageUnicode"),
-            vec![codepage::UTF8, codepage::UTF16LE, codepage::UTF16BE],
-            &mut items,
-        );
-        let other: Vec<u32> = codepage::installed()
-            .into_iter()
-            .filter(|cp| ![ansi, oem, codepage::UTF8].contains(cp))
-            .collect();
-        group(tr!("MGetCodePageOther"), other, &mut items);
-        choices[0] = Some(CpChoice::Detect);
-        let selected = choices
-            .iter()
-            .position(|c| matches!(c, Some(CpChoice::Page(cp)) if *cp == current))
-            .unwrap_or(0);
+        let (items, choices, selected) = codepage_menu_parts(self.viewers[i].codepage());
         let menu = Menu::new(tr!("MGetCodePageTitle"), items).select(selected);
         let id = self.viewers[i].id;
         self.overlays.push(Overlay::Menu {
@@ -896,4 +865,42 @@ fn tree_size(dir: &Path) -> u64 {
         }
     }
     total
+}
+
+/// The items of Far's code page menu (Shift+F8 in the viewer and the
+/// editor): detection, the system pages, Unicode, the other installed
+/// ones; what each item chooses; the item of `current`.
+pub(super) fn codepage_menu_parts(current: u32) -> (Vec<Item>, Vec<Option<CpChoice>>, usize) {
+    let (ansi, oem) = (codepage::ansi(), codepage::oem());
+    let mut items = vec![Item::new(tr!("MEditOpenAutoDetect"))];
+    let mut choices = vec![None];
+    let mut group = |title: String, pages: Vec<u32>, items: &mut Vec<Item>| {
+        if pages.is_empty() {
+            return;
+        }
+        items.push(Item::titled_separator(title));
+        choices.push(None);
+        for cp in pages {
+            let name = codepage::long_name(cp);
+            items.push(Item::new(name).checked((cp == current).then_some('√')));
+            choices.push(Some(CpChoice::Page(cp)));
+        }
+    };
+    group(tr!("MGetCodePageSystem"), vec![ansi, oem], &mut items);
+    group(
+        tr!("MGetCodePageUnicode"),
+        vec![codepage::UTF8, codepage::UTF16LE, codepage::UTF16BE],
+        &mut items,
+    );
+    let other: Vec<u32> = codepage::installed()
+        .into_iter()
+        .filter(|cp| ![ansi, oem, codepage::UTF8].contains(cp))
+        .collect();
+    group(tr!("MGetCodePageOther"), other, &mut items);
+    choices[0] = Some(CpChoice::Detect);
+    let selected = choices
+        .iter()
+        .position(|c| matches!(c, Some(CpChoice::Page(cp)) if *cp == current))
+        .unwrap_or(0);
+    (items, choices, selected)
 }

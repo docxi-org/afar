@@ -97,6 +97,18 @@ impl Codec {
         }
     }
 
+    /// Text in this code page with `?` for what it cannot hold (Far's
+    /// default character; a double-byte page gets the system's).
+    pub fn encode_lossy(&self, text: &str) -> Vec<u8> {
+        match &self.kind {
+            Kind::Single(table) => text
+                .chars()
+                .map(|c| table.iter().position(|t| *t == c).map_or(b'?', |b| b as u8))
+                .collect(),
+            _ => self.encode(text),
+        }
+    }
+
     /// Text in this code page (for searching bytes); characters it cannot
     /// encode are skipped.
     pub fn encode(&self, text: &str) -> Vec<u8> {
@@ -141,11 +153,24 @@ pub fn short_name(cp: u32) -> String {
 /// A name for menus: "1251 (ANSI - Cyrillic)" in Far; here the number and
 /// the system's name when it has one.
 pub fn long_name(cp: u32) -> String {
-    match cp {
-        UTF8 => "65001 (UTF-8)".into(),
-        UTF16LE => "1200 (UTF-16 Little endian)".into(),
-        UTF16BE => "1201 (UTF-16 Big endian)".into(),
-        _ => system::name(cp).unwrap_or_else(|| cp.to_string()),
+    let name = match cp {
+        UTF8 => "UTF-8".into(),
+        UTF16LE => "UTF-16 Little endian".into(),
+        UTF16BE => "UTF-16 Big endian".into(),
+        _ => system::name(cp).unwrap_or_default(),
+    };
+    // The system's names start with the number, not always padded alike
+    // ("1026 (IBM EBCDIC…)" but "1251  (ANSI…)"): one layout for all.
+    let number = cp.to_string();
+    let rest = name.strip_prefix(&number).unwrap_or(&name).trim_start();
+    let rest = rest
+        .strip_prefix('(')
+        .and_then(|r| r.strip_suffix(')'))
+        .unwrap_or(rest);
+    if rest.is_empty() {
+        number
+    } else {
+        format!("{number:<5} ({rest})")
     }
 }
 

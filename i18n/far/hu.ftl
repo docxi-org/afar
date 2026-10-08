@@ -698,3 +698,7 @@ MEditReplace = &Csere
 MEditReplaceAll = &Mindet
 MEditSkip = &Kihagy
 MEditCancel = Mé&gsem
+MUnsupportedCodePageSelectedCodepage = A kiválasztott kódlap
+MUnsupportedCodePageDoesNotSupport = nem támogatja { $p0 }
+MUnsupportedCodePageCharacter = az karaktert
+MUnsupportedCodePageByteSequence = a bájtsorozatot

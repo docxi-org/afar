@@ -167,6 +167,8 @@ pub struct EditorState {
     pub left: usize,
     #[serde(default)]
     pub line_numbers: bool,
+    #[serde(default)]
+    pub bookmarks: [Option<crate::editor::Bookmark>; 10],
 }
 
 #[derive(Serialize, Deserialize, Debug)]
