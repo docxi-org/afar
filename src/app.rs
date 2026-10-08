@@ -2833,10 +2833,21 @@ impl App {
         } else {
             arrangement.screen_area
         };
+        // A full-screen view mode (Far's PVS_FULLSCREEN): the active panel
+        // takes both panels' place.
+        let mut panels = [rect(WinId::Panel(0)), rect(WinId::Panel(1))];
+        let a = self.active;
+        if self.panels[a].view.fullscreen() && panels[a].width > 0 {
+            let other = panels[1 - a];
+            if other.width > 0 && other.y == panels[a].y && other.height == panels[a].height {
+                panels[a] = panels[a].union(other);
+                panels[1 - a] = Rect::default();
+            }
+        }
         Layout {
             user,
             top: arrangement.screen_area,
-            panels: [rect(WinId::Panel(0)), rect(WinId::Panel(1))],
+            panels,
             agent_frame,
             agent,
             cmdline,

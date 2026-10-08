@@ -860,3 +860,11 @@ MNewOpen
 MReload
 MEditorSaveNotRecommended
 MEditDataLostWarn
+MColumnWrited
+MColumnCreated
+MColumnAccessed
+MColumnAttr
+MColumnDescription
+MColumnOwner
+MColumnAlocatedSize
+MColumnMumLinks

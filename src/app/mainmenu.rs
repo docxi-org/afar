@@ -56,12 +56,36 @@ fn panel_menu(side: usize) -> Vec<Entry> {
             Some("Ctrl+4"),
             Some(OnSide(side, View(ViewMode::Wide))),
         ),
-        ("MMenuDetailedView", Some("Ctrl+5"), None),
-        ("MMenuDizView", Some("Ctrl+6"), None),
-        ("MMenuLongDizView", Some("Ctrl+7"), None),
-        ("MMenuOwnersView", Some("Ctrl+8"), None),
-        ("MMenuLinksView", Some("Ctrl+9"), None),
-        ("MMenuAlternativeView", Some("Ctrl+0"), None),
+        (
+            "MMenuDetailedView",
+            Some("Ctrl+5"),
+            Some(OnSide(side, View(ViewMode::Detailed))),
+        ),
+        (
+            "MMenuDizView",
+            Some("Ctrl+6"),
+            Some(OnSide(side, View(ViewMode::Descriptions))),
+        ),
+        (
+            "MMenuLongDizView",
+            Some("Ctrl+7"),
+            Some(OnSide(side, View(ViewMode::LongDescriptions))),
+        ),
+        (
+            "MMenuOwnersView",
+            Some("Ctrl+8"),
+            Some(OnSide(side, View(ViewMode::Owners))),
+        ),
+        (
+            "MMenuLinksView",
+            Some("Ctrl+9"),
+            Some(OnSide(side, View(ViewMode::Links))),
+        ),
+        (
+            "MMenuAlternativeView",
+            Some("Ctrl+0"),
+            Some(OnSide(side, View(ViewMode::AltFull))),
+        ),
         SEP,
         // Shown on this side: the command shows it on the other one.
         (
@@ -255,6 +279,12 @@ impl App {
             ViewMode::Medium => 1,
             ViewMode::Full => 2,
             ViewMode::Wide => 3,
+            ViewMode::Detailed => 4,
+            ViewMode::Descriptions => 5,
+            ViewMode::LongDescriptions => 6,
+            ViewMode::Owners => 7,
+            ViewMode::Links => 8,
+            ViewMode::AltFull => 9,
         };
         let titles = vec![
             title(

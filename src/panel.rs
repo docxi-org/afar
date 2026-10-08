@@ -35,6 +35,18 @@ pub struct Entry {
     pub dir_size: Option<u64>,
     pub hidden: bool,
     pub system: bool,
+    /// Windows' file attributes (`FILE_ATTRIBUTE_*`).
+    pub attrs: u32,
+    /// What only some view modes show, read when first shown.
+    pub extra: Option<Extra>,
+}
+
+/// A file's details read only for the view modes that show them.
+#[derive(Clone, Debug, Default)]
+pub struct Extra {
+    pub allocated: Option<u64>,
+    pub links: Option<u32>,
+    pub owner: Option<String>,
 }
 
 impl Entry {
@@ -56,7 +68,7 @@ pub enum SelectMode {
     InvertFiles,
 }
 
-/// Far's view modes (Ctrl+1 … Ctrl+4 so far).
+/// Far's view modes (Ctrl+0 … Ctrl+9).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, Default)]
 pub enum ViewMode {
     Brief,
@@ -64,35 +76,127 @@ pub enum ViewMode {
     Medium,
     Full,
     Wide,
+    Detailed,
+    Descriptions,
+    LongDescriptions,
+    Owners,
+    Links,
+    AltFull,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Col {
     Name,
     Size,
+    /// The size with its thousands apart (the alternative full mode).
+    SizeGrouped,
+    Allocated,
     Date,
     Time,
+    /// Date and time of the last write, creation, last access.
+    Written,
+    Created,
+    Accessed,
+    Attrs,
+    Description,
+    Owner,
+    Links,
+}
+
+/// A column's width: fixed, a share of the panel, or the rest.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum W {
+    Rest,
+    Fixed(u16),
+    Percent(u16),
 }
 
 impl ViewMode {
-    /// Columns of one stripe (width 0 = shares the rest), number of
-    /// stripes, extensions aligned (config.cpp ResetViewModes).
-    fn columns(self) -> (&'static [(Col, u16)], usize, bool) {
+    /// Columns of one stripe, number of stripes, extensions aligned
+    /// (config.cpp ResetViewModes).
+    fn columns(self) -> (&'static [(Col, W)], usize, bool) {
+        use W::*;
         match self {
-            ViewMode::Brief => (&[(Col::Name, 0)], 3, true),
-            ViewMode::Medium => (&[(Col::Name, 0)], 2, false),
+            ViewMode::Brief => (&[(Col::Name, Rest)], 3, true),
+            ViewMode::Medium => (&[(Col::Name, Rest)], 2, false),
             ViewMode::Full => (
                 &[
-                    (Col::Name, 0),
-                    (Col::Size, 6),
-                    (Col::Date, 8),
-                    (Col::Time, 5),
+                    (Col::Name, Rest),
+                    (Col::Size, Fixed(6)),
+                    (Col::Date, Fixed(8)),
+                    (Col::Time, Fixed(5)),
                 ],
                 1,
                 true,
             ),
-            ViewMode::Wide => (&[(Col::Name, 0), (Col::Size, 6)], 1, false),
+            ViewMode::Wide => (&[(Col::Name, Rest), (Col::Size, Fixed(6))], 1, false),
+            ViewMode::Detailed => (
+                &[
+                    (Col::Name, Rest),
+                    (Col::Size, Fixed(6)),
+                    (Col::Allocated, Fixed(6)),
+                    (Col::Written, Fixed(14)),
+                    (Col::Created, Fixed(14)),
+                    (Col::Accessed, Fixed(14)),
+                    (Col::Attrs, Fixed(6)),
+                ],
+                1,
+                true,
+            ),
+            ViewMode::Descriptions => (
+                &[(Col::Name, Percent(40)), (Col::Description, Rest)],
+                1,
+                true,
+            ),
+            ViewMode::LongDescriptions => (
+                &[
+                    (Col::Name, Rest),
+                    (Col::Size, Fixed(6)),
+                    (Col::Description, Percent(70)),
+                ],
+                1,
+                true,
+            ),
+            ViewMode::Owners => (
+                &[
+                    (Col::Name, Rest),
+                    (Col::Size, Fixed(6)),
+                    (Col::Owner, Fixed(15)),
+                ],
+                1,
+                true,
+            ),
+            ViewMode::Links => (
+                &[
+                    (Col::Name, Rest),
+                    (Col::Size, Fixed(6)),
+                    (Col::Links, Fixed(3)),
+                ],
+                1,
+                true,
+            ),
+            ViewMode::AltFull => (
+                &[
+                    (Col::Name, Rest),
+                    (Col::SizeGrouped, Fixed(10)),
+                    (Col::Date, Fixed(8)),
+                ],
+                1,
+                true,
+            ),
         }
+    }
+
+    /// The panel takes the whole width (Far's PVS_FULLSCREEN).
+    pub fn fullscreen(self) -> bool {
+        matches!(
+            self,
+            ViewMode::Detailed | ViewMode::Descriptions | ViewMode::LongDescriptions
+        )
+    }
+
+    fn shows(self, col: Col) -> bool {
+        self.columns().0.iter().any(|(c, _)| *c == col)
     }
 
     pub fn from_key(n: u8) -> Option<Self> {
@@ -101,6 +205,12 @@ impl ViewMode {
             2 => Some(ViewMode::Medium),
             3 => Some(ViewMode::Full),
             4 => Some(ViewMode::Wide),
+            5 => Some(ViewMode::Detailed),
+            6 => Some(ViewMode::Descriptions),
+            7 => Some(ViewMode::LongDescriptions),
+            8 => Some(ViewMode::Owners),
+            9 => Some(ViewMode::Links),
+            0 => Some(ViewMode::AltFull),
             _ => None,
         }
     }
@@ -137,6 +247,9 @@ pub struct FilePanel {
     list_top: u16,
     rows: usize,
     stripes: usize,
+    /// The folder's descriptions (`descript.ion`), read when a mode shows
+    /// them: lowercase name → text.
+    descriptions: Option<std::collections::HashMap<String, String>>,
 }
 
 impl FilePanel {
@@ -156,6 +269,7 @@ impl FilePanel {
             list_top: 0,
             rows: 1,
             stripes: 1,
+            descriptions: None,
         };
         panel.reload(None);
         panel
@@ -199,7 +313,8 @@ impl FilePanel {
                     } else {
                         own.clone()
                     };
-                    let (hidden, system) = hidden_system(&name, own.as_ref());
+                    let attrs = attributes(&name, own.as_ref());
+                    let (hidden, system) = (attrs & 0x2 != 0, attrs & 0x4 != 0);
                     // Found files are listed whatever they are.
                     if (hidden || system) && !show_hidden() && self.list.is_none() {
                         continue;
@@ -207,6 +322,8 @@ impl FilePanel {
                     entries.push(Entry {
                         hidden,
                         system,
+                        attrs,
+                        extra: None,
                         link,
                         is_dir: meta.as_ref().is_some_and(|m| m.is_dir()),
                         size: meta.as_ref().map_or(0, |m| m.len()),
@@ -240,9 +357,12 @@ impl FilePanel {
                     dir_size: None,
                     hidden: false,
                     system: false,
+                    attrs: 0,
+                    extra: None,
                 },
             );
         }
+        self.descriptions = None;
         let sort = self.sort;
         entries.sort_by(|a, b| sort.compare(a, b));
         self.entries = entries;
@@ -492,12 +612,24 @@ impl FilePanel {
     /// between columns, the rest shared by the auto columns).
     fn layout(&self, x: u16, inner: u16) -> Vec<Placed> {
         let (group, stripes, _) = self.view.columns();
-        let all: Vec<(Col, u16, usize, bool)> = (0..stripes)
+        let all: Vec<(Col, W, usize, bool)> = (0..stripes)
             .flat_map(|s| {
                 group
                     .iter()
                     .enumerate()
                     .map(move |(i, (c, w))| (*c, *w, s, i + 1 == group.len()))
+            })
+            .collect();
+        // A share of the panel is fixed by its width.
+        let all: Vec<(Col, u16, usize, bool)> = all
+            .into_iter()
+            .map(|(c, w, s, end)| {
+                let w = match w {
+                    W::Rest => 0,
+                    W::Fixed(n) => n,
+                    W::Percent(p) => (u32::from(inner) * u32::from(p) / 100).max(1) as u16,
+                };
+                (c, w, s, end)
             })
             .collect();
         let fixed: u16 = all.iter().map(|c| c.1).sum();
@@ -528,6 +660,54 @@ impl FilePanel {
             pos += width + 1;
         }
         out
+    }
+
+    /// Reads what the mode's columns need for the `page` items from the
+    /// top (once per item): descriptions, sizes on the disk, links, owners.
+    fn read_details(&mut self, page: usize) {
+        let mode = self.view;
+        if (mode.shows(Col::Description)) && self.descriptions.is_none() {
+            self.descriptions = Some(if self.list.is_some() {
+                Default::default()
+            } else {
+                read_descriptions(&self.path)
+            });
+        }
+        let disk = mode.shows(Col::Allocated) || mode.shows(Col::Links);
+        let owner = mode.shows(Col::Owner);
+        if !disk && !owner {
+            return;
+        }
+        let end = (self.top + page).min(self.entries.len());
+        for i in self.top..end {
+            if self.entries[i].extra.is_some() || self.entries[i].is_up() {
+                continue;
+            }
+            let path = self.entry_path(i);
+            let mut x = Extra::default();
+            #[cfg(windows)]
+            {
+                if disk && let Some((alloc, links)) = crate::winfile::allocation_and_links(&path) {
+                    x.allocated = Some(alloc);
+                    x.links = Some(links);
+                }
+                if owner {
+                    x.owner = crate::winfile::owner(&path);
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = path;
+            self.entries[i].extra = Some(x);
+        }
+    }
+
+    /// The full path of item `i` (found files keep theirs).
+    fn entry_path(&self, i: usize) -> PathBuf {
+        let name = &self.entries[i].name;
+        match &self.list {
+            Some(_) => PathBuf::from(name),
+            None => self.path.join(name),
+        }
     }
 
     pub fn draw(&mut self, area: Rect, buf: &mut Buffer, active: bool) {
@@ -576,9 +756,17 @@ impl FilePanel {
         for c in &columns {
             let title = match c.col {
                 Col::Name => tr!("MColumnName"),
-                Col::Size => tr!("MColumnSize"),
+                Col::Size | Col::SizeGrouped => tr!("MColumnSize"),
+                Col::Allocated => tr!("MColumnAlocatedSize"),
                 Col::Date => tr!("MColumnDate"),
                 Col::Time => tr!("MColumnTime"),
+                Col::Written => tr!("MColumnWrited"),
+                Col::Created => tr!("MColumnCreated"),
+                Col::Accessed => tr!("MColumnAccessed"),
+                Col::Attrs => tr!("MColumnAttr"),
+                Col::Description => tr!("MColumnDescription"),
+                Col::Owner => tr!("MColumnOwner"),
+                Col::Links => tr!("MColumnMumLinks"),
             };
             put_centered(buf, c.x, y0 + 1, c.width, &title, theme::PANEL_COLUMN_TITLE);
         }
@@ -608,6 +796,7 @@ impl FilePanel {
             self.top = self.cursor + 1 - page;
         }
 
+        self.read_details(page);
         for r in 0..rows {
             let y = list_top + r as u16;
             for s in 0..stripes {
@@ -633,8 +822,49 @@ impl FilePanel {
                             continue;
                         }
                         Col::Size => size_cell(e, c.width),
+                        Col::SizeGrouped if !e.is_dir && !e.link => group_thousands(e.size),
+                        Col::SizeGrouped => size_cell(e, c.width),
+                        Col::Allocated => match e.extra.as_ref().and_then(|x| x.allocated) {
+                            Some(n) if !e.is_dir => size_text(n, c.width),
+                            _ => String::new(),
+                        },
                         Col::Date => e.modified.map(format_time).unwrap_or_default().0,
                         Col::Time => e.modified.map(format_time).unwrap_or_default().1,
+                        Col::Written | Col::Created | Col::Accessed => {
+                            let t = match c.col {
+                                Col::Written => e.modified,
+                                Col::Created => e.created,
+                                _ => e.accessed,
+                            };
+                            t.map(format_time)
+                                .map(|(d, t)| format!("{d} {t}"))
+                                .unwrap_or_default()
+                        }
+                        Col::Links => e
+                            .extra
+                            .as_ref()
+                            .and_then(|x| x.links)
+                            .map(|n| n.to_string())
+                            .unwrap_or_default(),
+                        // Text columns: from the left, cut at the width.
+                        Col::Description | Col::Owner | Col::Attrs => {
+                            let text = if c.col == Col::Attrs {
+                                Some(attr_letters(e.attrs))
+                            } else if c.col == Col::Owner {
+                                e.extra.as_ref().and_then(|x| x.owner.clone())
+                            } else {
+                                self.descriptions
+                                    .as_ref()
+                                    .and_then(|d| d.get(&name_key(&e.name)).cloned())
+                            };
+                            let text: String = text
+                                .unwrap_or_default()
+                                .chars()
+                                .take(usize::from(c.width))
+                                .collect();
+                            buf.set_stringn(c.x, y, &text, usize::from(c.width), style);
+                            continue;
+                        }
                     };
                     put_right(buf, c.x, y, c.width, &text, style);
                     // Inside a stripe the cursor bar covers the separators
@@ -805,7 +1035,13 @@ fn size_cell(e: &Entry, width: u16) -> String {
             format!("{label:^field$}")
         };
     }
-    let size = e.dir_size.unwrap_or(e.size);
+    size_text(e.dir_size.unwrap_or(e.size), width)
+}
+
+/// A size in `width` cells: the number, or in larger units when it does
+/// not fit.
+fn size_text(size: u64, width: u16) -> String {
+    let w = usize::from(width);
     let plain = size.to_string();
     if plain.len() <= w {
         return plain;
@@ -910,20 +1146,96 @@ fn show_hidden() -> bool {
     SHOW_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Hidden and system attributes (on Unix: hidden = dot file).
-fn hidden_system(name: &str, meta: Option<&std::fs::Metadata>) -> (bool, bool) {
+/// Windows' attributes of a file (on Unix: hidden = a dot file).
+fn attributes(name: &str, meta: Option<&std::fs::Metadata>) -> u32 {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         let _ = name;
-        let attrs = meta.map_or(0, |m| m.file_attributes());
-        (attrs & 0x2 != 0, attrs & 0x4 != 0)
+        meta.map_or(0, |m| m.file_attributes())
     }
     #[cfg(not(windows))]
     {
         let _ = meta;
-        (name.starts_with('.') && name != "..", false)
+        if name.starts_with('.') && name != ".." {
+            0x2
+        } else {
+            0
+        }
     }
+}
+
+/// Far's attribute letters (`attributes` column): read-only, hidden,
+/// system, archive, compressed or encrypted, sparse, a link.
+fn attr_letters(attrs: u32) -> String {
+    const LETTERS: [(u32, char); 8] = [
+        (0x1, 'R'),
+        (0x2, 'H'),
+        (0x4, 'S'),
+        (0x20, 'A'),
+        (0x800, 'C'),
+        (0x4000, 'E'),
+        (0x200, '$'),
+        (0x400, 'L'),
+    ];
+    LETTERS
+        .iter()
+        .filter(|(bit, _)| attrs & bit != 0)
+        .map(|(_, c)| *c)
+        .collect()
+}
+
+/// The descriptions of a folder's files (Far's `descript.ion`): a name
+/// (quoted when it has spaces), then its text; lines starting with a blank
+/// go on the description above. UTF-8 when the file is, else the OEM code
+/// page.
+fn read_descriptions(dir: &Path) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(bytes) = std::fs::read(dir.join("descript.ion")) else {
+        return out;
+    };
+    let text = match std::str::from_utf8(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)) {
+        Ok(t) => t.to_string(),
+        Err(_) => crate::viewer::codepage::Codec::new(crate::viewer::codepage::oem())
+            .map(|c| {
+                let mut s = String::new();
+                let mut i = 0;
+                while i < bytes.len() {
+                    let (ch, n) = c.decode(&bytes[i..]);
+                    s.push(ch);
+                    i += n.max(1);
+                }
+                s
+            })
+            .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned()),
+    };
+    let mut last: Option<String> = None;
+    for line in text.lines() {
+        if line.starts_with([' ', '\t']) {
+            if let Some(name) = &last
+                && let Some(d) = out.get_mut(name)
+            {
+                let d: &mut String = d;
+                d.push(' ');
+                d.push_str(line.trim());
+            }
+            continue;
+        }
+        let (name, rest) = match line.strip_prefix('"') {
+            Some(q) => match q.find('"') {
+                Some(end) => (&q[..end], &q[end + 1..]),
+                None => continue,
+            },
+            None => match line.find([' ', '\t']) {
+                Some(i) => (&line[..i], &line[i..]),
+                None => (line, ""),
+            },
+        };
+        let key = name_key(name);
+        out.insert(key.clone(), rest.trim().to_string());
+        last = Some(key);
+    }
+    out
 }
 
 /// `\\?\C:\x` → `C:\x` (what `canonicalize` returns on Windows).
@@ -1019,7 +1331,44 @@ mod tests {
             dir_size: None,
             hidden: false,
             system: false,
+            attrs: 0,
+            extra: None,
         }
+    }
+
+    #[test]
+    fn far_mode_widths_and_descriptions() {
+        // A 100-wide panel (inner 98): descriptions take what the name
+        // (40%) leaves; the detailed mode keeps the name the rest.
+        let mut p = FilePanel::new(std::env::temp_dir());
+        let widths = |p: &FilePanel| p.layout(1, 98).iter().map(|c| c.width).collect::<Vec<_>>();
+        p.view = ViewMode::Descriptions;
+        assert_eq!(widths(&p), vec![39, 58]);
+        p.view = ViewMode::Detailed;
+        assert_eq!(widths(&p), vec![32, 6, 6, 14, 14, 14, 6]);
+        p.view = ViewMode::AltFull;
+        assert_eq!(widths(&p), vec![78, 10, 8]);
+        assert_eq!(attr_letters(0x1 | 0x20 | 0x800), "RAC");
+        let dir = std::env::temp_dir().join(format!("afar-diz-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("descript.ion"),
+            "a.txt first file
+\"b c.txt\" with spaces
+  and more
+",
+        )
+        .unwrap();
+        let d = read_descriptions(&dir);
+        assert_eq!(
+            d.get(&name_key("A.TXT")).map(String::as_str),
+            Some("first file")
+        );
+        assert_eq!(
+            d.get(&name_key("b c.txt")).map(String::as_str),
+            Some("with spaces and more")
+        );
+        std::fs::remove_file(dir.join("descript.ion")).unwrap();
     }
 
     #[test]

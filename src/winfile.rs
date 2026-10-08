@@ -55,6 +55,24 @@ pub fn times(path: &Path) -> io::Result<[i64; 4]> {
     ])
 }
 
+/// The space a file takes on the disk and its hard links (Far's
+/// "Allocated" and "NmL" columns).
+pub fn allocation_and_links(path: &Path) -> Option<(u64, u32)> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo};
+    let f = open(path, FILE_READ_ATTRIBUTES).ok()?;
+    // SAFETY: plain data out-structure of the size given.
+    let mut info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            f.as_raw_handle() as _,
+            FileStandardInfo,
+            (&mut info as *mut FILE_STANDARD_INFO).cast(),
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    (ok != 0).then(|| (info.AllocationSize.max(0) as u64, info.NumberOfLinks))
+}
+
 /// Sets the times given (write, creation, access, change); the others stay.
 pub fn set_times(path: &Path, times: [Option<i64>; 4]) -> io::Result<()> {
     if times.iter().all(Option::is_none) {
