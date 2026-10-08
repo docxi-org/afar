@@ -22,6 +22,9 @@ delay_ms = 600                # milliseconds before a hint shows
 files = true                  # files in the panels: name, size, times, attributes, the agent's changes
 keybar = true                 # the key bar: what a key does
 agent = true                  # the agent's frame: its session and state
+panels = true                 # the panels' titles: the sort, what a column shows
+status = true                 # the status lines of the viewer and the editor
+marks = true                  # the agent's marks and proposals in the viewer and the editor
 
 [confirm]
 # Ask before deleting a folder that is not empty.

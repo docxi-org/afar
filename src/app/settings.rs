@@ -711,6 +711,9 @@ impl App {
             (tr!("hints-files"), h.files),
             (tr!("hints-keybar"), h.keybar),
             (tr!("hints-agent"), h.agent),
+            (tr!("hints-panels"), h.panels),
+            (tr!("hints-status"), h.status),
+            (tr!("hints-marks"), h.marks),
         ];
         let delay = tr!("hints-delay");
         let content = checks
@@ -745,6 +748,9 @@ impl App {
         h.files = dialog.checked(1);
         h.keybar = dialog.checked(2);
         h.agent = dialog.checked(3);
+        h.panels = dialog.checked(4);
+        h.status = dialog.checked(5);
+        h.marks = dialog.checked(6);
         self.hover = None;
         self.save_config();
     }

@@ -1776,6 +1776,32 @@ impl Editor {
 
     // ---------------------------------------------------------------- mouse
 
+    /// What is at a screen cell for a hint: the agent's proposal shown
+    /// there (old or new lines), else its mark on that line.
+    pub fn agent_thing_at(&self, x: u16, y: u16) -> Option<AgentThing> {
+        let a = self.area;
+        if !a.contains(Position::new(x, y)) {
+            return None;
+        }
+        if let Some(ScreenRow::Proposed(..)) = self.shown_rows.get(usize::from(y - a.y)) {
+            return Some(AgentThing::Proposal);
+        }
+        let line = self.pos_at(x, y)?.line;
+        if self
+            .proposals
+            .iter()
+            .any(|p| line >= p.start && line < p.old_end())
+        {
+            return Some(AgentThing::Proposal);
+        }
+        let l = line as u64 + 1;
+        self.marks
+            .iter()
+            .rev()
+            .find(|m| l >= m.from && l <= m.to)
+            .map(|m| AgentThing::Mark(m.clone()))
+    }
+
     /// The text position at a screen cell of the last frame.
     pub fn pos_at(&self, x: u16, y: u16) -> Option<Pos> {
         let a = self.area;
@@ -2107,6 +2133,12 @@ impl Editor {
             area.y + row as u16,
         ))
     }
+}
+
+/// The agent's proposal or mark under the mouse (hints).
+pub enum AgentThing {
+    Proposal,
+    Mark(crate::viewer::Mark),
 }
 
 /// The parse state is kept before every this many lines.

@@ -110,6 +110,47 @@ impl App {
         if h.agent && y == l.agent_frame.y && l.agent_frame.contains(pos) {
             return Some(self.agent_hint());
         }
+        // The status line of a viewer or an editor (its top row).
+        if h.status && y == l.top.y && l.top.contains(pos) {
+            let idx = usize::from(x - l.top.x);
+            if let Some(i) = self.shown_editor() {
+                if self.editor_status {
+                    // With room for the clock, as drawn.
+                    let clock = l.top.y == 0 && l.top.right() == l.keybar.right();
+                    let text = self.editor_status_line(i, l.top.width, clock);
+                    return self.editor_status_hint(i, &text, idx);
+                }
+            } else if let Some(i) = self.shown_viewer()
+                && self.viewers[i].status_line
+            {
+                let text = self.viewers[i].last_status.clone();
+                return self.viewer_status_hint(i, &text, idx);
+            }
+        }
+        // The agent's marks and proposals in a viewer or an editor.
+        if h.marks {
+            if let Some(i) = self.shown_editor() {
+                match self.editors[i].agent_thing_at(x, y) {
+                    Some(crate::editor::AgentThing::Proposal) => {
+                        return Some(Hint::new(tr!("tip-proposal")).line(tr!("tip-proposal-keys")));
+                    }
+                    Some(crate::editor::AgentThing::Mark(m)) => return Some(mark_hint(&m)),
+                    None => {}
+                }
+            } else if let Some(i) = self.shown_viewer()
+                && let Some(m) = self.viewers[i].mark_at(x, y)
+            {
+                return Some(mark_hint(&m));
+            }
+        }
+        if h.panels
+            && self.shown_viewer().is_none()
+            && self.shown_editor().is_none()
+            && let Some(side) = (0..2).find(|&s| l.panels[s].contains(pos))
+            && let Some(t) = self.panels[side].title_at(x, y)
+        {
+            return Some(self.title_hint(side, t));
+        }
         if h.files
             && self.shown_viewer().is_none()
             && self.shown_editor().is_none()
@@ -193,8 +234,14 @@ impl App {
         let Some(cmd) = self.keymap.get(ctx, &chord) else {
             return Some(Hint::new(key).line(tr!("tip-key-free")));
         };
-        let title = match super::mainmenu::menu_label(cmd) {
-            Some(label) => format!("{key} — {}", crate::i18n::plain(&tr!(label))),
+        // The F9 menu's text, else afar's own words for the command.
+        let id = format!("cmd-{}", cmd.def().name.replace(['.', '_'], "-"));
+        let what = match super::mainmenu::menu_label(cmd) {
+            Some(label) => Some(crate::i18n::plain(&tr!(label))),
+            None => Some(tr!(&id)).filter(|t| *t != id),
+        };
+        let title = match what {
+            Some(what) => format!("{key} — {what}"),
             None => key,
         };
         let keys: Vec<String> = self
@@ -208,6 +255,136 @@ impl App {
                 .line(tr!("tip-keys", keys = keys.join(", ")))
                 .line(tr!("tip-command", name = cmd.def().name)),
         )
+    }
+
+    /// The titles' row of a panel: the sort, a column.
+    fn title_hint(&self, side: usize, t: crate::panel::TitleAt) -> Hint {
+        use crate::panel::TitleAt;
+        let sort = &self.panels[side].sort;
+        match t {
+            TitleAt::Sort | TitleAt::SelectedFirst => {
+                let mode = crate::i18n::plain(&tr!(sort.mode.info().label));
+                let mut hint = Hint::new(tr!("tip-sort", mode = mode));
+                if sort.reverse {
+                    hint = hint.line(tr!("tip-sort-reverse"));
+                }
+                if sort.selected_first {
+                    hint = hint.line(tr!("tip-sort-selected-first"));
+                }
+                hint.line(tr!("tip-sort-keys"))
+            }
+            TitleAt::Column(title, tip) => {
+                Hint::new(crate::i18n::plain(&tr!(title))).line(tr!(tip))
+            }
+        }
+    }
+
+    /// A field of the viewer's status line (`name│n/N│t│cp│size│Col c│p%`).
+    fn viewer_status_hint(&self, i: usize, text: &str, idx: usize) -> Option<Hint> {
+        let v = &self.viewers[i];
+        let (mut fields, at) = fields_at(text, idx)?;
+        // The clock's place after the last bar.
+        if fields.last().is_some_and(|f| f.trim().is_empty()) {
+            fields.pop();
+        }
+        let from_end = fields.len().checked_sub(at + 1)?;
+        let hint = match from_end {
+            0 => {
+                let pct = fields[at].trim().to_string();
+                Hint::new(tr!("tip-view-position", pct = pct))
+                    .line(tr!(
+                        "tip-view-offset",
+                        offset = crate::panel::group_thousands(v.top)
+                    ))
+                    .line(tr!("tip-view-goto"))
+            }
+            1 => Hint::new(tr!("tip-view-column", col = v.left + 1)).line(tr!("tip-view-shift")),
+            2 => Hint::new(tr!(
+                "tip-size",
+                size = crate::panel::group_thousands(v.size()),
+                n = v.size() as i64
+            )),
+            3 => Hint::new(crate::viewer::codepage::long_name(v.codepage()))
+                .line(tr!("tip-codepage-keys")),
+            4 => {
+                let mode = match v.mode_letter() {
+                    'h' => tr!("tip-view-hex"),
+                    'd' => tr!("tip-view-dump"),
+                    _ => tr!("tip-view-text"),
+                };
+                Hint::new(mode).line(tr!("tip-view-mode-keys"))
+            }
+            _ if at == 0 => Hint::new(v.path().display().to_string()),
+            _ => {
+                let (k, total) = v.found_numbers()?;
+                let title = match k {
+                    Some(k) => tr!("tip-found", k = k, total = total),
+                    None => tr!("tip-found-none", total = total),
+                };
+                Hint::new(title).line(tr!("tip-found-keys"))
+            }
+        };
+        Some(hint)
+    }
+
+    /// A field of the editor's status line
+    /// (`name│*-│cp│Стр n/N│Кол c│С k│RHS│code`).
+    fn editor_status_hint(&self, i: usize, text: &str, idx: usize) -> Option<Hint> {
+        let e = &self.editors[i];
+        let (fields, at) = fields_at(text, idx)?;
+        let attrs = fields.len() == 8;
+        let from_end = fields.len().checked_sub(at + 1)?;
+        let hint = match (from_end, attrs) {
+            (0, _) => {
+                let c = e
+                    .lines()
+                    .get(e.cursor.line)
+                    .and_then(|l| l.text.chars().nth(e.cursor.col))?;
+                Hint::new(tr!("tip-edit-char", code = format!("U+{:04X}", c as u32)))
+                    .line(tr!("tip-edit-char-dec", dec = c as u32))
+            }
+            (1, true) => {
+                let a = std::fs::metadata(e.path()).ok().map_or(0, |m| {
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::fs::MetadataExt as _;
+                        m.file_attributes()
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        u32::from(m.permissions().readonly())
+                    }
+                });
+                Hint::new(tr!(
+                    "tip-attrs",
+                    list = super::attributes::attribute_names(a).join(", ")
+                ))
+            }
+            (1, false) | (2, true) => Hint::new(tr!("tip-edit-char-col", col = e.cursor.col + 1)),
+            (2, false) | (3, true) => Hint::new(tr!("tip-edit-col")).line(tr!("tip-edit-col-why")),
+            (3, false) | (4, true) => Hint::new(tr!(
+                "tip-edit-line",
+                line = e.cursor.line + 1,
+                total = e.line_count()
+            ))
+            .line(tr!("tip-edit-goto")),
+            (4, false) | (5, true) => {
+                Hint::new(crate::viewer::codepage::long_name(e.cp)).line(tr!("tip-codepage-keys"))
+            }
+            (5, false) | (6, true) => {
+                let mut hint = Hint::new(if e.modified() {
+                    tr!("tip-edit-modified")
+                } else {
+                    tr!("tip-edit-unmodified")
+                });
+                if e.locked {
+                    hint = hint.line(tr!("tip-edit-locked"));
+                }
+                hint
+            }
+            _ => Hint::new(e.path().display().to_string()),
+        };
+        Some(hint)
     }
 
     /// The agent's frame: its session and state.
@@ -303,6 +480,48 @@ impl App {
             buf.set_stringn(bx + 1, row, text, usize::from(w - 2), *style);
         }
     }
+}
+
+/// A mark in a viewer or an editor: whose, what kind, its whole label.
+fn mark_hint(m: &crate::viewer::Mark) -> Hint {
+    use crate::viewer::MarkKind;
+    let kind = match m.kind {
+        MarkKind::Info => tr!("tip-mark-info"),
+        MarkKind::Warning => tr!("tip-mark-warning"),
+        MarkKind::Error => tr!("tip-mark-error"),
+        MarkKind::Changed => tr!("tip-mark-changed"),
+    };
+    let title = if m.agent {
+        format!("AI · {kind}")
+    } else {
+        kind
+    };
+    let lines = if m.from == m.to {
+        tr!("tip-mark-line", line = m.from)
+    } else {
+        tr!("tip-mark-lines", from = m.from, to = m.to)
+    };
+    let mut hint = Hint::new(title);
+    if !m.label.is_empty() {
+        hint = hint.line(m.label.clone());
+    }
+    hint = hint.line(lines);
+    if m.stale {
+        hint = hint.line(tr!("tip-mark-stale"));
+    }
+    hint.line(tr!("tip-mark-keys"))
+}
+
+/// The `│`-separated fields of a status line and the one holding
+/// character `idx`.
+fn fields_at(text: &str, idx: usize) -> Option<(Vec<String>, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    if idx >= chars.len() || chars[idx] == '│' {
+        return None;
+    }
+    let at = chars[..idx].iter().filter(|c| **c == '│').count();
+    let fields = text.split('│').map(str::to_string).collect();
+    Some((fields, at))
 }
 
 /// `text` cut into lines of at most `width` characters, at spaces when it

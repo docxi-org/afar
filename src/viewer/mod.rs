@@ -248,6 +248,8 @@ pub struct Viewer {
     /// Its matches in the file: how many, and where the first ones start
     /// (the counter "3/17").
     found_count: Option<(usize, Vec<u64>)>,
+    /// The status line as last drawn (hints find its fields).
+    pub last_status: String,
 }
 
 impl Viewer {
@@ -342,6 +344,7 @@ impl Viewer {
             edges: (0, Vec::new(), Vec::new()),
             search: None,
             found_count: None,
+            last_status: String::new(),
         };
         v.edges = v.read_edges();
         v.snapshot = v.read_snapshot();
@@ -895,6 +898,20 @@ impl Viewer {
         }
     }
 
+    pub fn mode_letter(&self) -> char {
+        self.mode.letter()
+    }
+
+    /// The found text's number among the matches and how many there are.
+    pub fn found_numbers(&self) -> Option<(Option<usize>, usize)> {
+        let (total, starts) = self.found_count.as_ref()?;
+        let at = self
+            .selection
+            .and_then(|(s, _)| starts.binary_search(&s).ok())
+            .map(|k| k + 1);
+        Some((at, *total))
+    }
+
     /// "3/17": the found text among the matches.
     fn found_counter(&self) -> Option<String> {
         let (total, starts) = self.found_count.as_ref()?;
@@ -1190,6 +1207,23 @@ impl Viewer {
     fn scrollbar_at(&self) -> Option<(u16, u16, u16)> {
         (self.scrollbar && self.area.height >= 2)
             .then(|| (self.area.right(), self.area.y, self.area.bottom() - 1))
+    }
+
+    /// The mark on the line shown at a screen cell (hints).
+    pub fn mark_at(&mut self, x: u16, y: u16) -> Option<Mark> {
+        if self.marks.is_empty()
+            || self.mode != Mode::Text
+            || !self.area.contains(ratatui::layout::Position::new(x, y))
+        {
+            return None;
+        }
+        let start = self.rows.get(usize::from(y - self.area.y))?.start;
+        let line = self.line_of(start);
+        self.marks
+            .iter()
+            .rev()
+            .find(|m| line >= m.from && line <= m.to)
+            .cloned()
     }
 
     /// The byte offset of the character shown at a screen cell (text and
@@ -1751,6 +1785,7 @@ impl Viewer {
         }
         buf.set_style(line, theme::VIEWER_STATUS);
         buf.set_stringn(line.x, line.y, &text, width, theme::VIEWER_STATUS);
+        self.last_status = text;
     }
 
     /// The key bar labels F1..F12 for the current state (Far's

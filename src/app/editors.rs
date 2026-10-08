@@ -1420,7 +1420,7 @@ impl App {
 
     /// Far's status line (`FileEditor::ShowStatus`): the name, then
     /// `│*-│cp│Стр n/N│Кол c│С k│RHS│code`.
-    fn editor_status_line(&self, i: usize, width: u16, clock: bool) -> String {
+    pub(super) fn editor_status_line(&self, i: usize, width: u16, clock: bool) -> String {
         let e = &self.editors[i];
         let lines = e.line_count();
         let line = e.cursor.line + 1;

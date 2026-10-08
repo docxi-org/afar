@@ -392,6 +392,12 @@ pub struct Hints {
     pub keybar: bool,
     /// The agent's frame: its session and state.
     pub agent: bool,
+    /// The panels' titles: the sort, what a column shows.
+    pub panels: bool,
+    /// The status lines of the viewer and the editor.
+    pub status: bool,
+    /// The agent's marks and proposals in the viewer and the editor.
+    pub marks: bool,
 }
 
 impl Default for Hints {
@@ -402,6 +408,9 @@ impl Default for Hints {
             files: true,
             keybar: true,
             agent: true,
+            panels: true,
+            status: true,
+            marks: true,
         }
     }
 }

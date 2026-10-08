@@ -122,6 +122,36 @@ enum Col {
     Links,
 }
 
+impl Col {
+    /// The title's text id and the hint's.
+    fn ids(self) -> (&'static str, &'static str) {
+        match self {
+            Col::Name => ("MColumnName", "tip-col-name"),
+            Col::Size | Col::SizeGrouped => ("MColumnSize", "tip-col-size"),
+            Col::Allocated => ("MColumnAlocatedSize", "tip-col-allocated"),
+            Col::Date => ("MColumnDate", "tip-col-date"),
+            Col::Time => ("MColumnTime", "tip-col-time"),
+            Col::Written => ("MColumnWrited", "tip-col-written"),
+            Col::Created => ("MColumnCreated", "tip-col-created"),
+            Col::Accessed => ("MColumnAccessed", "tip-col-accessed"),
+            Col::Attrs => ("MColumnAttr", "tip-col-attrs"),
+            Col::Description => ("MColumnDescription", "tip-col-description"),
+            Col::Owner => ("MColumnOwner", "tip-col-owner"),
+            Col::Links => ("MColumnMumLinks", "tip-col-links"),
+        }
+    }
+}
+
+/// What a cell of the titles' row is (for hints).
+pub enum TitleAt {
+    /// The sort mode's letter.
+    Sort,
+    /// `^`: selected files first.
+    SelectedFirst,
+    /// A column: its title's and its hint's text ids.
+    Column(&'static str, &'static str),
+}
+
 /// A column's width: fixed, a share of the panel, or the rest.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum W {
@@ -720,6 +750,26 @@ impl FilePanel {
         }
     }
 
+    /// The cell (x, y) of the titles' row.
+    pub fn title_at(&self, x: u16, y: u16) -> Option<TitleAt> {
+        if y + 1 != self.list_top {
+            return None;
+        }
+        let first = self.columns.first()?;
+        if x == first.x {
+            return Some(TitleAt::Sort);
+        }
+        if x == first.x + 1 && self.sort.selected_first {
+            return Some(TitleAt::SelectedFirst);
+        }
+        let c = self
+            .columns
+            .iter()
+            .find(|c| x >= c.x && x < c.x + c.width)?;
+        let (title, tip) = c.col.ids();
+        Some(TitleAt::Column(title, tip))
+    }
+
     /// The description of item `i` (`descript.ion`).
     pub fn description_of(&self, i: usize) -> Option<String> {
         let key = name_key(&self.entries.get(i)?.name);
@@ -789,20 +839,7 @@ impl FilePanel {
 
         // Column titles.
         for c in &columns {
-            let title = match c.col {
-                Col::Name => tr!("MColumnName"),
-                Col::Size | Col::SizeGrouped => tr!("MColumnSize"),
-                Col::Allocated => tr!("MColumnAlocatedSize"),
-                Col::Date => tr!("MColumnDate"),
-                Col::Time => tr!("MColumnTime"),
-                Col::Written => tr!("MColumnWrited"),
-                Col::Created => tr!("MColumnCreated"),
-                Col::Accessed => tr!("MColumnAccessed"),
-                Col::Attrs => tr!("MColumnAttr"),
-                Col::Description => tr!("MColumnDescription"),
-                Col::Owner => tr!("MColumnOwner"),
-                Col::Links => tr!("MColumnMumLinks"),
-            };
+            let title = tr!(c.col.ids().0);
             put_centered(buf, c.x, y0 + 1, c.width, &title, theme::PANEL_COLUMN_TITLE);
         }
         // The sort mode letter over the first title cell: the hotkey of
