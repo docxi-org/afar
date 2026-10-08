@@ -236,7 +236,7 @@ impl App {
         let path = self.resolve_path(path);
         // A file open in the editor: the marks go there (docs/11, plan
         // step 3) — lines and notes in the margin.
-        if let Some(i) = self.editor_for_path(&path) {
+        if let Some(i) = self.editor_of(&path) {
             return self.agent_highlight_editor(i, &path, marks, flash, ttl_s, clear);
         }
         let (i, opened) = self.agent_viewer(&path)?;
@@ -279,15 +279,6 @@ impl App {
         };
         let behind = if n > 0 { self.agent_show(i, &what) } else { "" };
         Ok(format!("{n} place(s) marked in {}{behind}", path.display()))
-    }
-
-    /// The editor window of `path` (the shown one first, when there are two).
-    fn editor_for_path(&self, path: &Path) -> Option<usize> {
-        let key = super::fswatch::path_key;
-        let same = |i: &usize| key(self.editors[*i].path()) == key(path);
-        self.shown_editor()
-            .filter(same)
-            .or_else(|| (0..self.editors.len()).find(same))
     }
 
     fn agent_highlight_editor(

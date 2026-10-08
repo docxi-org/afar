@@ -54,9 +54,14 @@ impl App {
     }
 
     /// The editor open on `path`.
-    fn editor_of(&self, path: &Path) -> Option<usize> {
+    /// (A file in two windows: the one on the screen, else the first —
+    /// the same window for every tool of the agent.)
+    pub(super) fn editor_of(&self, path: &Path) -> Option<usize> {
         let k = key(path);
-        self.editors.iter().position(|e| key(e.path()) == k)
+        let same = |i: &usize| key(self.editors[*i].path()) == k;
+        self.shown_editor()
+            .filter(same)
+            .or_else(|| (0..self.editors.len()).find(same))
     }
 
     fn open_editor_for_agent(&self, path: &Path) -> Result<usize, String> {
@@ -175,6 +180,7 @@ impl App {
             .map(|(i, e)| {
                 let h = usize::from(e.area.height.max(1));
                 let mut item = serde_json::json!({
+                    "window": e.id,
                     "path": e.path().display().to_string(),
                     "on_screen": shown == Some(i),
                     "version": e.version,

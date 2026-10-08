@@ -86,8 +86,17 @@ impl App {
     ) {
         let e = &mut self.editors[i];
         let at = if remove {
+            // The user's cursor stays where it is in the text (the marker
+            // line above it goes).
+            let mut cursor = e.cursor;
             e.cursor = crate::editor::Pos::new(n, 0);
             e.take_instruction();
+            if cursor.line > n {
+                cursor.line -= 1;
+            }
+            if cursor.line != n {
+                e.cursor = cursor;
+            }
             Some(n)
         } else {
             e.untype_line(n);
