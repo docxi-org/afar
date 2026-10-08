@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub general: General,
     pub panels: Panels,
+    pub hints: Hints,
     pub confirm: Confirm,
     pub agent: Agent,
     pub viewer: Viewer,
@@ -373,6 +374,34 @@ impl Default for Panels {
             select_folders: false,
             show_hidden: true,
             wheel_lines: 0,
+        }
+    }
+}
+
+/// Hints: the mouse rests on something and a block tells about it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hints {
+    pub enabled: bool,
+    /// How long the mouse rests before the hint shows.
+    pub delay_ms: u64,
+    /// Files in the panels: name, size, times, attributes, the agent's
+    /// changes.
+    pub files: bool,
+    /// The key bar: what a key does.
+    pub keybar: bool,
+    /// The agent's frame: its session and state.
+    pub agent: bool,
+}
+
+impl Default for Hints {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delay_ms: 600,
+            files: true,
+            keybar: true,
+            agent: true,
         }
     }
 }

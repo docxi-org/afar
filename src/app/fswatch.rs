@@ -78,8 +78,10 @@ pub(super) struct FsState {
     /// afar's own operations: their id, the paths they touch (keys of
     /// `path_key`), when they ended.
     own: Vec<(u64, Vec<String>, Option<Instant>)>,
-    /// Files changed by the agent: key, time.
-    marks: Vec<(String, Instant)>,
+    /// Files changed by the agent: key, time, what it was.
+    marks: Vec<(String, Instant, crate::panel::AgentMark)>,
+    /// The shell tool of the agent's last command (`Bash`, `PowerShell`).
+    shell_tool: String,
 }
 
 impl FsState {
@@ -94,6 +96,7 @@ impl FsState {
             agent_bash_done: None,
             own: Vec::new(),
             marks: Vec::new(),
+            shell_tool: "Bash".into(),
         }
     }
 
@@ -256,7 +259,7 @@ impl App {
 
         self.fs
             .marks
-            .retain(|(_, t)| now.duration_since(*t) < MARK_TIME);
+            .retain(|(_, t, _)| now.duration_since(*t) < MARK_TIME);
         self.fs
             .agent_paths
             .retain(|(_, t)| now.duration_since(*t) < Duration::from_secs(30));
@@ -284,7 +287,8 @@ impl App {
             // Changes while the agent's Bash runs are marked in the panels
             // as its own (most likely they are).
             if p.during == Some(During::AgentBash) && p.change != Change::Removed {
-                self.fs.marks.push((key.clone(), now));
+                let tool = self.fs.shell_tool.clone();
+                self.fs.marks.push((key.clone(), now, mark(tool)));
             }
             let dir_key = parent_key(&key).to_string();
             let group = match groups
@@ -347,7 +351,8 @@ impl App {
         {
             return deny;
         }
-        if matches!(v["tool_name"].as_str(), Some("Bash" | "PowerShell")) {
+        if let Some(shell @ ("Bash" | "PowerShell")) = v["tool_name"].as_str() {
+            self.fs.shell_tool = shell.to_string();
             let id = v["tool_use_id"].as_str().unwrap_or_default().to_string();
             self.fs.agent_bash.push((id, Instant::now()));
         }
@@ -406,7 +411,7 @@ impl App {
         for p in &paths {
             let key = path_key(p);
             self.fs.agent_paths.push((key.clone(), now));
-            self.fs.marks.push((key.clone(), now));
+            self.fs.marks.push((key.clone(), now, mark(tool.clone())));
             for panel in &mut self.panels {
                 if path_key(&panel.path) == parent_key(&key) {
                     panel.reload(None);
@@ -438,11 +443,10 @@ impl App {
                 .fs
                 .marks
                 .iter()
-                .filter(|(k, _)| parent_key(k) == dir)
-                .map(|(k, _)| {
-                    k.rsplit_once('\\')
-                        .map_or(k.as_str(), |(_, n)| n)
-                        .to_string()
+                .filter(|(k, _, _)| parent_key(k) == dir)
+                .map(|(k, _, m)| {
+                    let name = k.rsplit_once('\\').map_or(k.as_str(), |(_, n)| n);
+                    (name.to_string(), m.clone())
                 })
                 .collect();
         }
@@ -464,5 +468,13 @@ mod tests {
             parent_key(&path_key(Path::new(r"C:\x\y.txt"))),
             path_key(Path::new(r"C:\x"))
         );
+    }
+}
+
+/// A mark for a file the agent changed now with `tool`.
+fn mark(tool: String) -> crate::panel::AgentMark {
+    crate::panel::AgentMark {
+        time: chrono::Local::now(),
+        tool,
     }
 }

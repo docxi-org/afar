@@ -39,6 +39,8 @@ const fn c(fg: Color, bg: Color) -> Style {
 // Panels.
 pub const PANEL_TEXT: Style = c(con::LIGHTCYAN, con::BLUE);
 pub const PANEL_SELECTED_TEXT: Style = c(con::YELLOW, con::BLUE);
+/// "AI 09:14 · Edit" in the status line: the agent's red.
+pub const PANEL_AGENT_MARK: Style = c(con::LIGHTRED, con::BLUE);
 pub const PANEL_CURSOR: Style = c(con::BLACK, con::CYAN);
 pub const PANEL_SELECTED_CURSOR: Style = c(con::YELLOW, con::CYAN);
 pub const PANEL_TITLE: Style = c(con::LIGHTCYAN, con::BLUE);
@@ -155,6 +157,10 @@ pub const GHOST_EDIT: Style = c(con::DARKGRAY, con::CYAN);
 pub const LINK_FG: Color = con::LIGHTBLUE;
 /// The address of the link under the mouse.
 pub const LINK_TOOLTIP: Style = c(con::BLACK, con::CYAN);
+/// Hints: the block, its title, the agent's line.
+pub const HINT: Style = c(con::BLACK, con::CYAN);
+pub const HINT_TITLE: Style = c(con::WHITE, con::CYAN);
+pub const HINT_AGENT: Style = c(con::RED, con::CYAN);
 /// afar's status messages (Far shows them as dialogs): like the clock.
 pub const MESSAGE: Style = c(con::BLACK, con::CYAN);
 

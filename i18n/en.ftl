@@ -240,3 +240,30 @@ editor-keybar-syntax = Syntax
 viewer-found-first = { $title } (the first { $count } listed)
 panels-hidden-shown = Hidden and system files are shown
 panels-hidden-hidden = Hidden and system files are not shown
+
+## Hints
+menu-hint-settings = Hints
+hints-title = Hints
+hints-on = Show hints when the mouse rests
+hints-delay = Delay, ms:
+hints-kinds = What to explain
+hints-files = Files in the panels
+hints-keybar = The key bar
+hints-agent = The agent's frame
+tip-size = Size: { $size } { $n ->
+    [one] byte
+   *[other] bytes
+}
+tip-link = Link to { $target }
+tip-attrs = Attributes: { $list }
+tip-agent-mark = { $label } — changed by the agent
+tip-key-free = The key is free
+tip-keys = Keys: { $keys }
+tip-command = Command: { $name }
+tip-agent-state = State: { $state }
+tip-agent-folder = Folder: { $folder }
+tip-agent-session = Session: { $id }
+tip-agent-mode = Permission mode: { $mode }
+tip-agent-ide-on = IDE protocol: connected
+tip-agent-ide-waiting = IDE protocol: waiting for the agent
+tip-agent-ide-off = IDE protocol: off

@@ -44,6 +44,7 @@ mod fileops;
 mod findfiles;
 mod foldertree;
 mod fswatch;
+mod hints;
 mod historymenu;
 mod ide;
 mod infopanel;
@@ -273,6 +274,8 @@ pub struct App {
     /// The link the mouse is over and where: its address is shown next to
     /// the mouse.
     hovered_link: Option<(String, u16, u16)>,
+    /// Where the mouse rests, for a hint.
+    hover: Option<hints::Hover>,
     /// Where the user screen last drew the kept lines, and the first one's
     /// index in history + captured output.
     user_rows: (Rect, Vec<termview::Line>),
@@ -467,6 +470,7 @@ impl App {
             last_live: Rect::default(),
             link_pressed: false,
             hovered_link: None,
+            hover: None,
             user_rows: (Rect::default(), Vec::new()),
             user_scroll: 0,
             user_total: 0,
@@ -913,7 +917,9 @@ impl App {
                 .is_some_and(|i| self.viewers[i].indexing());
             // A drag held past a panel's edge scrolls on.
             let scrolling = self.panel_drag.as_ref().is_some_and(|d| d.edge != 0);
-            let wait = if testing || indexing || scrolling {
+            // A hint is due soon.
+            let hinting = self.hint_pending();
+            let wait = if testing || indexing || scrolling || hinting {
                 15
             } else {
                 250
@@ -1032,6 +1038,7 @@ impl App {
     /// Periodic work: debounced journal entries, message expiry.
     fn tick(&mut self) {
         self.panel_drag_tick();
+        self.hint_tick();
         self.fs_tick();
         self.drop_abandoned_requests();
         if self
@@ -1668,8 +1675,10 @@ impl App {
     // --------------------------------------------------------------- keys
 
     fn on_key(&mut self, key: KeyEvent) {
-        // A key takes the link's tooltip away (the text may move).
+        // A key takes the link's tooltip and the hint away (the text may
+        // move).
         self.hovered_link = None;
+        self.hover_reset();
         if std::env::var_os("AFAR_DEBUG_KEYS").is_some() {
             use std::io::Write as _;
             if let Ok(mut f) = std::fs::File::options()
@@ -2417,6 +2426,12 @@ impl App {
         if ev.kind == MouseEventKind::Moved && !self.has_overlay() {
             self.hover_link(&ev, &l);
         }
+        // The mouse resting: a hint after a while; anything else drops it.
+        if ev.kind == MouseEventKind::Moved {
+            self.hover_moved(ev.column, ev.row);
+        } else {
+            self.hover_reset();
+        }
 
         // Menus and dialogs take the mouse everywhere, the agent pane
         // included: a click over it must not move the focus there.
@@ -3160,6 +3175,7 @@ impl App {
             .count() as u16;
         self.draw_completion(area, l.cmdline, prompt, buf);
         self.draw_link_tooltip(area, buf);
+        self.draw_hint(area, buf);
         cursor
     }
 

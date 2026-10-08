@@ -41,6 +41,25 @@ pub struct Entry {
     pub extra: Option<Extra>,
 }
 
+/// A file the agent changed: when and with which tool (`Bash` or
+/// `PowerShell` when it changed while the agent's command ran).
+#[derive(Clone, Debug)]
+pub struct AgentMark {
+    pub time: chrono::DateTime<chrono::Local>,
+    pub tool: String,
+}
+
+impl AgentMark {
+    /// "AI 09:14 · Edit" (the status line, hints).
+    pub fn label(&self) -> String {
+        format!(
+            "AI {} · {}",
+            crate::locale::get().time(&self.time, false),
+            self.tool
+        )
+    }
+}
+
 /// A file's details read only for the view modes that show them.
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
@@ -235,7 +254,7 @@ pub struct FilePanel {
     pub view: ViewMode,
     pub sort: Sort,
     /// Names changed by the agent (lowercase on Windows), highlighted.
-    pub agent_marked: std::collections::HashSet<String>,
+    pub agent_marked: std::collections::HashMap<String, AgentMark>,
     /// Cells at the right of the top border taken by the clock: the title
     /// moves left of it.
     pub clock_cells: u16,
@@ -701,8 +720,24 @@ impl FilePanel {
         }
     }
 
+    /// The description of item `i` (`descript.ion`).
+    pub fn description_of(&self, i: usize) -> Option<String> {
+        let key = name_key(&self.entries.get(i)?.name);
+        match &self.descriptions {
+            Some(d) => d.get(&key).cloned(),
+            None if self.list.is_none() => read_descriptions(&self.path).remove(&key),
+            None => None,
+        }
+        .filter(|d| !d.is_empty())
+    }
+
+    /// What the agent did to item `i`, if it changed it lately.
+    pub fn agent_mark(&self, i: usize) -> Option<&AgentMark> {
+        self.agent_marked.get(&name_key(&self.entries.get(i)?.name))
+    }
+
     /// The full path of item `i` (found files keep theirs).
-    fn entry_path(&self, i: usize) -> PathBuf {
+    pub fn entry_path(&self, i: usize) -> PathBuf {
         let name = &self.entries[i].name;
         match &self.list {
             Some(_) => PathBuf::from(name),
@@ -811,7 +846,7 @@ impl FilePanel {
                     hidden: e.hidden,
                     system: e.system,
                     agent: !self.agent_marked.is_empty()
-                        && self.agent_marked.contains(&name_key(&e.name)),
+                        && self.agent_marked.contains_key(&name_key(&e.name)),
                 };
                 let style = theme::file_style(&attrs, e.selected, is_cursor);
                 let stripe_cols: Vec<&Placed> = columns.iter().filter(|c| c.stripe == s).collect();
@@ -905,12 +940,22 @@ impl FilePanel {
         buf.set_stringn(tx, y0, &title, usize::from(len), title_style);
 
         // Status line: name, size 6, date 8, time 5, separated by spaces.
+        let (mut ai_at, mut ai_len) = (None, 0);
         let status = match (&self.error, self.current()) {
             (Some(err), _) => err.clone(),
             (None, Some(e)) => {
                 let (date, time) = e.modified.map(format_time).unwrap_or_default();
-                let right = format!("{:>6} {date:>8} {time:>5}", size_cell(e, 6));
+                let mut right = format!("{:>6} {date:>8} {time:>5}", size_cell(e, 6));
+                // Changed by the agent: who and when, in its red.
+                if let Some(m) = self.agent_marked.get(&name_key(&e.name)) {
+                    let ai = m.label();
+                    ai_len = ai.chars().count();
+                    right = format!("{ai} {right}");
+                }
                 let name_w = usize::from(inner).saturating_sub(right.chars().count() + 1);
+                if ai_len > 0 {
+                    ai_at = Some((name_w + 1, ai_len));
+                }
                 // A long name is cut from the left, without a marker.
                 let n = e.name.chars().count();
                 let name: String = e.name.chars().skip(n.saturating_sub(name_w)).collect();
@@ -919,6 +964,12 @@ impl FilePanel {
             (None, None) => String::new(),
         };
         put(buf, x0 + 1, y1 - 1, inner, &status, theme::PANEL_TEXT);
+        // The mark's text: after the name and its space.
+        if let Some((start, n)) = ai_at {
+            for k in start..(start + n).min(usize::from(inner)) {
+                buf[(x0 + 1 + k as u16, y1 - 1)].set_style(theme::PANEL_AGENT_MARK);
+            }
+        }
 
         // Totals on the bottom border.
         let (files, dirs, bytes) =

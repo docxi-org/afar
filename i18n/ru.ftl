@@ -241,3 +241,31 @@ editor-keybar-syntax = Синтакс
 viewer-found-first = { $title } (в списке первые { $count })
 panels-hidden-shown = Скрытые и системные файлы показываются
 panels-hidden-hidden = Скрытые и системные файлы не показываются
+
+## Подсказки
+menu-hint-settings = Подсказки
+hints-title = Подсказки
+hints-on = Показывать подсказки при наведении мыши
+hints-delay = Задержка, мс:
+hints-kinds = Что пояснять
+hints-files = Файлы в панелях
+hints-keybar = Строку клавиш
+hints-agent = Рамку агента
+tip-size = Размер: { $size } { $n ->
+    [one] байт
+    [few] байта
+   *[many] байт
+}
+tip-link = Ссылка на { $target }
+tip-attrs = Атрибуты: { $list }
+tip-agent-mark = { $label } — изменён агентом
+tip-key-free = Клавиша свободна
+tip-keys = Клавиши: { $keys }
+tip-command = Команда: { $name }
+tip-agent-state = Состояние: { $state }
+tip-agent-folder = Папка: { $folder }
+tip-agent-session = Сессия: { $id }
+tip-agent-mode = Режим разрешений: { $mode }
+tip-agent-ide-on = Протокол IDE: подключён
+tip-agent-ide-waiting = Протокол IDE: ждёт подключения
+tip-agent-ide-off = Протокол IDE: выключен

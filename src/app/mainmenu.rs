@@ -23,7 +23,21 @@ pub(super) enum MainAction {
     ViewerSettings,
     EditorSettings,
     AutocompleteSettings,
+    HintSettings,
     FarImport,
+}
+
+/// The F9 menu's text for a command, if it has an item (hints say what a
+/// key does with it).
+pub(super) fn menu_label(command: Command) -> Option<&'static str> {
+    let menus = [panel_menu(0), files_menu(), commands_menu()];
+    menus
+        .iter()
+        .flatten()
+        .find_map(|(label, _, action)| match action {
+            Some(MainAction::Run(c) | MainAction::OnSide(_, c)) if *c == command => Some(*label),
+            _ => None,
+        })
 }
 
 /// An item: Far's text id, the key shown, what it does (`None`: disabled).
@@ -203,7 +217,8 @@ fn commands_menu() -> Vec<Entry> {
 
 fn options_menu() -> Vec<Entry> {
     use MainAction::{
-        AgentSettings, AutocompleteSettings, Confirmations, EditorSettings, ViewerSettings,
+        AgentSettings, AutocompleteSettings, Confirmations, EditorSettings, HintSettings,
+        ViewerSettings,
     };
     vec![
         ("MMenuSystemSettings", None, None),
@@ -238,6 +253,7 @@ fn options_menu() -> Vec<Entry> {
         // afar's own: the agent.
         SEP,
         ("menu-agent-settings", None, Some(AgentSettings)),
+        ("menu-hint-settings", None, Some(HintSettings)),
         SEP,
         ("MMenuSaveSetup", Some("Shift+F9"), None),
     ]
@@ -370,6 +386,7 @@ impl App {
             Some(MainAction::ViewerSettings) => self.viewer_settings_dialog(),
             Some(MainAction::EditorSettings) => self.editor_settings_dialog(None),
             Some(MainAction::AutocompleteSettings) => self.autocomplete_settings_dialog(),
+            Some(MainAction::HintSettings) => self.hint_settings_dialog(),
             Some(MainAction::FarImport) => self.far_import_menu(),
             None => {}
         }

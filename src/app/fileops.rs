@@ -123,6 +123,8 @@ pub(super) enum Purpose {
     ViewerSettings,
     /// F9 → Options → AutoComplete settings.
     AutocompleteSettings,
+    /// F9 → Options → Hints.
+    HintSettings,
     /// Gray + / Gray -: select or unselect by the mask.
     Select {
         side: usize,
@@ -631,6 +633,11 @@ impl App {
             Purpose::AutocompleteSettings => {
                 if button == Some(0) {
                     self.autocomplete_settings_from_dialog(&dialog);
+                }
+            }
+            Purpose::HintSettings => {
+                if button == Some(0) {
+                    self.hint_settings_from_dialog(&dialog);
                 }
             }
             Purpose::ViewerSettings => {

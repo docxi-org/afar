@@ -703,6 +703,52 @@ impl App {
         self.save_config();
     }
 
+    /// F9 → Options → Hints: on, the delay, the kinds.
+    pub(super) fn hint_settings_dialog(&mut self) {
+        let h = &self.config.hints;
+        let checks = [
+            (tr!("hints-on"), h.enabled),
+            (tr!("hints-files"), h.files),
+            (tr!("hints-keybar"), h.keybar),
+            (tr!("hints-agent"), h.agent),
+        ];
+        let delay = tr!("hints-delay");
+        let content = checks
+            .iter()
+            .map(|(l, _)| chars(l) + 8)
+            .chain([chars(&delay) + 12])
+            .max()
+            .unwrap_or(40);
+        let mut d = Dialog::new(tr!("hints-title"), content)
+            .row(vec![check_at(5, checks[0].0.clone(), checks[0].1)])
+            .row(vec![
+                text_at(5, delay.clone()),
+                input_at(5 + chars(&delay) + 1, 6, h.delay_ms.to_string(), None),
+            ])
+            .caption(tr!("hints-kinds"));
+        for (label, on) in &checks[1..] {
+            d = d.row(vec![check_at(5, label.clone(), *on)]);
+        }
+        let dialog = d.separator().buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::HintSettings,
+        });
+    }
+
+    pub(super) fn hint_settings_from_dialog(&mut self, dialog: &Dialog) {
+        let h = &mut self.config.hints;
+        h.enabled = dialog.checked(0);
+        if let Ok(ms) = dialog.input_value(0).trim().parse::<u64>() {
+            h.delay_ms = ms.clamp(100, 5000);
+        }
+        h.files = dialog.checked(1);
+        h.keybar = dialog.checked(2);
+        h.agent = dialog.checked(3);
+        self.hover = None;
+        self.save_config();
+    }
+
     fn save_config(&mut self) {
         let path = crate::config::config_path();
         match self.config.save(&path) {

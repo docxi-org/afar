@@ -27,6 +27,16 @@ const ATTRS: &[(&str, u32)] = &[
     ("MSetAttrTemporary", 0x100),
     ("MSetAttrOffline", 0x1000),
 ];
+/// The names of the attributes set in `attrs` (Far's attribute dialog
+/// words), for hints.
+pub(super) fn attribute_names(attrs: u32) -> Vec<String> {
+    ATTRS
+        .iter()
+        .filter(|(_, bit)| attrs & bit != 0)
+        .map(|(id, _)| crate::i18n::plain(&tr!(id)))
+        .collect()
+}
+
 const COMPRESSED: u32 = 0x800;
 const ENCRYPTED: u32 = 0x4000;
 const SPARSE: u32 = 0x200;

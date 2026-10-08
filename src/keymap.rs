@@ -305,16 +305,21 @@ impl Keymap {
 
     /// The first key of a command (for menus).
     pub fn key_of(&self, ctx: Ctx, command: Command) -> Option<Chord> {
+        self.keys_of(ctx, command).first().copied()
+    }
+
+    /// Every key of a command: the documented (first default) one first,
+    /// then a stable order.
+    pub fn keys_of(&self, ctx: Ctx, command: Command) -> Vec<Chord> {
         let mut keys: Vec<Chord> = self
             .map
             .iter()
             .filter(|((x, _), c)| *x == ctx && **c == command)
             .map(|((_, k), _)| *k)
             .collect();
-        // The documented (first default) key first, then a stable order.
         let default = command.def().keys.first().and_then(|k| Chord::parse(k));
         keys.sort_by_key(|k| (Some(*k) != default, k.label()));
-        keys.first().copied()
+        keys
     }
 }
 
