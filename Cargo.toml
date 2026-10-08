@@ -29,6 +29,10 @@ encoding_rs = "0.8.42"
 unicode-width = "0.2.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 similar = "2"
+# Syntax highlighting: Sublime syntaxes (bat's set) with Oniguruma regexes
+# (with fancy-regex two-face leaves out PowerShell and JavaScript).
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-onig"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
 fontdue = "0.9.4"
 png = "0.18.1"
 

@@ -117,6 +117,7 @@ search_select_found = false   # выделять найденное
 search_cursor_at_end = false  # курсор в конце найденного
 scrollbar = false
 line_numbers = false
+syntax = true                 # подсветка синтаксиса (Alt+F3 — в окне)
 save_position = true          # помнить позицию файла (и кодовую страницу)
 save_bookmarks = true
 autodetect_codepage = true

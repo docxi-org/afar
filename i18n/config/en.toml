@@ -117,6 +117,7 @@ search_select_found = false   # select what search finds
 search_cursor_at_end = false  # the cursor after the match, not on it
 scrollbar = false
 line_numbers = false
+syntax = true                 # syntax highlighting (Alt+F3 in a window)
 save_position = true          # remember where a file was left (and its code page)
 save_bookmarks = true
 autodetect_codepage = true

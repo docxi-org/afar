@@ -209,6 +209,8 @@ pub enum EditorCmd {
     CodepageMenu,
     /// Alt+Shift+F9: this window's settings.
     Settings,
+    /// Alt+F3: syntax highlighting on / off in this window.
+    Syntax,
     /// Shift+Enter / Ctrl+Shift+Enter: the active / passive panel's current
     /// name; Ctrl+[ / Ctrl+] / Ctrl+Shift+[ / Ctrl+Shift+]: the left / right
     /// / active / passive panel's folder.
@@ -592,6 +594,7 @@ pub const COMMANDS: &[Def] = &[
     edef("editor.next_codepage", E::NextCodepage, &["F8"]),
     edef("editor.codepage_menu", E::CodepageMenu, &["Shift+F8"]),
     edef("editor.settings", E::Settings, &["Alt+Shift+F9"]),
+    edef("editor.syntax", E::Syntax, &["Alt+F3"]),
     edef("editor.next_mark", E::NextMark, &["F5"]),
     edef("editor.prev_mark", E::PrevMark, &["Shift+F5"]),
     edef("editor.accept_proposal", E::AcceptProposal, &["Alt+F5"]),

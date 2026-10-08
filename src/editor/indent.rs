@@ -157,6 +157,7 @@ impl Editor {
             for (n, text) in changed {
                 self.lines[n].text = text;
             }
+            self.syntax_reset();
         }
     }
 }

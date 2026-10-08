@@ -23,6 +23,7 @@ pub mod menubar;
 pub mod ops;
 pub mod panel;
 pub mod shot;
+pub mod syntax;
 pub mod term;
 pub mod termview;
 pub mod theme;

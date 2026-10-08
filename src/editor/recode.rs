@@ -79,6 +79,7 @@ impl Editor {
             l.text = f(&l.text);
         }
         self.history.map_text(&f);
+        self.syntax_reset();
         self.cp = new_cp;
         // Far: a byte order mark read as text in UTF-8 becomes the mark.
         self.bom = false;

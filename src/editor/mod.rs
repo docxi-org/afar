@@ -193,6 +193,12 @@ pub struct Editor {
     shown_rows: Vec<ScreenRow>,
     /// Proposals dropped by a change of their lines, for the journal.
     dropped_proposals: Vec<u64>,
+    /// Syntax highlighting on (Alt+F3) and the file's syntax.
+    pub syntax_on: bool,
+    syntax: Option<&'static syntect::parsing::SyntaxReference>,
+    /// The parse state before every `SYN_STEP`-th line (the ones known so
+    /// far, from the top).
+    syn_marks: Vec<crate::syntax::LineState>,
     /// Ctrl+Shift+0…9 / Ctrl+0…9.
     pub bookmarks: [Option<Bookmark>; 10],
 }
@@ -204,7 +210,7 @@ impl Editor {
         } else {
             lines
         };
-        Self {
+        let mut e = Self {
             id,
             path: path.to_path_buf(),
             lines,
@@ -246,7 +252,12 @@ impl Editor {
             shown_rows: Vec::new(),
             dropped_proposals: Vec::new(),
             bookmarks: [None; 10],
-        }
+            syntax_on: true,
+            syntax: None,
+            syn_marks: Vec::new(),
+        };
+        e.detect_syntax();
+        e
     }
 
     pub fn path(&self) -> &Path {
@@ -255,6 +266,64 @@ impl Editor {
 
     pub fn set_path(&mut self, path: &Path) {
         self.path = path.to_path_buf();
+        self.detect_syntax();
+    }
+
+    /// The syntax by the file's name, else its first line.
+    pub fn detect_syntax(&mut self) {
+        let first = self.lines.first().map_or("", |l| l.text.as_str());
+        self.syntax = crate::syntax::syntax_for(&self.path, first);
+        self.syn_marks.clear();
+    }
+
+    /// The name of the file's syntax, if it has one.
+    pub fn syntax_name(&self) -> Option<&'static str> {
+        self.syntax.map(|s| s.name.as_str())
+    }
+
+    /// Whole lines changed past `replace` (undo, a reload, another code
+    /// page): the parse states go.
+    fn syntax_reset(&mut self) {
+        self.syn_marks.clear();
+    }
+
+    /// The colored pieces of lines `from..to` (syntax highlighting; empty
+    /// when off). Parses from the nearest known state; a place much
+    /// further down than parsed so far starts afresh a little above it.
+    fn syntax_pieces(&mut self, from: usize, to: usize) -> Vec<crate::syntax::Pieces> {
+        use crate::syntax::LineState;
+        let Some(syn) = self.syntax.filter(|_| self.syntax_on) else {
+            return Vec::new();
+        };
+        if self.syn_marks.is_empty() {
+            self.syn_marks.push(LineState::start(syn));
+        }
+        let want = from / SYN_STEP;
+        let have = self.syn_marks.len() - 1;
+        let (mut st, mut line, exact) = if want <= have {
+            (self.syn_marks[want].clone(), want * SYN_STEP, true)
+        } else if (want - have) * SYN_STEP <= SYN_REACH {
+            (self.syn_marks[have].clone(), have * SYN_STEP, true)
+        } else {
+            (
+                LineState::start(syn),
+                from.saturating_sub(SYN_LOOKBACK),
+                false,
+            )
+        };
+        let to = to.min(self.lines.len());
+        let mut out = Vec::with_capacity(to.saturating_sub(from));
+        while line < to {
+            if exact && line % SYN_STEP == 0 && line / SYN_STEP == self.syn_marks.len() {
+                self.syn_marks.push(st.clone());
+            }
+            let pieces = st.line(&self.lines[line].text);
+            if line >= from {
+                out.push(pieces);
+            }
+            line += 1;
+        }
+        out
     }
 
     pub fn lines(&self) -> &[Line] {
@@ -282,6 +351,7 @@ impl Editor {
 
     /// The whole text replaced (the file read again): no undo across it.
     pub fn reload(&mut self, lines: Vec<Line>, cp: u32, bom: bool, eol: Eol) {
+        self.syn_marks.clear();
         self.lines = if lines.is_empty() {
             vec![Line::default()]
         } else {
@@ -807,6 +877,7 @@ impl Editor {
             }
         }
         self.proposals_after_change(s.line, e.line, delta);
+        self.syn_marks.truncate(s.line / SYN_STEP + 1);
         // So do the agent's marks (lines from 1).
         let shift = |l: u64| -> u64 {
             let z = l.saturating_sub(1) as usize;
@@ -1162,6 +1233,7 @@ impl Editor {
     }
 
     pub fn undo(&mut self) {
+        self.syntax_reset();
         let before: Vec<String> = self.plain_lines();
         if let Some(pos) = self.history.undo(&mut self.lines) {
             self.cursor = pos;
@@ -1172,6 +1244,7 @@ impl Editor {
     }
 
     pub fn redo(&mut self) {
+        self.syntax_reset();
         let before: Vec<String> = self.plain_lines();
         if let Some(pos) = self.history.redo(&mut self.lines) {
             self.cursor = pos;
@@ -1626,6 +1699,11 @@ impl Editor {
                 }
             }
             // The window says the mark's label after the move.
+            // The window says what it is now.
+            Syntax => {
+                self.syntax_on = !self.syntax_on;
+                return Outcome::App(cmd);
+            }
             NextMark | PrevMark => {
                 self.goto_mark(cmd == NextMark);
                 return Outcome::App(cmd);
@@ -1793,6 +1871,16 @@ impl Editor {
             .or_else(|| self.selection());
         let vb = self.highlight.is_none().then(|| self.vblock()).flatten();
         let rows = self.screen_rows(usize::from(area.height));
+        let shown: Vec<usize> = rows
+            .iter()
+            .filter_map(|r| match r {
+                ScreenRow::Line(n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        let syn_from = shown.first().copied().unwrap_or(self.top);
+        let syn_to = shown.last().map_or(syn_from, |l| l + 1);
+        let syn = self.syntax_pieces(syn_from, syn_to);
         for (row, kind) in rows.iter().enumerate() {
             let row = row as u16;
             let y = area.y + row;
@@ -1882,8 +1970,9 @@ impl Editor {
                     buf[(x, y)].set_style(*st);
                 }
             }
+            let pieces = line.checked_sub(syn_from).and_then(|k| syn.get(k));
             let mut v = 0usize;
-            for c in l.text.chars() {
+            for (ci, c) in l.text.chars().enumerate() {
                 let w = self.char_width(c, v);
                 if v >= self.left + usize::from(text_w) {
                     break;
@@ -1899,7 +1988,11 @@ impl Editor {
                     } else if l.by_agent {
                         theme::EDITOR_AGENT
                     } else {
-                        theme::EDITOR_TEXT
+                        // The token's color (syntax highlighting).
+                        match pieces.and_then(|p| crate::syntax::color_at(p, ci)) {
+                            Some(c) => theme::EDITOR_TEXT.fg(c),
+                            None => theme::EDITOR_TEXT,
+                        }
                     };
                     let x0 = text_x + (v.saturating_sub(self.left)) as u16;
                     if c == '\t' || v < self.left || (c as u32) < 0x20 {
@@ -2015,6 +2108,14 @@ impl Editor {
         ))
     }
 }
+
+/// The parse state is kept before every this many lines.
+const SYN_STEP: usize = 64;
+/// A place this many lines past the parsed ones is parsed afresh from a
+/// little above it rather than from the last known state (a jump to the
+/// end of a huge file stays quick; colors there may be off at first).
+const SYN_REACH: usize = 20_000;
+const SYN_LOOKBACK: usize = 200;
 
 /// Text split at its line breaks (`\r\n`, `\r\r\n`, `\n`, `\r`).
 fn split_breaks(text: &str) -> Vec<&str> {

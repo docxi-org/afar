@@ -193,6 +193,8 @@ pub struct Editor {
     pub search_cursor_at_end: bool,
     pub scrollbar: bool,
     pub line_numbers: bool,
+    /// Syntax highlighting (Alt+F3 in a window).
+    pub syntax: bool,
     pub save_position: bool,
     pub save_bookmarks: bool,
     pub autodetect_codepage: bool,
@@ -272,6 +274,7 @@ impl Default for Editor {
             search_cursor_at_end: false,
             scrollbar: false,
             line_numbers: false,
+            syntax: true,
             save_position: true,
             save_bookmarks: true,
             autodetect_codepage: true,

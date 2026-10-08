@@ -231,3 +231,7 @@ editor-agent-send = Pass
 editor-no-proposal = No proposal of the agent under the cursor
 editor-keybar-accept = Accept
 editor-keybar-reject = Reject
+editor-syntax-on = Syntax highlighting: { $name }
+editor-syntax-none = Highlighting is on, but the file's language is not known
+editor-syntax-off = Syntax highlighting is off
+editor-keybar-syntax = Syntax

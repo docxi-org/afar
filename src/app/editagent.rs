@@ -45,7 +45,12 @@ fn key(path: &Path) -> String {
 
 impl App {
     fn agent_path(&self, path: &str) -> PathBuf {
-        let p = PathBuf::from(path);
+        // "C:/x/y" as Windows writes it, so the window shows it alike.
+        let p = if cfg!(windows) {
+            PathBuf::from(path.replace('/', "\\"))
+        } else {
+            PathBuf::from(path)
+        };
         if p.is_absolute() {
             p
         } else {

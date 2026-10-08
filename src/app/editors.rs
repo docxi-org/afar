@@ -444,6 +444,7 @@ impl App {
         };
         editor.settings = self.editor_settings();
         editor.line_numbers = self.config.editor.line_numbers;
+        editor.syntax_on = self.config.editor.syntax;
         if editor.settings.expand_tabs == 2 {
             editor.expand_all_tabs(false);
         }
@@ -682,6 +683,15 @@ impl App {
             }
             AcceptProposal | RejectProposal | AcceptAllProposals | RejectAllProposals => {
                 self.editor_answer_proposals(i, cmd);
+            }
+            Syntax => {
+                let e = &self.editors[i];
+                let text = match (e.syntax_on, e.syntax_name()) {
+                    (true, Some(name)) => tr!("editor-syntax-on", name = name),
+                    (true, None) => tr!("editor-syntax-none"),
+                    (false, _) => tr!("editor-syntax-off"),
+                };
+                self.say(text);
             }
             AgentTurn => self.editor_agent_turn(i, super::editturn::TurnMode::Auto),
             AgentAnswer => self.editor_agent_turn(i, super::editturn::TurnMode::Answer),
@@ -1576,6 +1586,9 @@ impl App {
                 }
                 if group == "Ctrl" && n == 3 && self.editors[i].line_numbers {
                     return t("MEditCtrlF3Hide");
+                }
+                if group == "Alt" && n == 3 {
+                    return t("editor-keybar-syntax");
                 }
                 // Alt+F5 / Alt+F6: the agent's proposals.
                 if group == "Alt" && (n == 5 || n == 6) {

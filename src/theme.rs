@@ -61,6 +61,18 @@ pub const EDITOR_SCROLLBAR: Style = c(con::LIGHTCYAN, con::BLUE);
 /// out, and its new lines.
 pub const PROPOSAL_OLD: Style = c(con::LIGHTRED, con::BLUE).add_modifier(Modifier::CROSSED_OUT);
 pub const PROPOSAL_NEW: Style = c(con::BLACK, con::GREEN);
+/// Syntax highlighting on the editor's blue, by the kind of the token
+/// (`syntax.rs`): comment, string, constant, keyword, name (function,
+/// type), tag / heading, invalid.
+pub const SYNTAX: [Color; 7] = [
+    con::LIGHTGRAY,
+    con::YELLOW,
+    con::LIGHTMAGENTA,
+    con::WHITE,
+    con::BROWN,
+    con::WHITE,
+    con::LIGHTRED,
+];
 /// Text the agent wrote, not yet accepted (afar's).
 pub const EDITOR_AGENT: Style = c(con::LIGHTGREEN, con::BLUE);
 
