@@ -265,23 +265,53 @@ impl App {
         self.agent
             .channel_events
             .push(json!({"content": content, "meta": meta}));
-        if let Some(waiter) = self.agent.channel_waiter.take() {
-            let events = std::mem::take(&mut self.agent.channel_events);
-            let _ = waiter.send(Ok(json!(events).to_string()));
+        self.channel_deliver();
+    }
+
+    /// The queued events to the waiting `afar channel`; when its request
+    /// is gone already, they stay queued for the next one.
+    fn channel_deliver(&mut self) {
+        let Some((waiter, _)) = self.agent.channel_waiter.take() else {
+            return;
+        };
+        if waiter.is_closed() {
+            return;
+        }
+        let events = std::mem::take(&mut self.agent.channel_events);
+        let text = json!(events).to_string();
+        if waiter.send(Ok(text)).is_err() {
+            self.agent.channel_events = events;
+        }
+    }
+
+    /// Once a second: a request waiting since `CHANNEL_WAIT` is answered
+    /// empty (the bridge asks again at once) — before the HTTP time-out
+    /// would drop it.
+    pub(super) fn channel_tick(&mut self) {
+        if self
+            .agent
+            .channel_waiter
+            .as_ref()
+            .is_some_and(|(w, since)| w.is_closed() || since.elapsed() >= crate::mcp::CHANNEL_WAIT)
+            && let Some((waiter, _)) = self.agent.channel_waiter.take()
+        {
+            let _ = waiter.send(Ok("[]".into()));
         }
     }
 
     /// `afar channel` asks for events: now if there are some, else when
     /// one comes (the request times out empty in the bridge's loop).
     pub(super) fn channel_wait(&mut self, reply: tokio::sync::oneshot::Sender<crate::mcp::Reply>) {
-        if self.agent.channel_events.is_empty() {
-            // A newer request replaces an older one (its bridge gave up).
-            if let Some(old) = self.agent.channel_waiter.replace(reply) {
-                let _ = old.send(Ok("[]".into()));
-            }
-        } else {
-            let events = std::mem::take(&mut self.agent.channel_events);
-            let _ = reply.send(Ok(json!(events).to_string()));
+        // A newer request replaces an older one (its bridge gave up).
+        if let Some((old, _)) = self
+            .agent
+            .channel_waiter
+            .replace((reply, std::time::Instant::now()))
+        {
+            let _ = old.send(Ok("[]".into()));
+        }
+        if !self.agent.channel_events.is_empty() {
+            self.channel_deliver();
         }
     }
 

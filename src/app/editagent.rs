@@ -263,7 +263,7 @@ impl App {
         if let Some(v) = since {
             match e.agent_version(v) {
                 Some(old) => {
-                    if v == e.version {
+                    if v == e.version || old == lines.as_slice() {
                         out.push_str("no changes since that version\n");
                     } else {
                         let a = old.join("\n");

@@ -37,6 +37,9 @@ pub struct Line {
     /// Written by the agent and not yet accepted by the user (a user's
     /// edit of the line or a save accepts it; docs/11 «Три слоя»).
     pub by_agent: bool,
+    /// The user typed (changed) it in this window — such a line can be an
+    /// instruction for the agent; a line read from the file is not.
+    pub typed: bool,
 }
 
 impl Line {
@@ -45,6 +48,7 @@ impl Line {
             text: text.into(),
             eol,
             by_agent: false,
+            typed: false,
         }
     }
 

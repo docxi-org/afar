@@ -55,7 +55,9 @@ pub(super) struct AgentSession {
     pub ide_sent: Option<super::ide::SentSelection>,
     /// Events for the agent's channel, and the waiting `afar channel`.
     pub channel_events: Vec<serde_json::Value>,
-    pub channel_waiter: Option<oneshot::Sender<Reply>>,
+    /// The waiting request and when it came (answered empty before the
+    /// HTTP time-out, so that no event goes to a request already gone).
+    pub channel_waiter: Option<(oneshot::Sender<Reply>, Instant)>,
     /// The name was last read from the conversation file.
     pub name_checked: Instant,
     /// Enter for text typed into the agent's input, when it is due.

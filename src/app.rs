@@ -38,6 +38,7 @@ pub use testtools::PNG_MARK;
 mod editcp;
 mod editors;
 mod editsearch;
+mod editturn;
 mod farimport;
 mod fileops;
 mod findfiles;
@@ -155,7 +156,12 @@ refer to a file or directory, show it with afar_navigate. To point at a place in
 in afar's viewer with afar_view (a line or a pattern) and mark lines with afar_highlight (a label; \
 info / warning / error); afar_viewer_state tells which file and lines the user looks at and what they \
 selected. A file open in afar's editor (afar_edit, afar_editor_state) is edited in its buffer, not on the \
-disk: read it with afar_buffer_read, change it with afar_buffer_edit / afar_buffer_insert; the user saves. Blocks starting with [afar journal] in a \
+disk: read it with afar_buffer_read, change it with afar_buffer_edit / afar_buffer_insert; the user saves. \
+An event starting with [afar editor #N … | the user passes you the turn] comes from the editor: the user's \
+instruction (if any), the cursor, the selection and the changes since the version you last saw; mode auto — do \
+what it asks in that buffer (\"after this line\" means the line the instruction was typed at — the event says \
+which, 0 meaning before the first line: afar_buffer_insert after_line 0); mode answer — \
+do not change the text, answer in your pane. Blocks starting with [afar journal] in a \
 user message are recent user actions added automatically. In the journal, `fs` entries are file changes afar saw in the panels' folders; afar cannot tell who wrote them: \
 `(while your Bash ran)` means they happened during your shell command (Bash or PowerShell) and most likely are its own \
 writes, `(while [cmd-N] ran)` — during the user's command. `tool` entries are your own tool uses; files you change \
@@ -991,6 +997,7 @@ impl App {
         }
         self.viewer_tick();
         self.editor_tick();
+        self.channel_tick();
         self.ide_sync_selection();
         if self.agent_alive() {
             self.agent.send_enter();

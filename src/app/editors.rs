@@ -661,6 +661,8 @@ impl App {
                 let id = self.editors[i].id;
                 self.editor_settings_dialog(Some(id));
             }
+            AgentTurn => self.editor_agent_turn(i, false),
+            AgentAnswer => self.editor_agent_turn(i, true),
             InsertActiveName | InsertPassiveName | InsertLeftPath | InsertRightPath
             | InsertActivePath | InsertPassivePath => {
                 // Far's MakePathForUI: names and folders, quoted when they
@@ -1420,8 +1422,14 @@ impl App {
             .and_then(|l| l.text.chars().nth(e.cursor.col))
             .map(|c| format!("{:<5}", c as u32))
             .unwrap_or_else(|| " ".repeat(5));
+        // The agent's turn (passed with Ctrl+Enter, until it ends).
+        let turn = if e.agent_turn.is_some() {
+            format!("{} ", tr!("editor-agent-turn"))
+        } else {
+            String::new()
+        };
         let tail = format!(
-            "│{modified}{mode}│{cp}│{} {pos:>total$}│{} {vcol:<3}│{} {:<3}{attrs}│{code}",
+            "{turn}│{modified}{mode}│{cp}│{} {pos:>total$}│{} {vcol:<3}│{} {:<3}{attrs}│{code}",
             short("MEditStatusLine"),
             short("MEditStatusCol"),
             short("MEditStatusChar"),

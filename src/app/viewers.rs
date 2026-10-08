@@ -700,7 +700,8 @@ impl App {
                     (
                         tr!("MScreensEdit"),
                         e.is_some_and(|e| e.modified()),
-                        e.map(|e| e.path().display().to_string()).unwrap_or_default(),
+                        e.map(|e| e.path().display().to_string())
+                            .unwrap_or_default(),
                     )
                 }
                 ScreenId::Viewer(id) => (

@@ -25,6 +25,12 @@ impl App {
     /// The agent's state changed (hooks): a bell when it is done or asks
     /// while the window is in the background.
     pub(super) fn agent_state(&mut self, state: AgentState) {
+        // The agent's turn passed from an editor is over.
+        if state == AgentState::Ready {
+            for e in &mut self.editors {
+                e.agent_turn = None;
+            }
+        }
         if state == self.agent.state {
             return;
         }

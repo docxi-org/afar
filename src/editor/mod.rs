@@ -175,6 +175,8 @@ pub struct Editor {
     /// Bytes the code page could not read when the file was read (Far's
     /// `BadConversion`): saving would lose them.
     pub bad_conversion: Option<Vec<u8>>,
+    /// The user passed the turn to the agent (until the agent's turn ends).
+    pub agent_turn: Option<Instant>,
     /// Ctrl+Shift+0…9 / Ctrl+0…9.
     pub bookmarks: [Option<Bookmark>; 10],
 }
@@ -220,6 +222,7 @@ impl Editor {
             goto_hex: false,
             dragging_bar: false,
             bad_conversion: None,
+            agent_turn: None,
             bookmarks: [None; 10],
         }
     }
@@ -692,6 +695,7 @@ impl Editor {
             }
             let mut line = Line::new(text, if i + 1 == n { last_eol } else { break_eol });
             line.by_agent = self.agent_writing;
+            line.typed = !self.agent_writing;
             new_lines.push(line);
         }
         let end_col = if n == 1 {
@@ -971,6 +975,22 @@ impl Editor {
         } else {
             self.type_char('\t');
         }
+    }
+
+    /// Ctrl+Enter: the line under the cursor, when the user typed it here
+    /// and it is not blank, is the agent's instruction — taken out of the
+    /// text (an undo step of its own). Returns its line (from 0) and text.
+    pub fn take_instruction(&mut self) -> Option<(usize, String)> {
+        let n = self.cursor.line;
+        let l = &self.lines[n];
+        let text = l.text.trim().to_string();
+        if !self.editable() || !l.typed || text.is_empty() {
+            return None;
+        }
+        self.unselect();
+        self.delete_line();
+        self.cursor.col = 0;
+        Some((n, text))
     }
 
     pub fn undo(&mut self) {

@@ -116,6 +116,12 @@ pub enum Event {
         removed: usize,
         version: u64,
     },
+    /// The user passed the turn to the agent from the editor.
+    EditorTurn {
+        path: PathBuf,
+        instruction: String,
+        answer: bool,
+    },
     /// The agent played input in afar (its test tools).
     TestInput {
         actions: Vec<String>,
@@ -419,6 +425,20 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 )
             }
             Event::TestInput { actions } => format!("test   {}", actions.join(", ")),
+            Event::EditorTurn {
+                path,
+                instruction,
+                answer,
+            } => format!(
+                "turn   {}{}{}",
+                path.display(),
+                if *answer { " (answer only)" } else { "" },
+                if instruction.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {instruction}")
+                }
+            ),
             Event::FileSaved { path, codepage } => {
                 format!("save   {} ({codepage})", path.display())
             }

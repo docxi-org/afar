@@ -184,3 +184,16 @@ fn bytes_the_page_cannot_read_are_reported() {
     let l = text::load(b"plain", Some(65001), false, 65001);
     assert_eq!(l.bad, None);
 }
+
+#[test]
+fn a_typed_line_is_the_agent_instruction() {
+    let mut e = ed("from the file\n");
+    // A line of the file is not an instruction.
+    assert_eq!(e.take_instruction(), None);
+    e.cursor = Pos::new(1, 0);
+    typed(&mut e, "  make a table  ");
+    assert_eq!(e.take_instruction(), Some((1, "make a table".to_string())));
+    assert_eq!(e.plain_lines(), vec!["from the file", ""]);
+    e.undo();
+    assert_eq!(e.plain_lines(), vec!["from the file", "  make a table  "]);
+}

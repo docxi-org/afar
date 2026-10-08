@@ -223,3 +223,6 @@ agent-edited-behind = Агент правит { $what } в редакторе �
 test-tools-on = Включены тестовые инструменты агента ([agent] test_tools): он может нажимать клавиши в afar и снимать экран
 test-input = Агент нажимает: { $what }
 test-input-stopped = Прогон агента остановлен: ожидаемого текста нет на экране
+editor-agent-turn = ◆ ход агента
+editor-agent-off = Агент не запущен — ход передать некому
+editor-agent-no-channel = Канал агента не включён ([agent] channels) и нет связи по протоколу IDE — ход передать нельзя

@@ -222,3 +222,6 @@ agent-edited-behind = The agent is editing { $what } in the editor — F12 to go
 test-tools-on = The agent's test tools are on ([agent] test_tools): it can press keys in afar and take screenshots
 test-input = The agent presses: { $what }
 test-input-stopped = The agent's run stopped: the expected text is not on the screen
+editor-agent-turn = ◆ agent's turn
+editor-agent-off = The agent is not running: there is no one to pass the turn to
+editor-agent-no-channel = The agent's channel is off ([agent] channels) and the IDE link is off: the turn cannot be passed

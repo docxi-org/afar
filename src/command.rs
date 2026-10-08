@@ -218,6 +218,10 @@ pub enum EditorCmd {
     InsertRightPath,
     InsertActivePath,
     InsertPassivePath,
+    /// Ctrl+Enter / Ctrl+Alt+Enter: the turn to the agent (it decides /
+    /// it only answers).
+    AgentTurn,
+    AgentAnswer,
     // Clipboard and blocks.
     Copy,
     Cut,
@@ -579,6 +583,8 @@ pub const COMMANDS: &[Def] = &[
     edef("editor.next_codepage", E::NextCodepage, &["F8"]),
     edef("editor.codepage_menu", E::CodepageMenu, &["Shift+F8"]),
     edef("editor.settings", E::Settings, &["Alt+Shift+F9"]),
+    edef("editor.agent_turn", E::AgentTurn, &["Ctrl+Enter"]),
+    edef("editor.agent_answer", E::AgentAnswer, &["Ctrl+Alt+Enter"]),
     edef("editor.insert_active_name", E::InsertActiveName, &["Shift+Enter"]),
     edef("editor.insert_passive_name", E::InsertPassiveName, &["Ctrl+Shift+Enter"]),
     edef("editor.insert_left_path", E::InsertLeftPath, &["Ctrl+["]),
