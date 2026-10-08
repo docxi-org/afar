@@ -478,7 +478,18 @@ impl App {
         let Some(v) = self.viewers.iter_mut().find(|v| v.id == id) else {
             return;
         };
-        let pos = row.map_or(v.top, |r| r.resolve(v.top, v.size()));
+        // With the line numbers shown a plain number is a line (as in the
+        // editor); an offset is still 0x…, …h, …m or a percentage.
+        let lines = v.line_numbers && v.mode == Mode::Text;
+        let pos = match row {
+            Some(r) if lines && r.plain => {
+                let current = v.line_of(v.top);
+                let n = r.resolve(current, 0).max(1);
+                v.line_start(n)
+            }
+            Some(r) => r.resolve(v.top, v.size()),
+            None => v.top,
+        };
         let left = col.map(|c| c.resolve(v.left as u64, 0) as usize);
         v.goto(pos, left);
     }

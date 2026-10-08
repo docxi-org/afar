@@ -350,6 +350,9 @@ pub struct App {
     viewer_keybar: bool,
     /// The shown viewer last checked its file for changes.
     viewer_checked: Instant,
+    /// The user's selection while an agent's request shows its own items
+    /// selected (panel, folder, names); back when the dialog closes.
+    agent_request_selection: Option<(usize, PathBuf, Vec<String>)>,
     /// A press on the agent pane's top frame that is also a boundary: a
     /// click there (released without moving) opens the pane's menu, a drag
     /// moves the boundary.
@@ -498,6 +501,7 @@ impl App {
             viewer_peek: false,
             viewer_keybar: true,
             viewer_checked: Instant::now(),
+            agent_request_selection: None,
             agent_frame_click: None,
             held: KeyModifiers::NONE,
             hiding_pressed: None,
@@ -849,7 +853,11 @@ impl App {
             }
             // The test tools play their input a frame at a time.
             let testing = self.test_step();
-            let wait = if testing { 15 } else { 250 };
+            // A viewer building its line index for the numbers: sooner.
+            let indexing = self
+                .shown_viewer()
+                .is_some_and(|i| self.viewers[i].indexing());
+            let wait = if testing || indexing { 15 } else { 250 };
             match rx.recv_timeout(Duration::from_millis(wait)) {
                 Ok(msg) => {
                     // Coalesce bursts (PTY output) into one redraw; a paste

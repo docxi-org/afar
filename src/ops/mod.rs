@@ -226,6 +226,9 @@ pub struct OpReport {
     pub renamed: usize,
     pub failed: Vec<(PathBuf, String)>,
     pub cancelled: bool,
+    /// Sources (as given) done whole: nothing in them skipped or failed
+    /// (copy and move; Far then unselects them in the panel).
+    pub completed: Vec<PathBuf>,
 }
 
 /// Creates directories `names` (relative to `base` or absolute, nested

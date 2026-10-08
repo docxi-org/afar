@@ -129,6 +129,7 @@ pub const VIEWER_TEXT: Style = c(con::LIGHTCYAN, con::BLUE);
 pub const VIEWER_SELECTED: Style = c(con::BLACK, con::CYAN);
 pub const VIEWER_STATUS: Style = c(con::BLACK, con::CYAN);
 pub const VIEWER_ARROWS: Style = c(con::YELLOW, con::BLUE);
+pub const VIEWER_LINE_NUMBERS: Style = c(con::LIGHTGRAY, con::BLUE);
 pub const VIEWER_SCROLLBAR: Style = c(con::LIGHTCYAN, con::BLUE);
 /// Lines the agent marked in the viewer (afar's): info, warning, error;
 /// lines changed on the disk.

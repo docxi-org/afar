@@ -88,6 +88,7 @@ show_arrows = true            # стрелки сдвига у краёв стр
 show_zero = false             # нулевой символ как «·»
 scrollbar = false
 syntax = true                 # подсветка синтаксиса (Alt+F3 — в окне)
+line_numbers = false          # номера строк (Ctrl+F3 — в окне)
 # Что запоминать о файле: позицию, кодовую страницу, закладки, режим
 # (текст, hex, дамп), перенос.
 save_position = true

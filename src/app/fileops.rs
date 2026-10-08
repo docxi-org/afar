@@ -210,6 +210,9 @@ pub(super) struct RunningOp {
     focus: Option<(usize, String)>,
     /// Where things go (copy/move), for the agent's answer.
     dest: Option<PathBuf>,
+    /// The user's copy or move from this panel: the sources done are
+    /// unselected there (Far's `ClearLastGetSelection`).
+    unselect: Option<usize>,
 }
 
 // ------------------------------------------------------------- helpers
@@ -475,10 +478,31 @@ impl App {
         }
     }
 
+    /// The agent's request is answered: the user's selection comes back.
+    fn restore_user_selection(&mut self) {
+        if let Some((side, path, names)) = self.agent_request_selection.take()
+            && self.panels[side].path == path
+        {
+            self.panels[side].select_names(&names, false);
+        }
+    }
+
     fn close_dialog(&mut self, button: Option<usize>) {
         let Some(Overlay::Dialog { dialog, purpose }) = self.overlays.pop() else {
             return;
         };
+        if matches!(
+            &purpose,
+            Purpose::Delete {
+                actor: Actor::Agent,
+                ..
+            } | Purpose::Copy {
+                actor: Actor::Agent,
+                ..
+            }
+        ) {
+            self.restore_user_selection();
+        }
         // The fields' histories: on a button other than Cancel (not Esc).
         if let Some(b) = button {
             let actor = match &purpose {
@@ -1309,6 +1333,12 @@ impl App {
             let _ = tx.send(AppMsg::Op(m));
         });
         self.track_op(id, kind, actor, reply, control, focus, Some(dest), started);
+        // The agent's request does not touch the user's selection.
+        if actor == Actor::User
+            && let Some(op) = self.ops.get_mut(&id)
+        {
+            op.unselect = Some(side);
+        }
         Ok(())
     }
 
@@ -1336,6 +1366,7 @@ impl App {
                         control,
                         focus,
                         dest,
+                        unselect: None,
                     },
                 );
                 self.overlays.push(Overlay::Progress(Progress {
@@ -1504,6 +1535,16 @@ impl App {
                 for p in &mut self.panels {
                     p.reload(None);
                 }
+                if let Some(side) = op.unselect {
+                    let panel = &mut self.panels[side];
+                    let names: Vec<String> = report
+                        .completed
+                        .iter()
+                        .filter(|p| p.parent() == Some(panel.path.as_path()))
+                        .map(|p| name_of(p))
+                        .collect();
+                    panel.unselect_names(&names);
+                }
                 if let Some((side, name)) = &op.focus {
                     self.panels[*side].set_cursor_by_name(name);
                 }
@@ -1600,6 +1641,7 @@ impl App {
             );
         }
         self.overlays.remove(at);
+        self.restore_user_selection();
         self.say(tr!("agent-request-abandoned"));
     }
 
@@ -1640,6 +1682,9 @@ impl App {
     /// keyboard on the dialog.
     fn present_agent_request(&mut self, side: usize, names: &[String], what: String) {
         self.set_panels_visible(true);
+        let panel = &self.panels[side];
+        let users: Vec<String> = panel.selected().map(|e| e.name.clone()).collect();
+        self.agent_request_selection = Some((side, panel.path.clone(), users));
         self.panels[side].select_names(names, false);
         self.focus = Focus::Panels;
         self.say(tr!("agent-asks", what = what));
@@ -1690,6 +1735,11 @@ impl App {
         moving: bool,
         reply: oneshot::Sender<Reply>,
     ) {
+        let dest = if cfg!(windows) {
+            dest.replace('/', "\\")
+        } else {
+            dest
+        };
         let action = if moving {
             AgentAction::Move
         } else {

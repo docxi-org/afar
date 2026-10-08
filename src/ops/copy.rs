@@ -117,8 +117,12 @@ pub fn spawn_copy(
                 c.w.bytes_total += bytes;
             }
             for (src, target) in &pairs {
+                let before = (c.w.report.failed.len(), c.w.report.skipped);
                 if c.copy_item(src, target) == Flow::Stop {
                     break;
+                }
+                if (c.w.report.failed.len(), c.w.report.skipped) == before {
+                    c.w.report.completed.push(src.clone());
                 }
             }
             let report = c.w.finish();

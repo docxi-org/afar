@@ -445,6 +445,15 @@ impl FilePanel {
         }
     }
 
+    /// Unselects the given names.
+    pub fn unselect_names(&mut self, names: &[String]) {
+        for e in &mut self.entries {
+            if names.iter().any(|n| n.eq_ignore_ascii_case(&e.name)) {
+                e.selected = false;
+            }
+        }
+    }
+
     /// Sets the selection to the given names; returns how many were found.
     pub fn select_names(&mut self, names: &[String], add: bool) -> usize {
         let mut found = 0;

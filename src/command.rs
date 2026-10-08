@@ -331,6 +331,8 @@ pub enum ViewerCmd {
     PrevMark,
     /// Alt+F3: syntax highlighting on / off in this window.
     Syntax,
+    /// Ctrl+F3: line numbers (as in the editor).
+    LineNumbers,
 }
 
 /// A command's name, its default (Far) keys, and whether it works with the
@@ -705,6 +707,7 @@ pub const COMMANDS: &[Def] = &[
     vdef("viewer.prev_mark", V::PrevMark, &["Alt+Up"]),
     vdef("viewer.settings", V::Settings, &["Alt+Shift+F9"]),
     vdef("viewer.syntax", V::Syntax, &["Alt+F3"]),
+    vdef("viewer.line_numbers", V::LineNumbers, &["Ctrl+F3"]),
 ];
 
 impl Command {

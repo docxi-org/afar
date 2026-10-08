@@ -181,6 +181,8 @@ const SNAPSHOT_LIMIT: u64 = 4 << 20;
 const REDETECT_SCAN: u64 = 4 << 20;
 /// The end of a grown file looked at first: where the new text is.
 const REDETECT_TAIL: u64 = 1 << 20;
+/// Bytes the line index goes on per frame while line numbers wait for it.
+const INDEX_BUDGET: u64 = 16 << 20;
 
 pub struct Viewer {
     pub id: u32,
@@ -231,6 +233,10 @@ pub struct Viewer {
     /// The code page is guessed, not chosen: while the file is ASCII up to
     /// this offset, text added later decides it.
     ascii_until: Option<u64>,
+    /// Line numbers at the left (Ctrl+F3, text mode).
+    pub line_numbers: bool,
+    /// Columns of the line numbers in the last frame.
+    gutter: u16,
 }
 
 impl Viewer {
@@ -320,6 +326,8 @@ impl Viewer {
             shown_label: None,
             highlight,
             ascii_until,
+            line_numbers: settings.line_numbers,
+            gutter: 0,
         };
         v.snapshot = v.read_snapshot();
         if let Some(r) = remembered {
@@ -382,16 +390,33 @@ impl Viewer {
     }
 
     /// The text area inside `area`: below the status line, left of the
-    /// scroll bar.
+    /// scroll bar, right of the line numbers.
     fn text_area(&self, area: Rect) -> Rect {
         let status = u16::from(self.status_line && area.height > 1);
         let bar = u16::from(self.scrollbar && area.width > 1);
+        let gutter = self.gutter.min(area.width.saturating_sub(bar + 1));
         Rect::new(
-            area.x,
+            area.x + gutter,
             area.y + status,
-            area.width - bar,
+            area.width - bar - gutter,
             area.height - status,
         )
+    }
+
+    /// Columns for the line numbers: the digits of the most lines known
+    /// (at least three) and a space; none outside the text mode.
+    fn gutter_width(&self) -> u16 {
+        if !self.line_numbers || self.mode != Mode::Text {
+            return 0;
+        }
+        let digits = self.lines.known_lines().to_string().len().max(3);
+        digits as u16 + 1
+    }
+
+    /// The line index is still being built for the line numbers (the
+    /// application then draws sooner).
+    pub fn indexing(&self) -> bool {
+        self.line_numbers && self.mode == Mode::Text && !self.lines.done()
     }
 
     fn opts(&self) -> TextOpts {
@@ -548,26 +573,12 @@ impl Viewer {
     /// Line and column (both from 0) of a byte offset; lines end with LF.
     /// Scans from the start of the file (the line index comes in stage 2).
     pub fn line_col(&mut self, pos: u64) -> (u64, u64) {
-        let lf = self.codec.encode("\n");
-        let u = lf.len().max(1) as u64;
         let pos = pos.min(self.src.size());
-        let (mut line, mut line_start, mut p) = (0u64, 0u64, 0u64);
-        while p < pos {
-            let len = (pos - p).min(1 << 20) as usize;
-            let chunk = self.src.read_vec(p, len);
-            if chunk.is_empty() {
-                break;
-            }
-            let mut i = 0;
-            while i + lf.len() <= chunk.len() {
-                if chunk[i..i + lf.len()] == lf[..] {
-                    line += 1;
-                    line_start = p + i as u64 + u;
-                }
-                i += u as usize;
-            }
-            p += chunk.len() as u64;
-        }
+        // From the line index: a scan from the start on every move cost
+        // seconds deep in a big file.
+        let line = self.line_of(pos);
+        let line_start = self.line_start(line).min(pos);
+        let line = line - 1;
         let bytes = self
             .src
             .read_vec(line_start, (pos - line_start).min(1 << 20) as usize);
@@ -840,6 +851,8 @@ impl Viewer {
             return false;
         };
         self.codec = codec;
+        // Line feeds are other bytes in another page.
+        self.lines = lines::LineIndex::new();
         self.highlight.reset();
         self.adjust_top();
         true
@@ -1088,6 +1101,7 @@ impl Viewer {
             Unselect => self.selection = None,
             Scrollbar => self.scrollbar = !self.scrollbar,
             StatusLine => self.status_line = !self.status_line,
+            LineNumbers if text => self.line_numbers = !self.line_numbers,
             // The window says what it is now.
             Syntax => {
                 self.highlight.on = !self.highlight.on;
@@ -1218,6 +1232,10 @@ impl Viewer {
     /// Draws the viewer into `area`; `clock` reserves its place at the
     /// right of the status line.
     pub fn draw(&mut self, area: Rect, buf: &mut Buffer, clock: u16) {
+        if self.indexing() {
+            self.lines.advance(&mut self.src, &self.codec, INDEX_BUDGET);
+        }
+        self.gutter = self.gutter_width();
         let text_area = self.text_area(area);
         let resized = text_area.width != self.area.width;
         self.area = text_area;
@@ -1285,7 +1303,21 @@ impl Viewer {
                 .ranges(&mut self.src, &self.codec, f.start, l.end),
             _ => Vec::new(),
         };
+        let numbers = self.row_numbers(&rows);
         for (y, row) in rows.into_iter().enumerate() {
+            if self.gutter > 0 {
+                let text = match numbers[y] {
+                    Some(n) => format!("{n:>w$} ", w = usize::from(self.gutter) - 1),
+                    None => String::new(),
+                };
+                buf.set_stringn(
+                    a.x - self.gutter,
+                    a.y + y as u16,
+                    &text,
+                    usize::from(self.gutter),
+                    theme::VIEWER_LINE_NUMBERS,
+                );
+            }
             if !self.marks.is_empty() && row.start > prev {
                 line += lines::count_feeds(&mut self.src, &self.codec, prev, row.start);
                 prev = row.start;
@@ -1400,6 +1432,34 @@ impl Viewer {
             }
             self.rows.push(row);
         }
+    }
+
+    /// The line number of each row that starts a line (rows going on with
+    /// a wrapped or cut line get none); none while the line index has not
+    /// reached the screen. Lines are counted by line feeds, as the agent's
+    /// tools count them.
+    fn row_numbers(&mut self, rows: &[Row]) -> Vec<Option<u64>> {
+        let mut out = vec![None; rows.len()];
+        if self.gutter == 0 || rows.is_empty() {
+            return out;
+        }
+        let Some(mut line) = self
+            .lines
+            .known_line_of(&mut self.src, &self.codec, rows[0].start)
+        else {
+            return out;
+        };
+        for (k, row) in rows.iter().enumerate() {
+            let starts = row.start == 0
+                || layout::unit_before(&mut self.src, &self.codec, row.start) == Some('\n');
+            if starts {
+                if k > 0 {
+                    line += 1;
+                }
+                out[k] = Some(line);
+            }
+        }
+        out
     }
 
     /// Characters of `bytes` (starting at file offset `pos`) for the hex
@@ -1617,6 +1677,13 @@ impl Viewer {
             if group == "Alt" {
                 labels[2] = t("editor-keybar-syntax");
             }
+            if group == "Ctrl" && self.mode == Mode::Text {
+                labels[2] = t(if self.line_numbers {
+                    "MEditCtrlF3Hide"
+                } else {
+                    "MEditCtrlF3"
+                });
+            }
             if group == "Shift" {
                 labels[1] = match self.mode {
                     Mode::Text if self.word_wrap => t("MViewF2"),
@@ -1712,6 +1779,9 @@ pub struct GotoValue {
     /// `+` or `-`: relative to the current place.
     pub sign: Option<char>,
     pub percent: bool,
+    /// A plain decimal number (no `0x`, `h`, `m`, `%`, Hex box): a line
+    /// number while the line numbers are shown.
+    pub plain: bool,
 }
 
 impl GotoValue {
@@ -1754,6 +1824,7 @@ pub fn parse_goto(text: &str, hex: bool) -> Option<(Option<GotoValue>, Option<Go
             s = &s[..s.len() - 1];
         }
         let lower = s.to_ascii_lowercase();
+        let mut plain = false;
         let (digits, radix) = if let Some(d) = lower.strip_prefix("0x").or(lower.strip_prefix('$'))
         {
             (d.to_string(), 16)
@@ -1762,6 +1833,7 @@ pub fn parse_goto(text: &str, hex: bool) -> Option<(Option<GotoValue>, Option<Go
         } else if let Some(d) = lower.strip_suffix('m') {
             (d.to_string(), 10)
         } else {
+            plain = !hex && !percent;
             // A percentage is decimal even with the Hex box.
             (lower.clone(), if hex && !percent { 16 } else { 10 })
         };
@@ -1770,6 +1842,7 @@ pub fn parse_goto(text: &str, hex: bool) -> Option<(Option<GotoValue>, Option<Go
             value,
             sign,
             percent,
+            plain,
         }))
     };
     let row = element(first)?;
@@ -1786,6 +1859,24 @@ pub fn parse_goto(text: &str, hex: bool) -> Option<(Option<GotoValue>, Option<Go
 #[cfg(test)]
 mod goto_tests {
     use super::*;
+
+    #[test]
+    fn line_col_counts_from_the_line_index() {
+        let dir = std::env::temp_dir().join(format!("afar-vlc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lc.txt");
+        std::fs::write(&path, "ab\r\nцве\nx").unwrap();
+        let settings = crate::config::Viewer::default();
+        let mut v = Viewer::open(1, &path, &Defaults::default(), None, &settings).unwrap();
+        assert_eq!(v.line_col(0), (0, 0));
+        assert_eq!(v.line_col(2), (0, 2));
+        assert_eq!(v.line_col(4), (1, 0));
+        // "цв" is four bytes, two characters.
+        assert_eq!(v.line_col(8), (1, 2));
+        assert_eq!(v.line_col(11), (2, 0));
+        assert_eq!(v.line_col(12), (2, 1));
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn a_grown_ascii_file_gets_its_page_from_new_text() {
@@ -1844,12 +1935,18 @@ mod goto_tests {
                 value,
                 sign,
                 percent,
+                plain: false,
             })
         };
-        assert_eq!(
-            parse_goto("1000", false),
-            Some((v(1000, None, false), None))
-        );
+        let p = |value, sign| {
+            Some(GotoValue {
+                value,
+                sign,
+                percent: false,
+                plain: true,
+            })
+        };
+        assert_eq!(parse_goto("1000", false), Some((p(1000, None), None)));
         assert_eq!(parse_goto("50%", false), Some((v(50, None, true), None)));
         assert_eq!(
             parse_goto("+0x10", false),
@@ -1860,9 +1957,10 @@ mod goto_tests {
         assert_eq!(parse_goto("10m", true), Some((v(10, None, false), None)));
         assert_eq!(
             parse_goto("100 20", false),
-            Some((v(100, None, false), v(20, None, false)))
+            Some((p(100, None), p(20, None)))
         );
-        assert_eq!(parse_goto(",5", false), Some((None, v(5, None, false))));
+        assert_eq!(parse_goto(",5", false), Some((None, p(5, None))));
+        assert_eq!(parse_goto("-3", false), Some((p(3, Some('-')), None)));
         assert_eq!(parse_goto("zz", false), None);
         assert_eq!(v(50, None, true).unwrap().resolve(0, 1000), 500);
         assert_eq!(v(10, Some('-'), false).unwrap().resolve(5, 0), 0);

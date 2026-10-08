@@ -66,6 +66,29 @@ impl LineIndex {
         }
     }
 
+    /// Scans on at most `budget` bytes (a frame's share); whether the
+    /// whole file is scanned.
+    pub fn advance(&mut self, src: &mut Source, codec: &Codec, budget: u64) -> bool {
+        let target = self.offset.saturating_add(budget);
+        self.scan(src, codec, |_, o| o >= target);
+        self.done
+    }
+
+    /// The whole file is scanned.
+    pub fn done(&self) -> bool {
+        self.done
+    }
+
+    /// Lines found so far (all of them when `done`).
+    pub fn known_lines(&self) -> u64 {
+        self.line
+    }
+
+    /// The line of `offset` when scanned that far, without scanning.
+    pub fn known_line_of(&mut self, src: &mut Source, codec: &Codec, offset: u64) -> Option<u64> {
+        (self.done || self.offset > offset).then(|| self.line_of(src, codec, offset))
+    }
+
     /// Lines the file has (scanning it all).
     pub fn count(&mut self, src: &mut Source, codec: &Codec) -> u64 {
         self.scan(src, codec, |_, _| false);

@@ -63,7 +63,7 @@ pub fn char_at(src: &mut Source, codec: &Codec, pos: u64) -> Option<(char, usize
 
 /// The code unit ending at `pos` (`\n` and `\r` are single units in every
 /// supported code page and never part of a longer character).
-fn unit_before(src: &mut Source, codec: &Codec, pos: u64) -> Option<char> {
+pub fn unit_before(src: &mut Source, codec: &Codec, pos: u64) -> Option<char> {
     let u = codec.unit() as u64;
     if pos < u {
         return None;
