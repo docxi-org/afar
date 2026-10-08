@@ -241,6 +241,8 @@ pub struct App {
     wm: Wm,
     /// Splitter being dragged with the mouse, with the grab offset.
     drag: Option<(SplitId, u16)>,
+    /// The mouse dragged over a panel's files.
+    panel_drag: Option<PanelDrag>,
     cmdline: String,
     /// Cursor in `cmdline`, in chars.
     cmd_cursor: usize,
@@ -441,6 +443,7 @@ impl App {
                 wm
             },
             drag: None,
+            panel_drag: None,
             cmdline: String::new(),
             cmd_cursor: 0,
             agent: agent::AgentSession::new(config.agent.live),
@@ -904,7 +907,13 @@ impl App {
             let indexing = self
                 .shown_viewer()
                 .is_some_and(|i| self.viewers[i].indexing());
-            let wait = if testing || indexing { 15 } else { 250 };
+            // A drag held past a panel's edge scrolls on.
+            let scrolling = self.panel_drag.as_ref().is_some_and(|d| d.edge != 0);
+            let wait = if testing || indexing || scrolling {
+                15
+            } else {
+                250
+            };
             match rx.recv_timeout(Duration::from_millis(wait)) {
                 Ok(msg) => {
                     // Coalesce bursts (PTY output) into one redraw; a paste
@@ -1018,6 +1027,7 @@ impl App {
 
     /// Periodic work: debounced journal entries, message expiry.
     fn tick(&mut self) {
+        self.panel_drag_tick();
         self.fs_tick();
         self.drop_abandoned_requests();
         if self
@@ -2431,6 +2441,21 @@ impl App {
                 }
             }
         }
+        // Dragging over a panel's files, also past its edges.
+        if self.panel_drag.is_some() {
+            match ev.kind {
+                MouseEventKind::Drag(MouseButton::Left | MouseButton::Right) => {
+                    self.panel_drag_to(ev.column, ev.row);
+                    return;
+                }
+                MouseEventKind::Up(_) => {
+                    self.panel_drag_end();
+                    return;
+                }
+                // The release was missed (outside the window).
+                _ => self.panel_drag_end(),
+            }
+        }
         // The agent pane's top frame opens its menu at the title under the
         // mouse; where it is also a boundary, only a click (not a drag).
         let f = l.agent_frame;
@@ -2646,22 +2671,113 @@ impl App {
                         if double {
                             self.last_click = None;
                             self.enter();
+                            return;
                         } else {
                             self.last_click = Some((Instant::now(), side, i));
                         }
                     }
-                    MouseButton::Right => {
-                        self.panels[side].toggle_selection();
-                        self.mark_selection_changed();
-                    }
-                    MouseButton::Middle => {}
+                    MouseButton::Right => {}
+                    MouseButton::Middle => return,
                 }
+                // Far: the right button gives the file the other state, and
+                // every file the drag passes the same one.
+                let select = (button == MouseButton::Right).then(|| {
+                    let on = !self.panels[side].entries[i].selected;
+                    self.panels[side].set_selected(i, on);
+                    self.selection_changed[side] = Some(Instant::now());
+                    on
+                });
+                self.panel_drag = Some(PanelDrag {
+                    side,
+                    select,
+                    last: i,
+                    edge: 0,
+                    stepped: Instant::now(),
+                });
             }
             MouseEventKind::ScrollUp if self.quick_view_scroll(ev.column, ev.row, -wheel) => {}
             MouseEventKind::ScrollDown if self.quick_view_scroll(ev.column, ev.row, wheel) => {}
             MouseEventKind::ScrollUp => self.panels[side].move_cursor(-(wheel as isize)),
             MouseEventKind::ScrollDown => self.panels[side].move_cursor(wheel as isize),
             _ => {}
+        }
+    }
+
+    /// The mouse dragged to (x, y): the cursor to the file there (the
+    /// right button: every file between gets the state); above or below
+    /// the list it scrolls (on in `panel_drag_tick` while held there).
+    fn panel_drag_to(&mut self, x: u16, y: u16) {
+        let Some(d) = &mut self.panel_drag else {
+            return;
+        };
+        let p = &self.panels[d.side];
+        let (top, rows) = p.list_rows();
+        d.edge = if y < top {
+            -1
+        } else if usize::from(y - top) >= rows {
+            1
+        } else {
+            0
+        };
+        if d.edge != 0 {
+            self.panel_drag_step();
+            return;
+        }
+        if let Some(i) = p.item_at(x, y) {
+            self.panel_drag_over(i);
+        }
+    }
+
+    /// The drag reached item `i`: the files from the last one to it.
+    fn panel_drag_over(&mut self, i: usize) {
+        let Some(d) = &mut self.panel_drag else {
+            return;
+        };
+        let panel = &mut self.panels[d.side];
+        if let Some(on) = d.select {
+            for k in d.last.min(i)..=d.last.max(i) {
+                panel.set_selected(k, on);
+            }
+            self.selection_changed[d.side] = Some(Instant::now());
+        }
+        panel.cursor = i;
+        d.last = i;
+    }
+
+    /// One row on past the list's edge.
+    fn panel_drag_step(&mut self) {
+        let Some(d) = &mut self.panel_drag else {
+            return;
+        };
+        d.stepped = Instant::now();
+        let (side, edge) = (d.side, d.edge);
+        let panel = &self.panels[side];
+        if panel.entries.is_empty() {
+            return;
+        }
+        let i = (panel.cursor as isize + edge).clamp(0, panel.entries.len() as isize - 1) as usize;
+        self.panel_drag_over(i);
+    }
+
+    /// Held past the list's edge: it scrolls on.
+    fn panel_drag_tick(&mut self) {
+        if self
+            .panel_drag
+            .as_ref()
+            .is_some_and(|d| d.edge != 0 && d.stepped.elapsed() >= PANEL_DRAG_STEP)
+        {
+            self.panel_drag_step();
+        }
+    }
+
+    fn panel_drag_end(&mut self) {
+        if let Some(d) = self.panel_drag.take()
+            && d.select.is_some()
+            && self.panels[d.side].sort.selected_first
+        {
+            // Sorted only now (Far too): the files stay under the mouse
+            // while it drags.
+            self.panels[d.side].resort();
         }
     }
 
@@ -3324,6 +3440,23 @@ impl App {
         }
     }
 }
+
+/// A drag over a panel's files (Far's `FileList::ProcessMouse`): the left
+/// button moves the cursor, the right one gives every file passed the
+/// state the first one got.
+struct PanelDrag {
+    side: usize,
+    /// The right button: select (or unselect).
+    select: Option<bool>,
+    /// The file the drag was last on.
+    last: usize,
+    /// Above (-1) or below (1) the list: it scrolls.
+    edge: isize,
+    stepped: Instant,
+}
+
+/// How often a drag held past a panel's edge scrolls a row.
+const PANEL_DRAG_STEP: Duration = Duration::from_millis(50);
 
 /// Folders whose last conversation is remembered.
 const LAST_SESSIONS: usize = 50;

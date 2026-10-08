@@ -369,6 +369,20 @@ impl FilePanel {
         }
     }
 
+    /// Selects or unselects item `i` (not `..`).
+    pub fn set_selected(&mut self, i: usize, on: bool) {
+        if let Some(e) = self.entries.get_mut(i)
+            && !e.is_up()
+        {
+            e.selected = on;
+        }
+    }
+
+    /// Where the list is on the screen: its first row and how many rows.
+    pub fn list_rows(&self) -> (u16, usize) {
+        (self.list_top, self.rows)
+    }
+
     pub fn toggle_selection(&mut self) {
         if let Some(e) = self.entries.get_mut(self.cursor)
             && !e.is_up()
