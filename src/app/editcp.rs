@@ -71,7 +71,8 @@ impl App {
             return;
         }
         let id = e.id;
-        if !e.new_file && (is_utf16(e.cp) || is_utf16(cp)) {
+        // Far reads the file again for UTF-16, and after unreadable bytes.
+        if !e.new_file && (is_utf16(e.cp) || is_utf16(cp) || e.bad_conversion.is_some()) {
             if e.modified() {
                 let dialog = Dialog::message(
                     &tr!("MEditTitle"),

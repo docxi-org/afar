@@ -175,3 +175,12 @@ fn bookmarks_keep_to_their_lines() {
     e.command(C::GotoBookmark(7));
     assert_eq!(e.cursor, Pos::new(4, 3));
 }
+
+#[test]
+fn bytes_the_page_cannot_read_are_reported() {
+    let l = text::load(b"ab\xffc\r\nok", Some(65001), false, 65001);
+    assert_eq!(l.bad, Some(vec![0xFF]));
+    assert_eq!(l.lines[0].text, "ab\u{FFFD}c");
+    let l = text::load(b"plain", Some(65001), false, 65001);
+    assert_eq!(l.bad, None);
+}

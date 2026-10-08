@@ -603,3 +603,6 @@ MEditConfigScrollbar = Rodyti šlia&užiklį
 MEditConfigLineNumbers = Rodyt&i eilučių numerius
 MEditConfigSavePos = Iš&saugoti failo poziciją
 MEditAutoDetectCodePage = Auto&nustatyti kodavimo puslapį
+MAskReload = jau pakrautas. Pakrauti vėl?
+MCurrent = Rodyti &einamą
+MReload = Pe&rkrauti

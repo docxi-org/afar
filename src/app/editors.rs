@@ -113,6 +113,16 @@ pub(super) enum Ask {
     ReloadCp { id: u32, cp: u32 },
     /// The new page cannot read the text as it is: Show / OK / Cancel.
     SwitchCp { id: u32, cp: u32, at: Pos },
+    /// The file has bytes its page cannot read: another page, or as it is.
+    BadCp { id: u32, cps: Vec<u32> },
+    /// Saving a file with unreadable bytes loses them: save anyway?
+    DataLost { id: u32, then: After },
+    /// The file is open already: the open window, a new one, read again.
+    Reedit {
+        id: u32,
+        path: PathBuf,
+        cp: Option<u32>,
+    },
 }
 
 /// Where a file was left (Far's editor position cache).
@@ -245,9 +255,91 @@ impl App {
             });
             return;
         }
-        if self.open_editor(path, cp, None).is_some() {
-            self.journal_user_edit(path);
+        // Open already (Far's FindWindowByFile): asked how, when modified
+        // or when the confirmation is on; else that window.
+        if let Some(e) = self
+            .editors
+            .iter()
+            .find(|e| place_key(e.path()) == place_key(path))
+        {
+            let id = e.id;
+            if e.modified() || self.config.confirm.reedit {
+                let dialog = Dialog::message(
+                    &tr!("MEditTitle"),
+                    &[path.display().to_string(), tr!("MAskReload")],
+                    &[
+                        &tr!("MCurrent"),
+                        &tr!("MNewOpen"),
+                        &tr!("MReload"),
+                        &tr!("MCancel"),
+                    ],
+                    false,
+                );
+                self.overlays.push(Overlay::Dialog {
+                    dialog,
+                    purpose: Purpose::Editor(Ask::Reedit {
+                        id,
+                        path: path.to_path_buf(),
+                        cp,
+                    }),
+                });
+            } else {
+                self.wm.switch_to(ScreenId::Editor(id));
+            }
+            return;
         }
+        if let Some(id) = self.open_editor(path, cp, None) {
+            self.journal_user_edit(path);
+            self.editor_user_opened(id);
+        }
+    }
+
+    /// After the user opened a file: bytes its page cannot read are
+    /// asked about (Far's `BadCodepageDialog`) — another page, or as it is.
+    pub(super) fn editor_user_opened(&mut self, id: u32) {
+        let Some(i) = self.editor_index(id) else {
+            return;
+        };
+        let e = &self.editors[i];
+        let Some(bytes) = e.bad_conversion.clone() else {
+            return;
+        };
+        let cps = codepage_list(e.cp);
+        let selected = cps.iter().position(|cp| *cp == e.cp).unwrap_or(0);
+        let items = cps
+            .iter()
+            .map(|cp| Some(codepage::long_name(*cp)))
+            .collect();
+        let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
+        let dialog = Dialog::far(tr!("MWarning"), 64)
+            .row(vec![text_at(
+                5,
+                tr!("MUnsupportedCodePageSelectedCodepage"),
+            )])
+            .row(vec![combo_at(5, 53, items, selected)])
+            .row(vec![text_at(
+                5,
+                tr!(
+                    "MUnsupportedCodePageDoesNotSupport",
+                    p0 = tr!("MUnsupportedCodePageByteSequence")
+                ),
+            )])
+            .row(vec![text_at(5, format!("[{}]", hex.join(" ")))])
+            .row(vec![text_at(5, tr!("MEditorSaveNotRecommended"))])
+            .separator()
+            .buttons(&[&tr!("MOk"), &tr!("MCancel")], 0)
+            .warning();
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::Editor(Ask::BadCp { id, cps }),
+        });
+    }
+
+    /// The window goes without saving and without remembering its place
+    /// (Far's "Reload", a cancelled bad open).
+    fn editor_drop(&mut self, i: usize) {
+        let e = self.editors.remove(i);
+        self.wm.remove_screen(ScreenId::Editor(e.id));
     }
 
     /// Opens an editor screen (or shows the one already open on the file);
@@ -258,12 +350,28 @@ impl App {
         cp: Option<u32>,
         line: Option<usize>,
     ) -> Option<u32> {
+        self.open_editor_as(path, cp, line, false)
+    }
+
+    /// `new_copy`: another window on a file already open (Far's "New
+    /// instance").
+    fn open_editor_as(
+        &mut self,
+        path: &Path,
+        cp: Option<u32>,
+        line: Option<usize>,
+        new_copy: bool,
+    ) -> Option<u32> {
         if path.is_dir() {
             self.message(&tr!("MEditTitle"), &[tr!("MEditCanNotEditDirectory")], true);
             return None;
         }
         let key = place_key(path);
-        if let Some(e) = self.editors.iter_mut().find(|e| place_key(e.path()) == key) {
+        if let Some(e) = self
+            .editors
+            .iter_mut()
+            .find(|e| !new_copy && place_key(e.path()) == key)
+        {
             let id = e.id;
             if let Some(l) = line {
                 e.cursor = Pos::new(l.min(e.line_count() - 1), 0);
@@ -300,6 +408,7 @@ impl App {
                 );
                 let mut e = Editor::new(id, path, l.lines, l.cp, l.bom, l.eol.unwrap_or(Eol::CrLf));
                 e.stamp = stamp(path);
+                e.bad_conversion = l.bad;
                 e
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -412,7 +521,8 @@ impl App {
             col: e.cursor.col,
             top: e.top,
             left: e.left,
-            cp: e.cp,
+            // Far does not keep the page of a file it could not read.
+            cp: if e.bad_conversion.is_some() { 0 } else { e.cp },
             bookmarks: e.bookmarks,
         };
         let (path, file) = (e.path().to_path_buf(), self.places_file());
@@ -551,6 +661,26 @@ impl App {
                 let id = self.editors[i].id;
                 self.editor_settings_dialog(Some(id));
             }
+            InsertActiveName | InsertPassiveName | InsertLeftPath | InsertRightPath
+            | InsertActivePath | InsertPassivePath => {
+                // Far's MakePathForUI: names and folders, quoted when they
+                // have spaces.
+                let a = self.active;
+                let folder = |side: usize| super::cmdline::folder_text(&self.panels[side].path);
+                let text = match cmd {
+                    InsertActiveName | InsertPassiveName => {
+                        let side = if cmd == InsertActiveName { a } else { 1 - a };
+                        self.panels[side].current().map(|e| super::quote(&e.name))
+                    }
+                    InsertLeftPath => Some(folder(0)),
+                    InsertRightPath => Some(folder(1)),
+                    InsertActivePath => Some(folder(a)),
+                    _ => Some(folder(1 - a)),
+                };
+                if let Some(text) = text {
+                    self.editors[i].insert_text(&text);
+                }
+            }
             CodepageMenu => self.editor_codepage_menu(i),
             _ => {}
         }
@@ -623,6 +753,27 @@ impl App {
             });
             return;
         }
+        self.editor_save_checked(i, then);
+    }
+
+    /// Far's warning before saving a file read with unreadable bytes.
+    fn editor_save_checked(&mut self, i: usize, then: After) {
+        let e = &self.editors[i];
+        if e.bad_conversion.is_some() {
+            let id = e.id;
+            let dialog = Dialog::message(
+                &tr!("MWarning"),
+                &[tr!("MEditDataLostWarn"), tr!("MEditorSaveNotRecommended")],
+                &[&tr!("MEditorSave"), &tr!("MCancel")],
+                true,
+            );
+            self.overlays.push(Overlay::Dialog {
+                dialog,
+                purpose: Purpose::Editor(Ask::DataLost { id, then }),
+            });
+            return;
+        }
+        let path = e.path().to_path_buf();
         self.editor_write(i, path, then, false, None);
     }
 
@@ -903,14 +1054,18 @@ impl App {
                 self.edit_file(&path, cp);
             }
             Ask::NewPath { path, cp } => {
-                if button == Some(0) && self.open_editor(&path, cp, None).is_some() {
+                if button == Some(0)
+                    && let Some(id) = self.open_editor(&path, cp, None)
+                {
                     self.journal_user_edit(&path);
+                    self.editor_user_opened(id);
                 }
             }
             Ask::Large { path, cp } => match button {
                 Some(0) => {
-                    if self.open_editor(&path, cp, None).is_some() {
+                    if let Some(id) = self.open_editor(&path, cp, None) {
                         self.journal_user_edit(&path);
+                        self.editor_user_opened(id);
                     }
                 }
                 Some(1) => {
@@ -1003,10 +1158,7 @@ impl App {
                     return;
                 };
                 match button {
-                    Some(0) => {
-                        let path = self.editors[i].path().to_path_buf();
-                        self.editor_write(i, path, then, false, None);
-                    }
+                    Some(0) => self.editor_save_checked(i, then),
                     Some(1) => self.editor_save_as_dialog(i, then),
                     _ => {}
                 }
@@ -1038,6 +1190,56 @@ impl App {
                 }
             }
             Ask::SwitchCp { id, cp, at } => self.editor_switch_cp_answer(id, cp, at, button),
+            Ask::DataLost { id, then } => {
+                if button == Some(0)
+                    && let Some(i) = self.editor_index(id)
+                {
+                    let path = self.editors[i].path().to_path_buf();
+                    self.editor_write(i, path, then, false, None);
+                }
+            }
+            Ask::BadCp { id, cps } => {
+                let Some(i) = self.editor_index(id) else {
+                    return;
+                };
+                if button != Some(0) {
+                    // Far does not open it.
+                    self.editor_drop(i);
+                    return;
+                }
+                let cp = cps
+                    .get(dialog.combo(0))
+                    .copied()
+                    .unwrap_or(self.editors[i].cp);
+                if cp != self.editors[i].cp {
+                    self.editor_reload_cp(i, cp);
+                    // Still unreadable in that page: asked again.
+                    self.editor_user_opened(id);
+                }
+            }
+            Ask::Reedit { id, path, cp } => match button {
+                Some(0) => {
+                    if self.editor_index(id).is_some() {
+                        self.wm.switch_to(ScreenId::Editor(id));
+                    }
+                }
+                Some(1) => {
+                    if let Some(new) = self.open_editor_as(&path, cp, None, true) {
+                        self.journal_user_edit(&path);
+                        self.editor_user_opened(new);
+                    }
+                }
+                Some(2) => {
+                    if let Some(i) = self.editor_index(id) {
+                        self.editor_drop(i);
+                    }
+                    if let Some(new) = self.open_editor(&path, cp, None) {
+                        self.journal_user_edit(&path);
+                        self.editor_user_opened(new);
+                    }
+                }
+                _ => {}
+            },
             Ask::Reload { id } => {
                 let Some(i) = self.editor_index(id) else {
                     return;
@@ -1079,6 +1281,7 @@ impl App {
         let l = text::load(&data, Some(cp), false, cp);
         let e = &mut self.editors[i];
         e.reload(l.lines, l.cp, l.bom, l.eol.unwrap_or(e.default_eol));
+        e.bad_conversion = l.bad;
         e.stamp = stamp(&path);
         e.ignored_stamp = None;
         e.scroll_to_cursor();

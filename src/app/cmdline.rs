@@ -263,7 +263,7 @@ impl App {
 }
 
 /// A panel's folder with a trailing separator, quoted when it has spaces.
-fn folder_text(path: &Path) -> String {
+pub(super) fn folder_text(path: &Path) -> String {
     let mut s = path.to_string_lossy().into_owned();
     if !s.ends_with(['\\', '/']) {
         s.push(std::path::MAIN_SEPARATOR);

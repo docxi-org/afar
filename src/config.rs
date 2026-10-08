@@ -309,6 +309,9 @@ pub struct Confirm {
     /// The agent menu asks before losing context or ending the agent
     /// (`/compact`, `/clear`, new / other session, restart).
     pub agent: bool,
+    /// Opening a file already open in the editor asks how (Far's
+    /// `AllowReedit`); a modified one always asks.
+    pub reedit: bool,
 }
 
 impl Default for Confirm {
@@ -318,6 +321,7 @@ impl Default for Confirm {
             read_only: true,
             esc: true,
             agent: true,
+            reedit: true,
         }
     }
 }

@@ -172,6 +172,9 @@ pub struct Editor {
     pub goto_hex: bool,
     /// The scroll bar's thumb is being dragged.
     pub dragging_bar: bool,
+    /// Bytes the code page could not read when the file was read (Far's
+    /// `BadConversion`): saving would lose them.
+    pub bad_conversion: Option<Vec<u8>>,
     /// Ctrl+Shift+0…9 / Ctrl+0…9.
     pub bookmarks: [Option<Bookmark>; 10],
 }
@@ -216,6 +219,7 @@ impl Editor {
             highlight: None,
             goto_hex: false,
             dragging_bar: false,
+            bad_conversion: None,
             bookmarks: [None; 10],
         }
     }

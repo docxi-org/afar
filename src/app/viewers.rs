@@ -304,6 +304,7 @@ impl App {
                     if let Some(e) = self.editors.iter_mut().find(|e| e.id == id) {
                         e.top = top;
                     }
+                    self.editor_user_opened(id);
                     self.journal.push(
                         crate::journal::Actor::User,
                         crate::journal::Event::EditorOpened { path },
@@ -690,11 +691,21 @@ impl App {
     /// name.
     pub(super) fn screens_menu(&mut self) {
         let screens = self.switchable_screens();
-        let rows: Vec<(String, String)> = screens
+        // Type, modified (Far's `*`), name.
+        let rows: Vec<(String, bool, String)> = screens
             .iter()
             .map(|s| match s {
+                ScreenId::Editor(id) => {
+                    let e = self.editors.iter().find(|e| e.id == *id);
+                    (
+                        tr!("MScreensEdit"),
+                        e.is_some_and(|e| e.modified()),
+                        e.map(|e| e.path().display().to_string()).unwrap_or_default(),
+                    )
+                }
                 ScreenId::Viewer(id) => (
                     tr!("MScreensView"),
+                    false,
                     self.viewers
                         .iter()
                         .find(|v| v.id == *id)
@@ -712,6 +723,7 @@ impl App {
                 ),
                 _ => (
                     tr!("MScreensPanels"),
+                    false,
                     self.panels[self.active].path.display().to_string(),
                 ),
             })
@@ -720,14 +732,15 @@ impl App {
         let items = rows
             .iter()
             .enumerate()
-            .map(|(i, (kind, name))| {
+            .map(|(i, (kind, modified, name))| {
                 let hotkey = match i {
                     0..=9 => format!("&{i}"),
                     10..=35 => format!("&{}", (b'A' + (i - 10) as u8) as char),
                     _ => " ".into(),
                 };
                 let name = name.replace('&', "&&");
-                Item::new(format!("{hotkey}  {kind:<type_w$}   {name}"))
+                let mark = if *modified { '*' } else { ' ' };
+                Item::new(format!("{hotkey}  {kind:<type_w$} {mark} {name}"))
             })
             .collect();
         let current = self.current_switchable();

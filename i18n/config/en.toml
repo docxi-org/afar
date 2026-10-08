@@ -20,6 +20,9 @@ delete_folder = true
 read_only = true
 # Esc during a file operation asks before cancelling it.
 esc = true
+# Opening a file already open in the editor asks how: the open window, a new
+# instance, or read it again (a modified one always asks).
+reedit = true
 # The agent menu asks before /compact, /clear and before ending the running
 # agent (a new or another session, restart, permission mode).
 agent = true

@@ -852,3 +852,11 @@ MEditConfigSavePos
 MEditConfigSaveShortPos
 MEditAutoDetectCodePage
 MEditConfigDefaultCodePage
+
+# Editor: open again, unreadable bytes
+MAskReload
+MCurrent
+MNewOpen
+MReload
+MEditorSaveNotRecommended
+MEditDataLostWarn

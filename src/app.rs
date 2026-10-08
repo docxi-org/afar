@@ -1296,8 +1296,7 @@ impl App {
 
     fn execute_as(&mut self, text: String, history: bool) {
         // A blank in front: not kept in the history (bash's ignorespace).
-        let private =
-            !history || text.starts_with(' ') && self.config.history.skip_leading_space;
+        let private = !history || text.starts_with(' ') && self.config.history.skip_leading_space;
         let text = text.trim().to_string();
         if text.is_empty() {
             return;

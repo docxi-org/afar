@@ -588,3 +588,6 @@ MEditCursorBeyondEnd = Cursor além do &fim da linha
 MEditConfigLineNumbers = Mo&strar números de linha
 MEditConfigSavePos = &Salvar posição do arquivo
 MEditAutoDetectCodePage = &Auto-detectar code page
+MAskReload = já carregado. Carregar novamente?
+MCurrent = Mostrar o &atual
+MReload = &Recarregar

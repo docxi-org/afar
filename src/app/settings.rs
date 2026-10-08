@@ -23,7 +23,7 @@ const CONFIRMATIONS: [(&str, Option<usize>); 15] = [
     ("MSetConfirmRemoveSUBST", None),
     ("MSetConfirmDetachVHD", None),
     ("MSetConfirmRemoveHotPlug", None),
-    ("MSetConfirmAllowReedit", None),
+    ("MSetConfirmAllowReedit", Some(4)),
     ("MSetConfirmHistoryClear", None),
     ("MSetConfirmExit", None),
     ("confirm-agent", Some(3)),
@@ -48,7 +48,7 @@ impl App {
     /// F9 → Options → Confirmations.
     pub(super) fn confirmations_dialog(&mut self) {
         let c = &self.config.confirm;
-        let values = [c.read_only, c.delete_folder, c.esc, c.agent];
+        let values = [c.read_only, c.delete_folder, c.esc, c.agent, c.reedit];
         let labels: Vec<String> = CONFIRMATIONS.iter().map(|(id, _)| tr!(id)).collect();
         // A check box is its text and 4 cells.
         let content = labels.iter().map(|l| chars(l) + 4).max().unwrap_or(20);
@@ -77,6 +77,7 @@ impl App {
                 Some(1) => self.config.confirm.delete_folder = value,
                 Some(2) => self.config.confirm.esc = value,
                 Some(3) => self.config.confirm.agent = value,
+                Some(4) => self.config.confirm.reedit = value,
                 _ => {}
             }
         }

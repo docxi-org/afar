@@ -75,6 +75,9 @@ pub struct Loaded {
     /// The first line ending in the file (Far's `GlobalEOL`): the one a
     /// line without an ending gets when a new line follows it.
     pub eol: Option<Eol>,
+    /// The first bytes the code page could not read (shown as U+FFFD;
+    /// Far's `BadConversion`).
+    pub bad: Option<Vec<u8>>,
 }
 
 /// Splits decoded text into lines, as Far's `enum_lines`: `LF`, `CR LF`,
@@ -155,6 +158,7 @@ pub fn load(data: &[u8], cp: Option<u32>, autodetect: bool, default_cp: u32) -> 
         Some((bom_cp, len)) if bom_cp == codec.cp() => len,
         _ => 0,
     };
+    let bad = first_bad(&codec, &data[skip..]);
     let mut text = decode(&codec, &data[skip..]);
     // A U+FEFF left at the start (page given, not detected) counts too.
     let mut has_bom = skip > 0;
@@ -174,7 +178,29 @@ pub fn load(data: &[u8], cp: Option<u32>, autodetect: bool, default_cp: u32) -> 
         cp: codec.cp(),
         bom: has_bom,
         eol,
+        bad,
     }
+}
+
+/// The first byte sequence `codec` cannot read, if any.
+fn first_bad(codec: &Codec, bytes: &[u8]) -> Option<Vec<u8>> {
+    if codec.cp() == codepage::UTF8 {
+        return std::str::from_utf8(bytes).err().map(|e| {
+            let s = e.valid_up_to();
+            let n = e.error_len().unwrap_or(bytes.len() - s);
+            bytes[s..s + n].to_vec()
+        });
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        let (c, n) = codec.decode(&bytes[i..]);
+        let n = n.max(1);
+        if c == '\u{FFFD}' {
+            return Some(bytes[i..(i + n).min(bytes.len())].to_vec());
+        }
+        i += n;
+    }
+    None
 }
 
 /// The bytes of `lines` in code page `cp` (with a BOM for UTF pages when

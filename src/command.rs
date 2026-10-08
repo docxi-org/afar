@@ -209,6 +209,15 @@ pub enum EditorCmd {
     CodepageMenu,
     /// Alt+Shift+F9: this window's settings.
     Settings,
+    /// Shift+Enter / Ctrl+Shift+Enter: the active / passive panel's current
+    /// name; Ctrl+[ / Ctrl+] / Ctrl+Shift+[ / Ctrl+Shift+]: the left / right
+    /// / active / passive panel's folder.
+    InsertActiveName,
+    InsertPassiveName,
+    InsertLeftPath,
+    InsertRightPath,
+    InsertActivePath,
+    InsertPassivePath,
     // Clipboard and blocks.
     Copy,
     Cut,
@@ -570,6 +579,12 @@ pub const COMMANDS: &[Def] = &[
     edef("editor.next_codepage", E::NextCodepage, &["F8"]),
     edef("editor.codepage_menu", E::CodepageMenu, &["Shift+F8"]),
     edef("editor.settings", E::Settings, &["Alt+Shift+F9"]),
+    edef("editor.insert_active_name", E::InsertActiveName, &["Shift+Enter"]),
+    edef("editor.insert_passive_name", E::InsertPassiveName, &["Ctrl+Shift+Enter"]),
+    edef("editor.insert_left_path", E::InsertLeftPath, &["Ctrl+["]),
+    edef("editor.insert_right_path", E::InsertRightPath, &["Ctrl+]"]),
+    edef("editor.insert_active_path", E::InsertActivePath, &["Ctrl+Shift+["]),
+    edef("editor.insert_passive_path", E::InsertPassivePath, &["Ctrl+Shift+]"]),
     edef("editor.bookmark_0", E::GotoBookmark(0), &["Ctrl+0"]),
     edef("editor.bookmark_1", E::GotoBookmark(1), &["Ctrl+1"]),
     edef("editor.bookmark_2", E::GotoBookmark(2), &["Ctrl+2"]),
