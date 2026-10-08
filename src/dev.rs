@@ -155,6 +155,21 @@ pub struct DevState {
     pub editors: Vec<EditorState>,
     #[serde(default)]
     pub editor_shown: Option<usize>,
+    /// The agent's last conversation in each folder, newest first: afar
+    /// started there continues it (`[agent] on_start = "last"`).
+    #[serde(default)]
+    pub agent_sessions: Vec<LastSession>,
+}
+
+/// The agent's last conversation in a folder.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LastSession {
+    pub cwd: PathBuf,
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

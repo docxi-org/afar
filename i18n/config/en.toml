@@ -32,6 +32,10 @@ agent = true
 # MCP server, hooks, system prompt, session).
 command = "claude"
 args = []
+# afar's start: "last" continues the agent's last conversation in this folder
+# (if afar has worked there), "new" starts a new one. A new one can always be
+# started from the agent's menu (F9 on the agent).
+on_start = "last"
 # Start in live mode: your actions go with each prompt to the agent.
 # Otherwise the agent reads the journal when it needs it.
 live = false

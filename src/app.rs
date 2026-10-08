@@ -384,6 +384,8 @@ pub struct App {
     /// Restored after a dev restart: keep the layout, continue the agent's
     /// conversation.
     restored: bool,
+    /// The agent's last conversation in each folder (kept in state.json).
+    agent_sessions: Vec<crate::dev::LastSession>,
     /// Window sizes came from a restart or the last run.
     layout_restored: bool,
     /// afar's data folder (`%LOCALAPPDATA%\afar`): sessions, history, state.
@@ -525,6 +527,7 @@ impl App {
                 last_agent_output: Instant::now(),
             }),
             restored: false,
+            agent_sessions: Vec::new(),
             layout_restored: false,
             data_dir,
             config,
@@ -580,6 +583,7 @@ impl App {
         self.agent.cwd = state.agent_cwd;
         self.agent.name = state.agent_name;
         self.agent.permission_mode = state.agent_permission_mode;
+        self.agent_sessions = state.agent_sessions;
         // The journal goes on where it was: the resumed agent's numbers hold.
         if let Some(dir) = &state.journal_dir {
             self.journal.carry_over(dir);
@@ -616,6 +620,43 @@ impl App {
             self.wm.set_extent(SplitId(id), extent);
         }
         self.layout_restored = true;
+        self.agent_sessions = state.agent_sessions;
+        // The agent's last conversation in the folder afar starts in.
+        if self.config.agent.on_start == crate::config::OnStart::Last {
+            let here = folder_key(&self.panels[active].path);
+            if let Some(s) = self
+                .agent_sessions
+                .iter()
+                .find(|s| folder_key(&s.cwd) == here)
+            {
+                self.agent.session_id = Some(s.id.clone());
+                self.agent.cwd = Some(s.cwd.clone());
+                self.agent.name = s.name.clone();
+                self.agent.permission_mode = s.permission_mode.clone();
+                self.restored = true;
+            }
+        }
+    }
+
+    /// The last conversation of each folder with the current one first
+    /// (at most `LAST_SESSIONS`).
+    fn last_sessions(&self) -> Vec<crate::dev::LastSession> {
+        let mut out = Vec::new();
+        if let (Some(id), Some(cwd)) = (&self.agent.session_id, &self.agent.cwd) {
+            out.push(crate::dev::LastSession {
+                cwd: cwd.clone(),
+                id: id.clone(),
+                name: self.agent.name.clone(),
+                permission_mode: self.agent.permission_mode.clone(),
+            });
+        }
+        for s in &self.agent_sessions {
+            if !out.iter().any(|o| folder_key(&o.cwd) == folder_key(&s.cwd)) {
+                out.push(s.clone());
+            }
+        }
+        out.truncate(LAST_SESSIONS);
+        out
     }
 
     /// `state.json` of the last run, if any.
@@ -672,6 +713,7 @@ impl App {
             agent_cwd: self.agent.cwd.clone(),
             agent_name: self.agent.name.clone(),
             agent_permission_mode: self.agent.permission_mode.clone(),
+            agent_sessions: self.last_sessions(),
             viewers,
             viewer_shown,
             editors,
@@ -3280,6 +3322,20 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// Folders whose last conversation is remembered.
+const LAST_SESSIONS: usize = 50;
+
+/// A folder compared as Windows does (letter case, a trailing separator).
+fn folder_key(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    let s = s.trim_end_matches(['\\', '/']);
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s.to_string()
     }
 }
 

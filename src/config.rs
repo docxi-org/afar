@@ -398,6 +398,9 @@ pub struct Agent {
     /// The agent's program and extra arguments (before afar's own).
     pub command: String,
     pub args: Vec<String>,
+    /// What afar's start gives the agent: its last conversation in this
+    /// folder, or a new one.
+    pub on_start: OnStart,
     /// Start in live observation mode (journal entries go with prompts).
     pub live: bool,
     /// Where the agent pane is: below the panels or above them.
@@ -419,6 +422,15 @@ pub struct Agent {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum OnStart {
+    /// The last conversation afar had in the folder it starts in.
+    #[default]
+    Last,
+    New,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AgentPosition {
     #[default]
     Bottom,
@@ -430,6 +442,7 @@ impl Default for Agent {
         Self {
             command: "claude".into(),
             args: Vec::new(),
+            on_start: OnStart::Last,
             live: false,
             position: AgentPosition::Bottom,
             ide: false,
