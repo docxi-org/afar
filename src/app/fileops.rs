@@ -2075,6 +2075,10 @@ impl App {
             _ => "user",
         };
         for (list, value) in dialog.history_values() {
+            // An empty instruction is just "your turn": nothing to recall.
+            if list == "AgentInstruction" && value.trim().is_empty() {
+                continue;
+            }
             let kept = self.history_text(&value);
             self.store
                 .add(crate::history::Kind::Dialog, &list, &kept, &folder, actor);

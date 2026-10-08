@@ -467,6 +467,8 @@ pub struct Dialog {
     links: Vec<(usize, usize)>,
     /// Where the dialog belongs (set by its owner when first drawn).
     pub host: Option<Host>,
+    /// Placed at the bottom of its parent rather than in the middle.
+    bottom: bool,
 }
 
 impl Dialog {
@@ -496,6 +498,7 @@ impl Dialog {
             ghost: None,
             links: Vec::new(),
             host: None,
+            bottom: false,
         }
     }
 
@@ -598,6 +601,13 @@ impl Dialog {
     }
 
     /// Red warning style.
+    /// Placed at the bottom of its window (a field that should not hide
+    /// the text above it).
+    pub fn at_bottom(mut self) -> Self {
+        self.bottom = true;
+        self
+    }
+
     pub fn warning(mut self) -> Self {
         self.warning = true;
         self
@@ -1767,7 +1777,16 @@ impl Dialog {
         let h = (self.rows.len() as u16 + 4).min(area.height);
         // Centred in the parent, moved by the user, kept on the screen.
         let cx = centred(parent.x, parent.width, area.x, area.width, w);
-        let cy = centred(parent.y, parent.height, area.y, area.height, h);
+        let cy = if self.bottom {
+            // At the parent's bottom with its shadow inside the parent,
+            // kept on the screen.
+            parent
+                .bottom()
+                .saturating_sub(h + 1)
+                .clamp(area.y, area.bottom().saturating_sub(h))
+        } else {
+            centred(parent.y, parent.height, area.y, area.height, h)
+        };
         let clamp = |centre: u16, delta: i32, start: u16, room: u16| {
             (i32::from(centre) + delta).clamp(i32::from(start), i32::from(start + room)) as u16
         };

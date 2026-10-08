@@ -226,3 +226,6 @@ test-input-stopped = Прогон агента остановлен: ожида�
 editor-agent-turn = ◆ ход агента
 editor-agent-off = Агент не запущен — ход передать некому
 editor-agent-no-channel = Канал агента не включён ([agent] channels) и нет связи по протоколу IDE — ход передать нельзя
+editor-agent-instruction = Указание агенту (пусто — просто ход)
+editor-agent-question = Вопрос агенту — текст не трогать
+editor-agent-send = Передать

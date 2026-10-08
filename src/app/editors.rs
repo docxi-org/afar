@@ -117,6 +117,9 @@ pub(super) enum Ask {
     BadCp { id: u32, cps: Vec<u32> },
     /// Saving a file with unreadable bytes loses them: save anyway?
     DataLost { id: u32, then: After },
+    /// The agent's instruction typed in the field (Ctrl+Enter without a
+    /// typed line): the turn goes once it is closed.
+    Instruction { id: u32, answer: bool },
     /// The file is open already: the open window, a new one, read again.
     Reedit {
         id: u32,
@@ -1192,6 +1195,15 @@ impl App {
                 }
             }
             Ask::SwitchCp { id, cp, at } => self.editor_switch_cp_answer(id, cp, at, button),
+            Ask::Instruction { id, answer } => {
+                if button == Some(0)
+                    && let Some(i) = self.editor_index(id)
+                {
+                    let text = dialog.input_value(0).trim().to_string();
+                    let instruction = (!text.is_empty()).then_some((None, text));
+                    self.editor_send_turn(i, instruction, answer);
+                }
+            }
             Ask::DataLost { id, then } => {
                 if button == Some(0)
                     && let Some(i) = self.editor_index(id)

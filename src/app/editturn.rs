@@ -11,7 +11,10 @@ use std::time::Instant;
 
 use serde_json::json;
 
+use super::editors::Ask;
+use super::fileops::{Overlay, Purpose};
 use super::{App, Focus};
+use crate::dialog::{Button, Dialog, input_at};
 use crate::tr;
 
 /// Lines shown around the cursor when the agent has not read the buffer.
@@ -25,7 +28,49 @@ impl App {
             self.say(tr!("editor-agent-off"));
             return;
         }
-        let taken = self.editors[i].take_instruction();
+        let Some((line, text)) = self.editors[i].take_instruction() else {
+            // No typed line: the instruction field (step 2) at the bottom
+            // of the window; empty is "your turn".
+            self.editor_instruction_field(i, answer);
+            return;
+        };
+        self.editor_send_turn(i, Some((Some(line), text)), answer);
+    }
+
+    /// The field for the agent's instruction (docs/11, plan step 2): a
+    /// one-line dialog at the bottom of the editor window with the
+    /// history `AgentInstruction`.
+    fn editor_instruction_field(&mut self, i: usize, answer: bool) {
+        let e = &self.editors[i];
+        // As wide as the window allows (not wider), at most 120.
+        let width = e.area.width.saturating_sub(4).clamp(20, 120);
+        let title = if answer {
+            tr!("editor-agent-question")
+        } else {
+            tr!("editor-agent-instruction")
+        };
+        let dialog = Dialog::far(title, width)
+            .row(vec![input_at(5, width - 10, "", Some("AgentInstruction"))])
+            .button_row(vec![
+                Button::new(tr!("editor-agent-send")).default(),
+                Button::new(tr!("MCancel")),
+            ])
+            .at_bottom();
+        let id = e.id;
+        self.overlays.push(Overlay::Dialog {
+            dialog,
+            purpose: Purpose::Editor(Ask::Instruction { id, answer }),
+        });
+    }
+
+    /// The turn with its instruction (if any) to the agent.
+    pub(super) fn editor_send_turn(
+        &mut self,
+        i: usize,
+        instruction: Option<(Option<usize>, String)>,
+        answer: bool,
+    ) {
+        let taken = instruction;
         let instruction = taken.as_ref().map(|(_, t)| t.clone());
         let e = &self.editors[i];
         let path = e.path().to_path_buf();
@@ -61,11 +106,12 @@ impl App {
     }
 
     /// What the agent gets with the turn.
-    /// `instruction`: its line (from 0, where it was) and its text.
+    /// `instruction`: its line (from 0, where it was; `None`: the field)
+    /// and its text.
     fn editor_turn_text(
         &self,
         i: usize,
-        instruction: Option<&(usize, String)>,
+        instruction: Option<&(Option<usize>, String)>,
         answer: bool,
     ) -> String {
         let e = &self.editors[i];
@@ -84,11 +130,16 @@ impl App {
         );
         match instruction {
             // Where it was: "after this line" means after the line above.
-            Some((n, text)) => out.push_str(&format!(
-                "instruction (typed at line {}, taken out of the text; \"this line\" is now line \
-                 {} — 0: before line 1): {text}\n",
+            Some((None, text)) => out.push_str(&format!("instruction: {text}\n")),
+            Some((Some(n), text)) => out.push_str(&format!(
+                "instruction (typed at line {}, taken out of the text; \"this line\" is now {}): \
+                 {text}\n",
                 n + 1,
-                n
+                if *n == 0 {
+                    "line 0 — before line 1".to_string()
+                } else {
+                    format!("line {n}")
+                }
             )),
             None => out.push_str("instruction: (none — continue from the text and the cursor)\n"),
         }

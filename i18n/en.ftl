@@ -225,3 +225,6 @@ test-input-stopped = The agent's run stopped: the expected text is not on the sc
 editor-agent-turn = ◆ agent's turn
 editor-agent-off = The agent is not running: there is no one to pass the turn to
 editor-agent-no-channel = The agent's channel is off ([agent] channels) and the IDE link is off: the turn cannot be passed
+editor-agent-instruction = An instruction for the agent (empty: just the turn)
+editor-agent-question = A question for the agent (the text stays)
+editor-agent-send = Pass
