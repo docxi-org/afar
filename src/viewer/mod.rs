@@ -1198,11 +1198,17 @@ impl Viewer {
                 prev = row.start;
             }
             let ry = a.y + y as u16;
+            // Changed lines get a bar in the first column only: their text
+            // keeps its colors.
+            let changed = self
+                .marks
+                .iter()
+                .any(|m| m.kind == MarkKind::Changed && line >= m.from && line <= m.to);
             let mark_style = self
                 .marks
                 .iter()
                 .rev()
-                .find(|m| line >= m.from && line <= m.to)
+                .find(|m| m.kind != MarkKind::Changed && line >= m.from && line <= m.to)
                 .map(|m| {
                     let mut st = match m.kind {
                         MarkKind::Info => theme::VIEWER_MARK_INFO,
@@ -1294,6 +1300,10 @@ impl Viewer {
                         .set_symbol("»")
                         .set_style(theme::VIEWER_ARROWS);
                 }
+            }
+            // Over the scrolling arrow too: the bar stays seen.
+            if changed {
+                buf[(a.x, ry)].set_style(theme::VIEWER_MARK_CHANGED);
             }
             self.rows.push(row);
         }
