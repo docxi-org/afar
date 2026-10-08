@@ -181,6 +181,9 @@ const SNAPSHOT_LIMIT: u64 = 4 << 20;
 const REDETECT_SCAN: u64 = 4 << 20;
 /// The end of a grown file looked at first: where the new text is.
 const REDETECT_TAIL: u64 = 1 << 20;
+/// Bytes compared at the start and before the old end of a changed file:
+/// the same — it only grew, the line index goes on.
+const EDGE: u64 = 4096;
 /// Bytes the line index goes on per frame while line numbers wait for it.
 const INDEX_BUDGET: u64 = 16 << 20;
 
@@ -237,6 +240,14 @@ pub struct Viewer {
     pub line_numbers: bool,
     /// Columns of the line numbers in the last frame.
     gutter: u16,
+    /// The size, the first and the last bytes when last read: tells a file
+    /// that only grew from one rewritten.
+    edges: (u64, Vec<u8>, Vec<u8>),
+    /// The search of this window: every match on the screen is marked.
+    search: Option<(search::Query, search::Pattern)>,
+    /// Its matches in the file: how many, and where the first ones start
+    /// (the counter "3/17").
+    found_count: Option<(usize, Vec<u64>)>,
 }
 
 impl Viewer {
@@ -328,7 +339,11 @@ impl Viewer {
             ascii_until,
             line_numbers: settings.line_numbers,
             gutter: 0,
+            edges: (0, Vec::new(), Vec::new()),
+            search: None,
+            found_count: None,
         };
+        v.edges = v.read_edges();
         v.snapshot = v.read_snapshot();
         if let Some(r) = remembered {
             v.top = r.top.min(v.src.size());
@@ -380,6 +395,11 @@ impl Viewer {
     }
 
     // ------------------------------------------------------------ geometry
+
+    /// The text area of the last frame.
+    pub fn area(&self) -> Rect {
+        self.area
+    }
 
     fn height(&self) -> usize {
         usize::from(self.area.height.max(1))
@@ -774,7 +794,6 @@ impl Viewer {
     /// The file changed: what lines are new or rewritten (in the new
     /// text), the marks moved with their lines (or stale).
     fn changed_lines(&mut self) -> Vec<(u64, u64)> {
-        self.lines = lines::LineIndex::new();
         let new = self.read_snapshot();
         let (Some(old), Some(new_bytes)) = (self.snapshot.take(), new.clone()) else {
             self.snapshot = new;
@@ -858,6 +877,34 @@ impl Viewer {
         true
     }
 
+    /// The search shown in this window (every match marked); whether it is
+    /// a new one (to count).
+    pub fn set_search(&mut self, query: &search::Query) -> bool {
+        if self.search.as_ref().is_some_and(|(q, _)| q == query) {
+            return false;
+        }
+        self.search = query.pattern().ok().map(|p| (query.clone(), p));
+        self.found_count = None;
+        self.search.is_some()
+    }
+
+    /// The matches counted for `query` (dropped if the search changed).
+    pub fn set_found_count(&mut self, query: &search::Query, total: usize, starts: Vec<u64>) {
+        if self.search.as_ref().is_some_and(|(q, _)| q == query) {
+            self.found_count = Some((total, starts));
+        }
+    }
+
+    /// "3/17": the found text among the matches.
+    fn found_counter(&self) -> Option<String> {
+        let (total, starts) = self.found_count.as_ref()?;
+        let at = self
+            .selection
+            .and_then(|(s, _)| starts.binary_search(&s).ok())
+            .map_or("-".to_string(), |k| (k + 1).to_string());
+        Some(format!("{at}/{total}"))
+    }
+
     /// Syntax highlighting is on, and the file's syntax.
     pub fn syntax(&self) -> (bool, Option<&'static str>) {
         (self.highlight.on, self.highlight.name())
@@ -898,9 +945,23 @@ impl Viewer {
     /// while its end was shown keeps the end in view (`tail -f`).
     pub fn check_changed(&mut self) -> Option<Vec<(u64, u64)>> {
         let was_last = self.last_page;
+        let (old_size, head, tail) = std::mem::take(&mut self.edges);
         if !self.src.refresh() {
+            self.edges = (old_size, head, tail);
             return None;
         }
+        // Only grew (a log): the line index goes on; else it starts over.
+        let size = self.src.size();
+        let grew = size >= old_size
+            && self.src.read_vec(0, head.len()) == head
+            && self.src.read_vec(old_size - tail.len() as u64, tail.len()) == tail;
+        if grew {
+            self.lines.grown();
+        } else {
+            self.lines = lines::LineIndex::new();
+        }
+        self.edges = self.read_edges();
+        self.found_count = None;
         self.redetect_grown();
         self.highlight.reset();
         let changed = self.changed_lines();
@@ -909,6 +970,14 @@ impl Viewer {
             self.go_end();
         }
         Some(changed)
+    }
+
+    fn read_edges(&mut self) -> (u64, Vec<u8>, Vec<u8>) {
+        let size = self.src.size();
+        let head = self.src.read_vec(0, EDGE.min(size) as usize);
+        let tail_from = size.saturating_sub(EDGE);
+        let tail = self.src.read_vec(tail_from, (size - tail_from) as usize);
+        (size, head, tail)
     }
 
     /// A file that was ASCII when its page was guessed: its first non-ASCII
@@ -1098,7 +1167,12 @@ impl Viewer {
                 }
             }
             SetBookmark(n) => self.bookmarks[usize::from(n)] = Some((self.top, self.left)),
-            Unselect => self.selection = None,
+            // The marks of the search go too.
+            Unselect => {
+                self.selection = None;
+                self.search = None;
+                self.found_count = None;
+            }
             Scrollbar => self.scrollbar = !self.scrollbar,
             StatusLine => self.status_line = !self.status_line,
             LineNumbers if text => self.line_numbers = !self.line_numbers,
@@ -1303,6 +1377,13 @@ impl Viewer {
                 .ranges(&mut self.src, &self.codec, f.start, l.end),
             _ => Vec::new(),
         };
+        // Every match of the window's search on the screen.
+        let found = match (&self.search, rows.first(), rows.last()) {
+            (Some((_, p)), Some(f), Some(l)) => {
+                p.matches(&mut self.src, &self.codec, f.start, l.end)
+            }
+            _ => Vec::new(),
+        };
         let numbers = self.row_numbers(&rows);
         for (y, row) in rows.into_iter().enumerate() {
             if self.gutter > 0 {
@@ -1371,11 +1452,14 @@ impl Viewer {
                 if cell.col + cw <= left || cell.col >= left + width {
                     continue;
                 }
-                // Selection over the agent's marks over the syntax.
+                // Selection over the agent's marks over the matches over
+                // the syntax.
                 let style = if self.selected(cell.pos) {
                     theme::VIEWER_SELECTED
                 } else if let Some(st) = mark_style {
                     st
+                } else if found.iter().any(|(s, e)| cell.pos >= *s && cell.pos < *e) {
+                    theme::VIEWER_FOUND
                 } else {
                     match highlight::color_at(&syn, cell.pos) {
                         Some(c) => theme::VIEWER_TEXT.fg(c),
@@ -1630,8 +1714,11 @@ impl Viewer {
         };
         let col = crate::tr!("MViewerStatusCol");
         let col: String = col.chars().take(3).collect();
+        let counter = self
+            .found_counter()
+            .map_or(String::new(), |c| format!("│{c}"));
         let mut status = format!(
-            "│{}│{:5.5}│{:<10}│{} {:<3}│{:4}",
+            "{counter}│{}│{:5.5}│{:<10}│{} {:<3}│{:4}",
             self.mode.letter(),
             self.codec.short_name(),
             size,
@@ -1859,6 +1946,34 @@ pub fn parse_goto(text: &str, hex: bool) -> Option<(Option<GotoValue>, Option<Go
 #[cfg(test)]
 mod goto_tests {
     use super::*;
+
+    #[test]
+    fn the_line_index_goes_on_when_the_file_grows() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("afar-vidx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("idx.log");
+        std::fs::write(&path, "one\ntwo\nthr").unwrap();
+        let settings = crate::config::Viewer::default();
+        let mut v = Viewer::open(1, &path, &Defaults::default(), None, &settings).unwrap();
+        assert_eq!(v.line_count(), 3);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"ee\nfour\n").unwrap();
+        drop(f);
+        assert!(v.check_changed().is_some());
+        assert_eq!(v.line_count(), 5);
+        let four = v.line_start(4);
+        assert_eq!(v.line_of(four), 4);
+        assert_eq!(v.line_start(3), 8);
+        // Rewritten: counted afresh.
+        std::fs::write(&path, "a\nb\nc\nd\ne\nf\n").unwrap();
+        assert!(v.check_changed().is_some());
+        assert_eq!(v.line_count(), 7);
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn line_col_counts_from_the_line_index() {

@@ -74,6 +74,11 @@ impl LineIndex {
         self.done
     }
 
+    /// The file grew at its end: the scan goes on from where it stopped.
+    pub fn grown(&mut self) {
+        self.done = false;
+    }
+
     /// The whole file is scanned.
     pub fn done(&self) -> bool {
         self.done

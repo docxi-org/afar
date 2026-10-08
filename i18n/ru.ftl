@@ -236,3 +236,4 @@ editor-syntax-on = Подсветка синтаксиса: { $name }
 editor-syntax-none = Подсветка включена, но язык файла не определён
 editor-syntax-off = Подсветка синтаксиса выключена
 editor-keybar-syntax = Синтакс
+viewer-found-first = { $title } (в списке первые { $count })

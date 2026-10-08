@@ -73,6 +73,8 @@ pub enum AppMsg {
     Fs(crate::watch::FsEvent),
     /// A viewer's search finished.
     ViewerFound(viewers::SearchDone),
+    /// Every match of a viewer's search counted (and listed).
+    ViewerAll(viewers::AllDone),
     /// The agent through the IDE protocol.
     Ide(crate::ide::IdeMsg),
     /// Folder sizes counted in the background (F3 on a folder): the
@@ -370,6 +372,8 @@ pub struct App {
     editor_replace: Option<String>,
     /// A search running in the background.
     viewer_search: Option<viewers::RunningSearch>,
+    /// The count (or list) of every match of a viewer's search.
+    viewer_count: Option<viewers::RunningSearch>,
     /// The last input of Alt+F8 and its Hex box (Far keeps them).
     viewer_goto: (String, Option<bool>),
     /// Dialogs and progress windows over the layout, topmost last.
@@ -509,6 +513,7 @@ impl App {
             viewer_query: Default::default(),
             editor_replace: None,
             viewer_search: None,
+            viewer_count: None,
             viewer_goto: (String::new(), None),
             overlays: Vec::new(),
             ops: std::collections::HashMap::new(),
@@ -903,6 +908,7 @@ impl App {
             AppMsg::Input(_) => {}
             AppMsg::Dev(msg) => self.on_dev(msg),
             AppMsg::ViewerFound(done) => self.viewer_found(done),
+            AppMsg::ViewerAll(done) => self.viewer_all_done(done),
             AppMsg::Ide(msg) => self.on_ide(msg),
             AppMsg::DirSizes(dir, sizes) => self.dir_sizes(&dir, sizes),
             AppMsg::QuickViewStats(dir, stats) => self.quick_view_stats(dir, stats),

@@ -163,6 +163,11 @@ pub(super) enum MenuPurpose {
         id: u32,
         found: Vec<crate::editor::Found>,
     },
+    /// "All" in a viewer's search: the matches in menu order.
+    ViewerFound {
+        id: u32,
+        hits: Vec<crate::viewer::search::Hit>,
+    },
 }
 
 /// Items of the sort menu after the modes: separator, then these.
@@ -394,6 +399,11 @@ impl App {
             MenuPurpose::EditorFound { id, found } => {
                 if let Some(m) = found.get(i) {
                     self.editor_found_chosen(id, *m);
+                }
+            }
+            MenuPurpose::ViewerFound { id, hits } => {
+                if let Some(h) = hits.get(i) {
+                    self.viewer_hit_chosen(id, h.start, h.end);
                 }
             }
         }

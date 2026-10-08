@@ -127,6 +127,8 @@ pub const SHADOW: Style = c(con::DARKGRAY, con::BLACK);
 // Viewer.
 pub const VIEWER_TEXT: Style = c(con::LIGHTCYAN, con::BLUE);
 pub const VIEWER_SELECTED: Style = c(con::BLACK, con::CYAN);
+/// The other matches of the search on the screen.
+pub const VIEWER_FOUND: Style = c(con::BLACK, con::BROWN);
 pub const VIEWER_STATUS: Style = c(con::BLACK, con::CYAN);
 pub const VIEWER_ARROWS: Style = c(con::YELLOW, con::BLUE);
 pub const VIEWER_LINE_NUMBERS: Style = c(con::LIGHTGRAY, con::BLUE);

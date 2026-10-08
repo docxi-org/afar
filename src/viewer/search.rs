@@ -13,7 +13,7 @@ use super::codepage::{self, Codec};
 use super::source::Source;
 
 /// What to look for (shared by all viewers, as in Far).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Query {
     pub text: String,
     pub hex: bool,
@@ -161,6 +161,158 @@ fn matches_in(
     }
 }
 
+/// A query compiled, for the matches on the screen.
+pub struct Pattern {
+    m: Matcher,
+    words: bool,
+}
+
+impl Query {
+    pub fn pattern(&self) -> Result<Pattern, String> {
+        Ok(Pattern {
+            m: self.matcher()?,
+            words: self.words,
+        })
+    }
+}
+
+impl Pattern {
+    /// Matches (start, end) in `from..to`.
+    pub fn matches(&self, src: &mut Source, codec: &Codec, from: u64, to: u64) -> Vec<(u64, u64)> {
+        matches_in(src, codec, &self.m, self.words, from, to)
+    }
+}
+
+/// A match for the list of all of them.
+#[derive(Clone, Debug)]
+pub struct Hit {
+    pub start: u64,
+    pub end: u64,
+    /// From 1, by line feeds (as the agent's tools count).
+    pub line: u64,
+    /// From 1, in characters.
+    pub col: u64,
+    /// The line's text (its start, at most `HIT_TEXT` characters).
+    pub text: String,
+}
+
+/// Every match in the file: how many, where they start (the first
+/// `STARTS_LIMIT`), and the first ones with their lines.
+#[derive(Debug, Default)]
+pub struct All {
+    pub total: usize,
+    pub starts: Vec<u64>,
+    pub hits: Vec<Hit>,
+    pub cancelled: bool,
+}
+
+const STARTS_LIMIT: usize = 1_000_000;
+const HIT_TEXT: usize = 300;
+/// Characters of the line shown before a match far from its start.
+const HIT_BEFORE: usize = 30;
+/// How far back the start of a match's line is looked for (its column).
+const LINE_BACK: u64 = 64 * 1024;
+
+/// Goes through the whole file for every match (the counter, the list):
+/// `hits` of them get their line and text.
+pub fn find_all(
+    path: &Path,
+    cp: u32,
+    query: &Query,
+    hits: usize,
+    cancel: &AtomicBool,
+) -> Result<All, String> {
+    let mut src = Source::open(path).map_err(|e| e.to_string())?;
+    let codec = Codec::new(cp)
+        .or_else(|| Codec::new(codepage::UTF8))
+        .expect("UTF-8 is always supported");
+    let m = query.matcher()?;
+    let size = src.size();
+    let mut all = All::default();
+    // Lines counted so far: the line of `counted`.
+    let (mut counted, mut line) = (0u64, 1u64);
+    let mut start = 0u64;
+    while start < size {
+        if cancel.load(Ordering::Relaxed) {
+            all.cancelled = true;
+            return Ok(all);
+        }
+        let end = (start + PIECE + OVERLAP).min(size);
+        let main_end = (start + PIECE).min(size);
+        for (s, e) in matches_in(&mut src, &codec, &m, query.words, start, end) {
+            if s < start || s >= main_end || all.starts.last().is_some_and(|l| *l >= s) {
+                continue;
+            }
+            all.total += 1;
+            if all.starts.len() < STARTS_LIMIT {
+                all.starts.push(s);
+            }
+            if all.hits.len() < hits {
+                line += super::lines::count_feeds(&mut src, &codec, counted, s);
+                counted = s;
+                let (text, col) = line_around(&mut src, &codec, s);
+                all.hits.push(Hit {
+                    start: s,
+                    end: e,
+                    line,
+                    col,
+                    text,
+                });
+            }
+        }
+        start = main_end;
+    }
+    Ok(all)
+}
+
+/// The text of the line holding `pos` and the column of `pos` in it
+/// (from 1): from a little before the match (`…` when the line starts
+/// earlier), at most `HIT_TEXT` characters.
+fn line_around(src: &mut Source, codec: &Codec, pos: u64) -> (String, u64) {
+    let u = codec.unit() as u64;
+    let back = LINE_BACK.min(pos);
+    let mut begin = pos;
+    while begin > pos - back {
+        match super::layout::unit_before(src, codec, begin) {
+            Some('\n' | '\r') => break,
+            _ => begin -= u,
+        }
+    }
+    // Before the match: counted, the last `HIT_BEFORE` characters kept.
+    let before = src.read_vec(begin, (pos - begin) as usize);
+    let mut kept: Vec<char> = Vec::new();
+    let (mut col, mut i) = (1u64, 0usize);
+    while i < before.len() {
+        let (c, n) = codec.decode(&before[i..]);
+        i += n.max(1);
+        // The byte order mark is no character of the line.
+        if begin == 0 && i == n.max(1) && c == '\u{FEFF}' {
+            continue;
+        }
+        col += 1;
+        kept.push(if c == '\t' { ' ' } else { c });
+    }
+    let mut text = String::new();
+    if kept.len() > HIT_BEFORE {
+        text.push('…');
+        text.extend(&kept[kept.len() - HIT_BEFORE..]);
+    } else {
+        text.extend(&kept);
+    }
+    let bytes = src.read_vec(pos, HIT_TEXT * 4);
+    let (mut i, mut n_chars) = (0usize, text.chars().count());
+    while i < bytes.len() && n_chars < HIT_TEXT {
+        let (c, n) = codec.decode(&bytes[i..]);
+        if c == '\n' || c == '\r' {
+            break;
+        }
+        text.push(if c == '\t' { ' ' } else { c });
+        n_chars += 1;
+        i += n.max(1);
+    }
+    (text, col)
+}
+
 pub enum Found {
     At(u64, u64),
     /// Reached the end (or the start, backward) without a match.
@@ -278,6 +430,31 @@ mod tests {
             find(&path, cp, &q, 30, u64::MAX, false, &no),
             Ok(Found::Edge)
         ));
+    }
+
+    #[test]
+    fn finds_all_with_lines() {
+        let path = file("a cat\nno\ncat cat\n".as_bytes());
+        let no = AtomicBool::new(false);
+        let q = Query {
+            text: "cat".into(),
+            ..Default::default()
+        };
+        let all = find_all(&path, codepage::UTF8, &q, 2, &no).unwrap();
+        assert_eq!(all.total, 3);
+        assert_eq!(all.starts, vec![2, 9, 13]);
+        assert_eq!(all.hits.len(), 2);
+        assert_eq!((all.hits[0].line, all.hits[0].col), (1, 3));
+        assert_eq!(all.hits[0].text, "a cat");
+        assert_eq!((all.hits[1].line, all.hits[1].col), (3, 1));
+        assert_eq!(all.hits[1].text, "cat cat");
+        // A long line: from a little before the match; a byte order mark
+        // is no character.
+        let long = format!("\u{FEFF}{}cat\n", "x".repeat(100));
+        let path = file(long.as_bytes());
+        let all = find_all(&path, codepage::UTF8, &q, 1, &no).unwrap();
+        assert_eq!(all.hits[0].col, 101);
+        assert_eq!(all.hits[0].text, format!("…{}cat", "x".repeat(30)));
     }
 
     #[test]

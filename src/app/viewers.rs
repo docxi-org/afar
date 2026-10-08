@@ -42,6 +42,18 @@ pub struct SearchDone {
     wrapped: bool,
 }
 
+/// Every match of a viewer's search, counted in the background.
+pub struct AllDone {
+    id: u32,
+    query: Query,
+    /// "All" asked for the list (else only the counter).
+    list: bool,
+    result: Result<search::All, String>,
+}
+
+/// Matches listed by "All" (Far's editor shows every one).
+const LIST_HITS: usize = 10_000;
+
 /// An item of the code page menu.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum CpChoice {
@@ -529,6 +541,7 @@ impl App {
             .button_row(vec![
                 Button::new(tr!("MSearchReplaceFindPrev")),
                 Button::new(tr!("MSearchReplaceFindNext")).default(),
+                Button::new(tr!("MSearchReplaceAll")),
                 Button::new(tr!("MSearchReplaceCancel")),
             ])
             .focus_item(2);
@@ -545,9 +558,10 @@ impl App {
         button: Option<usize>,
         dialog: &Dialog,
     ) {
-        let backward = match button {
-            Some(0) => true,
-            Some(1) => false,
+        let (backward, all) = match button {
+            Some(0) => (true, false),
+            Some(1) => (false, false),
+            Some(2) => (false, true),
             _ => return,
         };
         let query = Query {
@@ -568,6 +582,13 @@ impl App {
         let Some(i) = self.viewers.iter().position(|v| v.id == id) else {
             return;
         };
+        let new = self.viewers[i].set_search(&self.viewer_query);
+        if all || new {
+            self.start_count(id, all);
+        }
+        if all {
+            return;
+        }
         // A new search: from the top of the screen forward, from its end
         // backward.
         let v = &mut self.viewers[i];
@@ -575,8 +596,123 @@ impl App {
         self.start_search(id, from, backward, from, false);
     }
 
+    /// Counts (and with `list` lists) every match of the search in the
+    /// background.
+    fn start_count(&mut self, id: u32, list: bool) {
+        let Some(v) = self.viewers.iter().find(|v| v.id == id) else {
+            return;
+        };
+        if let Some(old) = self.viewer_count.take() {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
+        let (path, cp, query) = (
+            v.path().to_path_buf(),
+            v.codepage(),
+            self.viewer_query.clone(),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.viewer_count = Some(RunningSearch {
+            id,
+            cancel: cancel.clone(),
+        });
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let hits = if list { LIST_HITS } else { 0 };
+            let result = search::find_all(&path, cp, &query, hits, &cancel);
+            let _ = tx.send(AppMsg::ViewerAll(AllDone {
+                id,
+                query,
+                list,
+                result,
+            }));
+        });
+    }
+
+    pub(super) fn viewer_all_done(&mut self, done: AllDone) {
+        if self.viewer_count.as_ref().is_none_or(|s| s.id != done.id) {
+            return;
+        }
+        self.viewer_count = None;
+        let Some(i) = self.viewers.iter().position(|v| v.id == done.id) else {
+            return;
+        };
+        let all = match done.result {
+            Ok(all) if !all.cancelled => all,
+            Ok(_) => return,
+            Err(e) => {
+                self.message(&tr!("MSearchReplaceSearchTitle"), &[e], true);
+                return;
+            }
+        };
+        self.viewers[i].set_found_count(&done.query, all.total, all.starts);
+        if !done.list {
+            return;
+        }
+        if all.hits.is_empty() {
+            self.not_found(&done.query);
+            return;
+        }
+        // As the editor's "find all": line │ position │ the line's text.
+        let lw = all
+            .hits
+            .iter()
+            .map(|h| h.line)
+            .max()
+            .unwrap_or(1)
+            .to_string()
+            .len();
+        let pw = all
+            .hits
+            .iter()
+            .map(|h| h.col)
+            .max()
+            .unwrap_or(1)
+            .to_string()
+            .len();
+        let mut lines: Vec<u64> = all.hits.iter().map(|h| h.line).collect();
+        lines.dedup();
+        let items: Vec<Item> = all
+            .hits
+            .iter()
+            .map(|h| {
+                Item::new(format!("{:>lw$}│{:>pw$}│{}", h.line, h.col, h.text).replace('&', "&&"))
+            })
+            .collect();
+        let mut title = tr!(
+            "MEditSearchStatistics",
+            p0 = all.total.to_string(),
+            p1 = lines.len().to_string()
+        );
+        // More than listed: says so.
+        if all.total > all.hits.len() {
+            title = tr!("viewer-found-first", title = title, count = all.hits.len());
+        }
+        let mut menu = Menu::new(title, items).max_items(10);
+        let area = self.viewers[i].area();
+        menu.set_row(area.bottom().saturating_sub(20).max(area.y));
+        self.overlays.push(Overlay::Menu {
+            menu,
+            purpose: MenuPurpose::ViewerFound {
+                id: done.id,
+                hits: all.hits,
+            },
+        });
+    }
+
+    /// An entry of "All" chosen: the match found there.
+    pub(super) fn viewer_hit_chosen(&mut self, id: u32, start: u64, end: u64) {
+        if let Some(v) = self.viewers.iter_mut().find(|v| v.id == id) {
+            v.selection = Some((start, end));
+            v.show_pos(start, end - start);
+        }
+    }
+
     /// Shift+F7 / Space, Alt+F7: on from the found text.
     fn viewer_search_continue(&mut self, i: usize, backward: bool) {
+        if self.viewers[i].set_search(&self.viewer_query) {
+            let id = self.viewers[i].id;
+            self.start_count(id, false);
+        }
         let v = &mut self.viewers[i];
         let from = match (v.selection, backward) {
             (Some((s, _)), false) => s + v.unit(),
