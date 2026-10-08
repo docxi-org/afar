@@ -164,8 +164,17 @@ impl App {
             match i {
                 0 => {
                     row.push(text_at(C2, tr!("MSetAttrDate")));
-                    row.push(text_at(DATE_X, tr!("attr-date-format")));
-                    row.push(text_at(TIME_X, tr!("attr-time-format")));
+                    // As the regional settings write dates and times.
+                    let l = crate::locale::get();
+                    let date = match l.order {
+                        crate::locale::Order::Dmy => "attr-date-format-dmy",
+                        crate::locale::Order::Mdy => "attr-date-format-mdy",
+                        crate::locale::Order::Ymd => "attr-date-format-ymd",
+                    };
+                    let sep = l.date_sep.to_string();
+                    row.push(text_at(DATE_X, tr!(date, sep = sep)));
+                    let sep = l.time_sep.to_string();
+                    row.push(text_at(TIME_X, tr!("attr-time-format", sep = sep)));
                 }
                 1..=4 => {
                     let k = i - 1;

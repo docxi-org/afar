@@ -489,10 +489,12 @@ impl App {
             .map(|s| {
                 let time: chrono::DateTime<chrono::Local> = s.modified.into();
                 let title: String = s.title.chars().take(width).collect();
+                let l = crate::locale::get();
                 Item::new(format!(
-                    "{:<width$}  {}  {:>7}",
+                    "{:<width$}  {} {}  {:>7}",
                     title.replace('&', "&&"),
-                    time.format("%d.%m.%y %H:%M"),
+                    l.date(&time, false),
+                    l.time(&time, false),
                     crate::panel::size_float(s.size),
                 ))
                 .checked((current.as_deref() == Some(s.id.as_str())).then_some('√'))

@@ -326,10 +326,8 @@ fn counter(label_id: &str, done: u64, total: u64) -> String {
 fn date_time(t: Option<SystemTime>) -> (String, String) {
     t.map(|t| {
         let t: chrono::DateTime<chrono::Local> = t.into();
-        (
-            t.format("%d.%m.%Y").to_string(),
-            t.format("%H:%M:%S").to_string(),
-        )
+        let l = crate::locale::get();
+        (l.date(&t, true), l.time(&t, true))
     })
     .unwrap_or_default()
 }
@@ -2188,7 +2186,10 @@ fn entry_detail(last_used_ms: i64, folder: &str) -> String {
     let time = chrono::Local
         .timestamp_millis_opt(last_used_ms)
         .single()
-        .map(|t| t.format("%d.%m %H:%M").to_string())
+        .map(|t| {
+            let l = crate::locale::get();
+            format!("{} {}", l.day_month(&t), l.time(&t, false))
+        })
         .unwrap_or_default();
     let place: String = std::path::Path::new(folder)
         .file_name()

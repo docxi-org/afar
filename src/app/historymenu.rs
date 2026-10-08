@@ -66,7 +66,10 @@ fn local_time(ms: i64) -> String {
     chrono::Local
         .timestamp_millis_opt(ms)
         .single()
-        .map(|t| t.format("%d.%m.%Y %H:%M:%S").to_string())
+        .map(|t| {
+            let l = crate::locale::get();
+            format!("{} {}", l.date(&t, true), l.time(&t, true))
+        })
         .unwrap_or_default()
 }
 
@@ -76,7 +79,7 @@ fn day_of(ms: i64) -> String {
     chrono::Local
         .timestamp_millis_opt(ms)
         .single()
-        .map(|t| t.format("%d.%m.%Y").to_string())
+        .map(|t| crate::locale::get().date(&t, true))
         .unwrap_or_default()
 }
 

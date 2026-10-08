@@ -968,24 +968,17 @@ pub fn put_title(buf: &mut Buffer, area: Rect, y: u16, text: &str, style: Style)
     buf.set_stringn(x, y, &text, w as usize, style);
 }
 
+/// A file's date and time as the panels show them (Windows' regional
+/// settings, a two-digit year).
 fn format_time(t: SystemTime) -> (String, String) {
     let t: DateTime<Local> = t.into();
-    (
-        t.format("%d.%m.%y").to_string(),
-        t.format("%H:%M").to_string(),
-    )
+    let l = crate::locale::get();
+    (l.date(&t, false), l.time(&t, false))
 }
 
+/// A number with its thousands apart (the regional settings' separator).
 pub fn group_thousands(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(' ');
-        }
-        out.push(c);
-    }
-    out
+    crate::locale::get().thousands(n)
 }
 
 /// Writes `text` into `w` cells, padding with spaces.
@@ -1027,13 +1020,6 @@ mod tests {
             hidden: false,
             system: false,
         }
-    }
-
-    #[test]
-    fn groups_thousands() {
-        assert_eq!(group_thousands(0), "0");
-        assert_eq!(group_thousands(4812), "4 812");
-        assert_eq!(group_thousands(1234567), "1 234 567");
     }
 
     #[test]

@@ -727,7 +727,8 @@ pub(super) fn draw_find(v: &mut FindView, area: Rect, buf: &mut Buffer) {
                     .modified
                     .map(|t| {
                         let t: chrono::DateTime<chrono::Local> = t.into();
-                        t.format("%d.%m.%y %H:%M").to_string()
+                        let l = crate::locale::get();
+                        format!("{} {}", l.date(&t, false), l.time(&t, false))
                     })
                     .unwrap_or_default();
                 let right = format!("{size:>14} {when}");

@@ -268,22 +268,22 @@ pub fn filetime_shown(ft: i64) -> (String, String) {
     match chrono::DateTime::from_timestamp(secs, nanos) {
         Some(t) => {
             let t = t.with_timezone(&chrono::Local);
-            (
-                t.format("%d.%m.%Y").to_string(),
-                t.format("%H:%M:%S").to_string(),
-            )
+            let l = crate::locale::get();
+            (l.date(&t, true), l.time(&t, true))
         }
         None => (String::new(), String::new()),
     }
 }
 
-/// A local date and time as typed (`dd.mm.yyyy`, `hh:mm[:ss]`) as a
-/// FILETIME.
+/// A local date and time as typed (in the regional settings' order,
+/// `hh:mm[:ss]` with their time separator) as a FILETIME.
 pub fn filetime_parse(date: &str, time: &str) -> Option<i64> {
     use chrono::TimeZone as _;
-    let d = chrono::NaiveDate::parse_from_str(date.trim(), "%d.%m.%Y").ok()?;
-    let t = chrono::NaiveTime::parse_from_str(time.trim(), "%H:%M:%S")
-        .or_else(|_| chrono::NaiveTime::parse_from_str(time.trim(), "%H:%M"))
+    let l = crate::locale::get();
+    let d = l.parse_date(date)?;
+    let time = time.trim().replace(l.time_sep, ":");
+    let t = chrono::NaiveTime::parse_from_str(&time, "%H:%M:%S")
+        .or_else(|_| chrono::NaiveTime::parse_from_str(&time, "%H:%M"))
         .ok()?;
     let local = chrono::Local
         .from_local_datetime(&d.and_time(t))
