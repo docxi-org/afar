@@ -429,11 +429,15 @@ impl App {
         let Some(v) = self.viewers.iter_mut().find(|v| v.id == id) else {
             return;
         };
-        let cp = match choice {
-            CpChoice::Detect => v.detect_codepage(),
-            CpChoice::Page(cp) => cp,
-        };
-        v.set_codepage(cp);
+        match choice {
+            CpChoice::Detect => {
+                let cp = v.detect_codepage();
+                v.set_detected_codepage(cp);
+            }
+            CpChoice::Page(cp) => {
+                v.set_codepage(cp);
+            }
+        }
     }
 
     pub(super) fn view_mode_chosen(&mut self, id: u32, item: usize) {

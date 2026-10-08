@@ -176,6 +176,11 @@ pub struct Mark {
 
 /// Files up to this size are remembered to show what changed in them.
 const SNAPSHOT_LIMIT: u64 = 4 << 20;
+/// Bytes of a grown file looked through per reread for its first
+/// non-ASCII text (`Viewer::redetect_grown`).
+const REDETECT_SCAN: u64 = 4 << 20;
+/// The end of a grown file looked at first: where the new text is.
+const REDETECT_TAIL: u64 = 1 << 20;
 
 pub struct Viewer {
     pub id: u32,
@@ -223,6 +228,9 @@ pub struct Viewer {
     shown_label: Option<String>,
     /// Syntax highlighting (Alt+F3).
     highlight: highlight::Highlight,
+    /// The code page is guessed, not chosen: while the file is ASCII up to
+    /// this offset, text added later decides it.
+    ascii_until: Option<u64>,
 }
 
 impl Viewer {
@@ -256,6 +264,12 @@ impl Viewer {
             .or_else(|| Codec::new(default_cp))
             .or_else(|| Codec::new(codepage::UTF8))
             .expect("UTF-8 is always supported");
+        // Plain ASCII so far: the default page is only a guess.
+        let guessed = settings.autodetect_codepage
+            && head.is_ascii()
+            && codec.cp() == default_cp
+            && remembered.is_none_or(|r| r.cp == 0 || r.cp == default_cp);
+        let ascii_until = guessed.then_some(head.len() as u64);
         let binary =
             settings.detect_dump && is_binary(&head[..head.len().min(BINARY_PROBE)], codec.unit());
         let (wrap, word_wrap) = remembered
@@ -305,6 +319,7 @@ impl Viewer {
             follow: false,
             shown_label: None,
             highlight,
+            ascii_until,
         };
         v.snapshot = v.read_snapshot();
         if let Some(r) = remembered {
@@ -334,7 +349,13 @@ impl Viewer {
         Remembered {
             top: self.top,
             left: self.left,
-            cp: self.codec.cp(),
+            // A guessed page is not remembered: the next opening guesses
+            // again from what the file has then.
+            cp: if self.ascii_until.is_some() {
+                0
+            } else {
+                self.codec.cp()
+            },
             mode: self.mode_touched.then_some(self.mode),
             bookmarks: self.bookmarks.to_vec(),
             wrap: Some((self.wrap, self.word_wrap)),
@@ -800,7 +821,21 @@ impl Viewer {
         }
     }
 
+    /// The user's choice: kept when the file grows.
     pub fn set_codepage(&mut self, cp: u32) -> bool {
+        self.ascii_until = None;
+        self.use_codepage(cp)
+    }
+
+    /// The page "Automatic detection" found: still a guess, the text the
+    /// file gets later may change it.
+    pub fn set_detected_codepage(&mut self, cp: u32) -> bool {
+        let ok = self.use_codepage(cp);
+        self.ascii_until = Some(0);
+        ok
+    }
+
+    fn use_codepage(&mut self, cp: u32) -> bool {
         let Some(codec) = Codec::new(cp) else {
             return false;
         };
@@ -853,6 +888,7 @@ impl Viewer {
         if !self.src.refresh() {
             return None;
         }
+        self.redetect_grown();
         self.highlight.reset();
         let changed = self.changed_lines();
         let size = self.src.size();
@@ -860,6 +896,63 @@ impl Viewer {
             self.go_end();
         }
         Some(changed)
+    }
+
+    /// A file that was ASCII when its page was guessed: its first non-ASCII
+    /// text decides the page (a log that starts in English and goes on in
+    /// UTF-8). Far keeps the first guess.
+    fn redetect_grown(&mut self) {
+        let Some(from) = self.ascii_until else {
+            return;
+        };
+        let size = self.src.size();
+        // Rewritten shorter: looked through again from the start.
+        let from = if from > size { 0 } else { from };
+        // The new text is at the end: looked at first, then on from where
+        // the last look stopped.
+        let tail = size.saturating_sub(REDETECT_TAIL).max(from);
+        let found = match self.first_non_ascii(tail, size) {
+            Ok(at) => Some(at),
+            Err(_) => self
+                .first_non_ascii(from, tail.min(from + REDETECT_SCAN))
+                .map_err(|pos| self.ascii_until = Some(if pos == tail { size } else { pos }))
+                .ok(),
+        };
+        let Some(at) = found else {
+            return;
+        };
+        // Some text before it (from a character's start), then the new one.
+        let mut start = at.saturating_sub(1024);
+        for _ in 0..3 {
+            match self.src.byte(start) {
+                Some(b) if start > 0 && b & 0xC0 == 0x80 => start -= 1,
+                _ => break,
+            }
+        }
+        let probe = self.src.read_vec(start, DETECT_PROBE);
+        let whole = start + probe.len() as u64 == size;
+        if let Some(cp) = codepage::detect(&probe, whole)
+            && cp != self.codec.cp()
+        {
+            self.use_codepage(cp);
+        }
+        self.ascii_until = None;
+    }
+
+    /// The first non-ASCII byte in `from..to`, or where the look ended.
+    fn first_non_ascii(&mut self, from: u64, to: u64) -> Result<u64, u64> {
+        let mut pos = from;
+        while pos < to {
+            let data = self.src.read_vec(pos, (to - pos).min(1 << 16) as usize);
+            if data.is_empty() {
+                break;
+            }
+            if let Some(i) = data.iter().position(|b| !b.is_ascii()) {
+                return Ok(pos + i as u64);
+            }
+            pos += data.len() as u64;
+        }
+        Err(pos)
     }
 
     /// Runs a viewer command; those needing dialogs or the panels go back
@@ -1693,6 +1786,56 @@ pub fn parse_goto(text: &str, hex: bool) -> Option<(Option<GotoValue>, Option<Go
 #[cfg(test)]
 mod goto_tests {
     use super::*;
+
+    #[test]
+    fn a_grown_ascii_file_gets_its_page_from_new_text() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("afar-vgrow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("grow.log");
+        std::fs::write(&path, b"start\n").unwrap();
+        let settings = crate::config::Viewer {
+            default_codepage: 1251,
+            ..Default::default()
+        };
+        let open = || Viewer::open(1, &path, &Defaults::default(), None, &settings).unwrap();
+        let mut v = open();
+        assert_eq!(v.codepage(), 1251);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all("ещё строка\n".as_bytes()).unwrap();
+        drop(f);
+        assert!(v.check_changed().is_some());
+        assert_eq!(v.codepage(), codepage::UTF8);
+        // A page the user chose stays.
+        let mut v = open();
+        v.set_codepage(1251);
+        std::fs::write(&path, "start\nи ещё\n".as_bytes()).unwrap();
+        assert!(v.check_changed().is_some());
+        assert_eq!(v.codepage(), 1251);
+        // New text far past what one look goes through: found at the end.
+        let line = "x".repeat(99)
+            + "
+";
+        std::fs::write(&path, line.repeat(60_000)).unwrap();
+        let mut v = open();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(
+            "конец
+"
+            .as_bytes(),
+        )
+        .unwrap();
+        drop(f);
+        assert!(v.check_changed().is_some());
+        assert_eq!(v.codepage(), codepage::UTF8);
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn parses_far_goto() {
