@@ -122,6 +122,15 @@ save_bookmarks = true
 autodetect_codepage = true
 default_codepage = 0          # 0: the Windows ANSI code page, else a number (866, 65001…)
 
+[editor.agent]
+# Markers in the text: a line that starts with a marker (or a code comment
+# with one) goes to the agent as an instruction. Typed in any keyboard layout.
+markers = ["!!", "@ai"]       # the agent decides; "@ai?": answer only, "@ai!": change the text
+answer_markers = ["??"]       # answer only: a note in the margin, the text stays
+marker_in_comments = true     # in code comments too (by the file's extension)
+marker_trigger = "enter"      # enter: Enter at the line's end, save: on saving, both
+marker_remove = true          # the marker line leaves the text when it goes to the agent
+
 [autocomplete]
 # Autocompletion as in Far ("Options → AutoComplete settings").
 dialogs = true            # in dialogs' fields with a history or a path

@@ -119,7 +119,10 @@ pub(super) enum Ask {
     DataLost { id: u32, then: After },
     /// The agent's instruction typed in the field (Ctrl+Enter without a
     /// typed line): the turn goes once it is closed.
-    Instruction { id: u32, answer: bool },
+    Instruction {
+        id: u32,
+        mode: super::editturn::TurnMode,
+    },
     /// The file is open already: the open window, a new one, read again.
     Reedit {
         id: u32,
@@ -598,6 +601,10 @@ impl App {
     }
 
     pub(super) fn run_editor(&mut self, i: usize, cmd: EditorCmd) {
+        // Enter at the end of a typed marker line: it goes to the agent.
+        if cmd == EditorCmd::Enter && self.editor_marker_enter(i) {
+            return;
+        }
         let Outcome::App(cmd) = self.editors[i].command(cmd) else {
             return;
         };
@@ -673,8 +680,8 @@ impl App {
                     self.say(label);
                 }
             }
-            AgentTurn => self.editor_agent_turn(i, false),
-            AgentAnswer => self.editor_agent_turn(i, true),
+            AgentTurn => self.editor_agent_turn(i, super::editturn::TurnMode::Auto),
+            AgentAnswer => self.editor_agent_turn(i, super::editturn::TurnMode::Answer),
             InsertActiveName | InsertPassiveName | InsertLeftPath | InsertRightPath
             | InsertActivePath | InsertPassivePath => {
                 // Far's MakePathForUI: names and folders, quoted when they
@@ -739,6 +746,9 @@ impl App {
 
     /// F2: Far's checks in order (changed outside, read-only), then writes.
     pub(super) fn editor_save(&mut self, i: usize, then: After) {
+        // Marker lines go to the agent on saving (when so set) — before
+        // the text is written, so that removed ones are not saved.
+        self.editor_markers_on_save(i);
         let e = &self.editors[i];
         let id = e.id;
         let path = e.path().to_path_buf();
@@ -1204,13 +1214,13 @@ impl App {
                 }
             }
             Ask::SwitchCp { id, cp, at } => self.editor_switch_cp_answer(id, cp, at, button),
-            Ask::Instruction { id, answer } => {
+            Ask::Instruction { id, mode } => {
                 if button == Some(0)
                     && let Some(i) = self.editor_index(id)
                 {
                     let text = dialog.input_value(0).trim().to_string();
                     let instruction = (!text.is_empty()).then_some((None, text));
-                    self.editor_send_turn(i, instruction, answer);
+                    self.editor_send_turn(i, instruction, mode);
                 }
             }
             Ask::DataLost { id, then } => {

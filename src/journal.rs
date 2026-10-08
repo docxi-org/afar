@@ -121,6 +121,9 @@ pub enum Event {
         path: PathBuf,
         instruction: String,
         answer: bool,
+        /// "Change the text" (`@ai!`).
+        #[serde(default)]
+        edit: bool,
     },
     /// The agent played input in afar (its test tools).
     TestInput {
@@ -429,10 +432,17 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 path,
                 instruction,
                 answer,
+                edit,
             } => format!(
                 "turn   {}{}{}",
                 path.display(),
-                if *answer { " (answer only)" } else { "" },
+                if *answer {
+                    " (answer only)"
+                } else if *edit {
+                    " (edit)"
+                } else {
+                    ""
+                },
                 if instruction.is_empty() {
                     String::new()
                 } else {

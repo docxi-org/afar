@@ -8,6 +8,7 @@
 
 mod block;
 mod indent;
+pub mod marker;
 mod recode;
 mod search;
 pub mod text;
@@ -685,9 +686,11 @@ impl Editor {
         if pad && s.col > len {
             prefix.extend(std::iter::repeat_n(' ', s.col - len));
         }
+        let first_typed = first.typed;
         let last = &self.lines[e.line];
         let suffix = last.text[last.byte(e.col)..].to_string();
         let last_eol = last.eol;
+        let last_typed = last.typed;
         // The new lines.
         let segments: Vec<&str> = split_breaks(ins);
         let break_eol = match eol {
@@ -707,7 +710,12 @@ impl Editor {
             }
             let mut line = Line::new(text, if i + 1 == n { last_eol } else { break_eol });
             line.by_agent = self.agent_writing;
-            line.typed = !self.agent_writing;
+            // "Typed here": the user put text into the line, or it keeps a
+            // typed line's text; a join or a break alone does not make a
+            // line of the file typed.
+            line.typed = (!seg.is_empty() && !self.agent_writing)
+                || (i == 0 && !prefix.is_empty() && first_typed)
+                || (i + 1 == n && !suffix.is_empty() && last_typed);
             new_lines.push(line);
         }
         let end_col = if n == 1 {
@@ -1003,6 +1011,14 @@ impl Editor {
             }
         } else {
             self.type_char('\t');
+        }
+    }
+
+    /// The line no longer counts as typed here (its marker went to the
+    /// agent and the line stays).
+    pub fn untype_line(&mut self, n: usize) {
+        if let Some(l) = self.lines.get_mut(n) {
+            l.typed = false;
         }
     }
 

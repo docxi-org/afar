@@ -198,6 +198,47 @@ pub struct Editor {
     pub autodetect_codepage: bool,
     /// 0: the system's ANSI code page.
     pub default_codepage: u32,
+    /// The agent in the editor (docs/11 «Редактор и агент»).
+    pub agent: EditorAgent,
+}
+
+/// When a marker line goes to the agent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerTrigger {
+    /// Enter at the end of the line.
+    #[default]
+    Enter,
+    /// Saving the file (every typed marker line).
+    Save,
+    Both,
+}
+
+/// `[editor.agent]`: markers in the text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorAgent {
+    /// The agent decides; `<marker>?` — answer only, `<marker>!` — edit.
+    pub markers: Vec<String>,
+    /// Answer only (a note in the margin, the text stays).
+    pub answer_markers: Vec<String>,
+    /// Markers count in code comments too (by the file's extension).
+    pub marker_in_comments: bool,
+    pub marker_trigger: MarkerTrigger,
+    /// The marker line leaves the text when it goes to the agent.
+    pub marker_remove: bool,
+}
+
+impl Default for EditorAgent {
+    fn default() -> Self {
+        Self {
+            markers: vec!["!!".into(), "@ai".into()],
+            answer_markers: vec!["??".into()],
+            marker_in_comments: true,
+            marker_trigger: MarkerTrigger::Enter,
+            marker_remove: true,
+        }
+    }
 }
 
 impl Default for Editor {
@@ -220,6 +261,7 @@ impl Default for Editor {
             save_bookmarks: true,
             autodetect_codepage: true,
             default_codepage: 0,
+            agent: EditorAgent::default(),
         }
     }
 }

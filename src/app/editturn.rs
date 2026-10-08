@@ -15,6 +15,7 @@ use super::editors::Ask;
 use super::fileops::{Overlay, Purpose};
 use super::{App, Focus};
 use crate::dialog::{Button, Dialog, input_at};
+pub(super) use crate::editor::marker::TurnMode;
 use crate::tr;
 
 /// Lines shown around the cursor when the agent has not read the buffer.
@@ -23,7 +24,7 @@ const AROUND: usize = 10;
 const SELECTION_LIMIT: usize = 4000;
 
 impl App {
-    pub(super) fn editor_agent_turn(&mut self, i: usize, answer: bool) {
+    pub(super) fn editor_agent_turn(&mut self, i: usize, mode: TurnMode) {
         if !self.agent_alive() {
             self.say(tr!("editor-agent-off"));
             return;
@@ -31,20 +32,126 @@ impl App {
         let Some((line, text)) = self.editors[i].take_instruction() else {
             // No typed line: the instruction field (step 2) at the bottom
             // of the window; empty is "your turn".
-            self.editor_instruction_field(i, answer);
+            self.editor_instruction_field(i, mode);
             return;
         };
-        self.editor_send_turn(i, Some((Some(line), text)), answer);
+        self.editor_send_turn(i, Some((Some(line), text)), mode);
+    }
+
+    /// Enter at the end of a line the user typed here that starts with a
+    /// marker (docs/11, plan step 4): the line goes to the agent instead
+    /// of a line break. `false`: not such a line (Enter as usual).
+    pub(super) fn editor_marker_enter(&mut self, i: usize) -> bool {
+        let a = &self.config.editor.agent;
+        if a.marker_trigger == crate::config::MarkerTrigger::Save {
+            return false;
+        }
+        let e = &self.editors[i];
+        let n = e.cursor.line;
+        let l = &e.lines()[n];
+        if !l.typed || e.cursor.col < l.len() || e.has_block() {
+            return false;
+        }
+        let Some((mode, text)) = crate::editor::marker::parse(
+            &l.text,
+            e.path(),
+            &a.markers,
+            &a.answer_markers,
+            a.marker_in_comments,
+        ) else {
+            return false;
+        };
+        if !self.agent_alive() {
+            self.say(tr!("editor-agent-off"));
+            return false;
+        }
+        let remove = a.marker_remove;
+        self.editor_marker_send(i, n, mode, text, remove);
+        if !remove {
+            // The line stays: Enter goes on as usual.
+            return false;
+        }
+        true
+    }
+
+    /// One marker line to the agent: taken out of the text (`remove`) or
+    /// left, no longer counting as typed.
+    fn editor_marker_send(
+        &mut self,
+        i: usize,
+        n: usize,
+        mode: TurnMode,
+        text: String,
+        remove: bool,
+    ) {
+        let e = &mut self.editors[i];
+        let at = if remove {
+            e.cursor = crate::editor::Pos::new(n, 0);
+            e.take_instruction();
+            Some(n)
+        } else {
+            e.untype_line(n);
+            None
+        };
+        let instruction = (!text.is_empty()).then_some((at, text));
+        self.editor_send_turn(i, instruction, mode);
+    }
+
+    /// Saving with `marker_trigger` save / both: every typed marker line,
+    /// from the top, goes to the agent.
+    pub(super) fn editor_markers_on_save(&mut self, i: usize) {
+        let a = self.config.editor.agent.clone();
+        if a.marker_trigger == crate::config::MarkerTrigger::Enter || !self.agent_alive() {
+            return;
+        }
+        let cursor = self.editors[i].cursor;
+        let mut removed_above = 0;
+        let mut n = 0;
+        while n < self.editors[i].line_count() {
+            let e = &self.editors[i];
+            let l = &e.lines()[n];
+            let parsed = if l.typed {
+                crate::editor::marker::parse(
+                    &l.text,
+                    e.path(),
+                    &a.markers,
+                    &a.answer_markers,
+                    a.marker_in_comments,
+                )
+            } else {
+                None
+            };
+            match parsed {
+                Some((mode, text)) => {
+                    self.editor_marker_send(i, n, mode, text, a.marker_remove);
+                    if a.marker_remove {
+                        if n < cursor.line {
+                            removed_above += 1;
+                        }
+                    } else {
+                        n += 1;
+                    }
+                }
+                None => n += 1,
+            }
+        }
+        // The user's cursor where it was in the text.
+        let e = &mut self.editors[i];
+        let line = cursor
+            .line
+            .saturating_sub(removed_above)
+            .min(e.line_count() - 1);
+        e.cursor = crate::editor::Pos::new(line, cursor.col);
     }
 
     /// The field for the agent's instruction (docs/11, plan step 2): a
     /// one-line dialog at the bottom of the editor window with the
     /// history `AgentInstruction`.
-    fn editor_instruction_field(&mut self, i: usize, answer: bool) {
+    fn editor_instruction_field(&mut self, i: usize, mode: TurnMode) {
         let e = &self.editors[i];
         // As wide as the window allows (not wider), at most 120.
         let width = e.area.width.saturating_sub(4).clamp(20, 120);
-        let title = if answer {
+        let title = if mode == TurnMode::Answer {
             tr!("editor-agent-question")
         } else {
             tr!("editor-agent-instruction")
@@ -59,7 +166,7 @@ impl App {
         let id = e.id;
         self.overlays.push(Overlay::Dialog {
             dialog,
-            purpose: Purpose::Editor(Ask::Instruction { id, answer }),
+            purpose: Purpose::Editor(Ask::Instruction { id, mode }),
         });
     }
 
@@ -68,7 +175,7 @@ impl App {
         &mut self,
         i: usize,
         instruction: Option<(Option<usize>, String)>,
-        answer: bool,
+        mode: TurnMode,
     ) {
         let taken = instruction;
         let instruction = taken.as_ref().map(|(_, t)| t.clone());
@@ -79,20 +186,25 @@ impl App {
             crate::journal::Event::EditorTurn {
                 path: path.clone(),
                 instruction: instruction.clone().unwrap_or_default(),
-                answer,
+                answer: mode == TurnMode::Answer,
+                edit: mode == TurnMode::Edit,
             },
         );
         if !self.config.agent.channels {
             self.editor_mention(i, instruction.as_deref());
             return;
         }
-        let content = self.editor_turn_text(i, taken.as_ref(), answer);
+        let content = self.editor_turn_text(i, taken.as_ref(), mode);
         let e = &mut self.editors[i];
         let (id, version) = (e.id.to_string(), e.version.to_string());
         e.agent_read();
         e.agent_turn = Some(Instant::now());
         let path = path.display().to_string();
-        let kind = if answer { "answer" } else { "auto" };
+        let kind = match mode {
+            TurnMode::Auto => "auto",
+            TurnMode::Answer => "answer",
+            TurnMode::Edit => "edit",
+        };
         self.channel_send(
             content,
             &[
@@ -112,7 +224,7 @@ impl App {
         &self,
         i: usize,
         instruction: Option<&(Option<usize>, String)>,
-        answer: bool,
+        mode: TurnMode,
     ) -> String {
         let e = &self.editors[i];
         let lines = e.plain_lines();
@@ -121,12 +233,19 @@ impl App {
             e.id,
             e.path().display(),
             e.version,
-            if answer {
-                "answer — do not change the text: answer in your pane, or mark the lines with \
-                 afar_highlight (the label shows as a note in the margin)"
-            } else {
-                "auto — act in the buffer as the instruction asks (afar_buffer_insert to write \
-                 after a line, afar_buffer_edit to change text)"
+            match mode {
+                TurnMode::Answer => {
+                    "answer — do not change the text: answer in your pane, or mark the lines \
+                     with afar_highlight (the label shows as a note in the margin)"
+                }
+                TurnMode::Auto => {
+                    "auto — act in the buffer as the instruction asks (afar_buffer_insert to \
+                     write after a line, afar_buffer_edit to change text)"
+                }
+                TurnMode::Edit => {
+                    "edit — change the text as the instruction asks (afar_buffer_edit, \
+                     afar_buffer_insert)"
+                }
             }
         );
         match instruction {

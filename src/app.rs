@@ -160,7 +160,8 @@ disk: read it with afar_buffer_read, change it with afar_buffer_edit / afar_buff
 An event starting with [afar editor #N … | the user passes you the turn] comes from the editor: the user's \
 instruction (if any), the cursor, the selection and the changes since the version you last saw; mode auto — do \
 what it asks in that buffer (\"after this line\" means the line the instruction was typed at — the event says \
-which, 0 meaning before the first line: afar_buffer_insert after_line 0); mode answer — \
+which, 0 meaning before the first line: afar_buffer_insert after_line 0); mode edit — change the text as \
+asked; mode answer — \
 do not change the text: answer in your pane, or mark the lines you speak about with afar_highlight (its label \
 shows as a note at the line's end in the editor). Blocks starting with [afar journal] in a \
 user message are recent user actions added automatically. In the journal, `fs` entries are file changes afar saw in the panels' folders; afar cannot tell who wrote them: \

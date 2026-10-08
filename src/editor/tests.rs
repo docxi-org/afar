@@ -186,6 +186,28 @@ fn bytes_the_page_cannot_read_are_reported() {
 }
 
 #[test]
+fn joins_and_breaks_do_not_make_file_lines_typed() {
+    let mut e = ed("file one\nfile two\nfile three\n");
+    // Enter at the end of a file line: neither half is typed.
+    e.cursor = Pos::new(0, 8);
+    e.command(C::Enter);
+    assert!(!e.lines()[0].typed && !e.lines()[1].typed);
+    // A typed instruction taken out: the line coming up is not typed.
+    typed(&mut e, "do it");
+    assert_eq!(e.take_instruction(), Some((1, "do it".to_string())));
+    assert_eq!(e.lines()[1].text, "file two");
+    assert!(!e.lines()[1].typed);
+    assert_eq!(e.take_instruction(), None);
+    // Ctrl+Y on a file line: the next one stays a file line.
+    e.cursor = Pos::new(0, 0);
+    e.command(C::DeleteLine);
+    assert!(!e.lines()[0].typed);
+    // Typing into a file line makes it typed.
+    e.type_char('!');
+    assert!(e.lines()[0].typed);
+}
+
+#[test]
 fn a_typed_line_is_the_agent_instruction() {
     let mut e = ed("from the file\n");
     // A line of the file is not an instruction.
