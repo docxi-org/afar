@@ -49,6 +49,7 @@ fn style_name(fg: Color, bg: Color, m: Modifier) -> String {
         (Modifier::REVERSED, "reverse"),
         (Modifier::ITALIC, "italic"),
         (Modifier::DIM, "dim"),
+        (Modifier::CROSSED_OUT, "struck"),
     ] {
         if m.contains(flag) {
             s.push('+');
@@ -418,6 +419,9 @@ pub fn png(buf: &Buffer, cursor: Option<Position>, rows: Range<u16>) -> Result<V
             }
             if cell.modifier.contains(Modifier::UNDERLINED) {
                 cv.fill(x, y + cell_h - 2, cell_w * if wide { 2 } else { 1 }, 1, fg);
+            }
+            if cell.modifier.contains(Modifier::CROSSED_OUT) {
+                cv.fill(x, y + cell_h / 2, cell_w * if wide { 2 } else { 1 }, 1, fg);
             }
         }
     }

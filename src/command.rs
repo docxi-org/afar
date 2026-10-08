@@ -221,6 +221,12 @@ pub enum EditorCmd {
     /// F5 / Shift+F5: to the next / previous line the agent marked.
     NextMark,
     PrevMark,
+    /// Alt+F5 / Alt+F6: the agent's proposal under the cursor accepted /
+    /// rejected; Ctrl+Alt+F5 / Ctrl+Alt+F6: all of them.
+    AcceptProposal,
+    RejectProposal,
+    AcceptAllProposals,
+    RejectAllProposals,
     /// Ctrl+Enter / Ctrl+Alt+Enter: the turn to the agent (it decides /
     /// it only answers).
     AgentTurn,
@@ -588,6 +594,10 @@ pub const COMMANDS: &[Def] = &[
     edef("editor.settings", E::Settings, &["Alt+Shift+F9"]),
     edef("editor.next_mark", E::NextMark, &["F5"]),
     edef("editor.prev_mark", E::PrevMark, &["Shift+F5"]),
+    edef("editor.accept_proposal", E::AcceptProposal, &["Alt+F5"]),
+    edef("editor.reject_proposal", E::RejectProposal, &["Alt+F6"]),
+    edef("editor.accept_all_proposals", E::AcceptAllProposals, &["Ctrl+Alt+F5"]),
+    edef("editor.reject_all_proposals", E::RejectAllProposals, &["Ctrl+Alt+F6"]),
     edef("editor.agent_turn", E::AgentTurn, &["Ctrl+Enter"]),
     edef("editor.agent_answer", E::AgentAnswer, &["Ctrl+Alt+Enter"]),
     edef("editor.insert_active_name", E::InsertActiveName, &["Shift+Enter"]),

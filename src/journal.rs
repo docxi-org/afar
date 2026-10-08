@@ -116,6 +116,22 @@ pub enum Event {
         removed: usize,
         version: u64,
     },
+    /// The agent proposed changes of an editor's text.
+    Proposed {
+        path: PathBuf,
+        what: String,
+    },
+    /// The user accepted or rejected the agent's proposal.
+    ProposalAnswered {
+        path: PathBuf,
+        id: u64,
+        accepted: bool,
+    },
+    /// The user changed the lines of the agent's proposal: it is gone.
+    ProposalDropped {
+        path: PathBuf,
+        id: u64,
+    },
     /// The user passed the turn to the agent from the editor.
     EditorTurn {
         path: PathBuf,
@@ -428,6 +444,18 @@ pub fn format_entries(entries: &[Entry]) -> String {
                 )
             }
             Event::TestInput { actions } => format!("test   {}", actions.join(", ")),
+            Event::Proposed { path, what } => {
+                format!("propose {}: {what} (waiting for the user)", path.display())
+            }
+            Event::ProposalDropped { path, id } => format!(
+                "answer {} proposal #{id} dropped (the user changed its lines)",
+                path.display()
+            ),
+            Event::ProposalAnswered { path, id, accepted } => format!(
+                "answer {} proposal #{id} {}",
+                path.display(),
+                if *accepted { "accepted" } else { "rejected" }
+            ),
             Event::EditorTurn {
                 path,
                 instruction,

@@ -680,6 +680,9 @@ impl App {
                     self.say(label);
                 }
             }
+            AcceptProposal | RejectProposal | AcceptAllProposals | RejectAllProposals => {
+                self.editor_answer_proposals(i, cmd);
+            }
             AgentTurn => self.editor_agent_turn(i, super::editturn::TurnMode::Auto),
             AgentAnswer => self.editor_agent_turn(i, super::editturn::TurnMode::Answer),
             InsertActiveName | InsertPassiveName | InsertLeftPath | InsertRightPath
@@ -1323,9 +1326,11 @@ impl App {
     /// Once a second: the shown editor's file changed on the disk? Not
     /// modified here — read again; modified — asked once per change.
     pub(super) fn editor_tick(&mut self) {
-        // The agent's marks expire in every window.
-        for e in &mut self.editors {
-            e.marks_tick();
+        // The agent's marks expire in every window; proposals dropped by
+        // the user's edits go to the journal.
+        for i in 0..self.editors.len() {
+            self.editors[i].marks_tick();
+            self.editor_journal_dropped(i);
         }
         let Some(i) = self.shown_editor() else { return };
         if self.has_overlay() {
@@ -1483,6 +1488,83 @@ impl App {
         format!("{name:<room$} {tail}")
     }
 
+    /// Alt+F5 / Alt+F6 (one, under the cursor) and Ctrl+Alt+F5 / F6 (all):
+    /// the agent's proposals accepted or rejected; the journal tells the
+    /// agent.
+    fn editor_answer_proposals(&mut self, i: usize, cmd: EditorCmd) {
+        let accept = matches!(
+            cmd,
+            EditorCmd::AcceptProposal | EditorCmd::AcceptAllProposals
+        );
+        let ids: Vec<u64> = match cmd {
+            EditorCmd::AcceptProposal | EditorCmd::RejectProposal => {
+                match self.editors[i].proposal_at_cursor() {
+                    Some(id) => vec![id],
+                    None => {
+                        self.say(tr!("editor-no-proposal"));
+                        return;
+                    }
+                }
+            }
+            _ => self.editors[i].proposals.iter().map(|p| p.id).collect(),
+        };
+        let path = self.editors[i].path().to_path_buf();
+        // All at once: one undo step.
+        let mut done = Vec::new();
+        let mut failed = None;
+        self.editors[i].in_one_step(|e| {
+            for id in ids {
+                let ok = if accept {
+                    match e.accept_proposal(id) {
+                        Ok(_) => true,
+                        Err(err) => {
+                            failed = Some(err);
+                            false
+                        }
+                    }
+                } else {
+                    e.reject_proposal(id).is_some()
+                };
+                if ok {
+                    done.push(id);
+                }
+            }
+        });
+        if let Some(err) = failed {
+            self.say(err);
+        }
+        for id in done {
+            self.journal.push(
+                crate::journal::Actor::User,
+                crate::journal::Event::ProposalAnswered {
+                    path: path.clone(),
+                    id,
+                    accepted: accept,
+                },
+            );
+        }
+        self.editor_journal_dropped(i);
+    }
+
+    /// Proposals a change of their lines dropped: the journal tells the
+    /// agent.
+    pub(super) fn editor_journal_dropped(&mut self, i: usize) {
+        let ids = self.editors[i].take_dropped_proposals();
+        if ids.is_empty() {
+            return;
+        }
+        let path = self.editors[i].path().to_path_buf();
+        for id in ids {
+            self.journal.push(
+                crate::journal::Actor::User,
+                crate::journal::Event::ProposalDropped {
+                    path: path.clone(),
+                    id,
+                },
+            );
+        }
+    }
+
     /// Far's editor key bar (`MEditF1…`), keys not made yet left blank.
     pub(super) fn editor_keybar_labels(&self, i: usize, group: &str) -> Vec<String> {
         let t = |id: &str| crate::i18n::plain(&tr!(id));
@@ -1494,6 +1576,14 @@ impl App {
                 }
                 if group == "Ctrl" && n == 3 && self.editors[i].line_numbers {
                     return t("MEditCtrlF3Hide");
+                }
+                // Alt+F5 / Alt+F6: the agent's proposals.
+                if group == "Alt" && (n == 5 || n == 6) {
+                    return t(if n == 5 {
+                        "editor-keybar-accept"
+                    } else {
+                        "editor-keybar-reject"
+                    });
                 }
                 // F8: the page it goes to (Far: "ANSI" / "OEM").
                 if group.is_empty() && n == 8 {

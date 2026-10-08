@@ -157,6 +157,8 @@ in afar's viewer with afar_view (a line or a pattern) and mark lines with afar_h
 info / warning / error); afar_viewer_state tells which file and lines the user looks at and what they \
 selected. A file open in afar's editor (afar_edit, afar_editor_state) is edited in its buffer, not on the \
 disk: read it with afar_buffer_read, change it with afar_buffer_edit / afar_buffer_insert; the user saves. \
+A change of the user's text may come back as a proposal the user accepts or rejects (the reply says so; the \
+journal tells the answer); until then the buffer keeps its text. \
 An event starting with [afar editor #N … | the user passes you the turn] comes from the editor: the user's \
 instruction (if any), the cursor, the selection and the changes since the version you last saw; mode auto — do \
 what it asks in that buffer (\"after this line\" means the line the instruction was typed at — the event says \

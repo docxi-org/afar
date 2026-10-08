@@ -9,6 +9,7 @@
 mod block;
 mod indent;
 pub mod marker;
+mod propose;
 mod recode;
 mod search;
 pub mod text;
@@ -24,6 +25,7 @@ use unicode_width::UnicodeWidthChar as _;
 use crate::command::EditorCmd;
 use crate::theme;
 pub use block::{BlockText, VBlock};
+pub use propose::{Proposal, ScreenRow};
 pub use recode::CpProblem;
 pub use search::{Finder, Found};
 pub use text::{Eol, Line};
@@ -184,6 +186,13 @@ pub struct Editor {
     /// The screen was moved to show something (the agent's marks): it
     /// stays there, the cursor off it, until the user acts.
     pub hold_view: bool,
+    /// The agent's proposals waiting for the user's answer (in order).
+    pub proposals: Vec<Proposal>,
+    proposal_seq: u64,
+    /// The rows of the last frame (lines and proposals' new lines).
+    shown_rows: Vec<ScreenRow>,
+    /// Proposals dropped by a change of their lines, for the journal.
+    dropped_proposals: Vec<u64>,
     /// Ctrl+Shift+0…9 / Ctrl+0…9.
     pub bookmarks: [Option<Bookmark>; 10],
 }
@@ -232,6 +241,10 @@ impl Editor {
             agent_turn: None,
             marks: Vec::new(),
             hold_view: false,
+            proposals: Vec::new(),
+            proposal_seq: 0,
+            shown_rows: Vec::new(),
+            dropped_proposals: Vec::new(),
             bookmarks: [None; 10],
         }
     }
@@ -370,6 +383,28 @@ impl Editor {
             .saturating_sub(self.number_width() + u16::from(self.scrollbar_shown()))
     }
 
+    /// Keeps the cursor's line on the screen when proposals' rows take
+    /// room between the top and the cursor.
+    fn scroll_with_proposals(&mut self, h: usize) {
+        if self.cursor.line < self.top {
+            self.top = self.cursor.line;
+        }
+        while self.top < self.cursor.line
+            && !self
+                .screen_rows(h)
+                .contains(&ScreenRow::Line(self.cursor.line))
+        {
+            self.top += 1;
+        }
+        let w = usize::from(self.text_width().max(1));
+        let v = self.vcol(self.cursor.line, self.cursor.col);
+        if v < self.left {
+            self.left = v;
+        } else if v >= self.left + w {
+            self.left = v + 1 - w;
+        }
+    }
+
     /// A press on the scroll bar (Far's `Editor::ProcessMouse`): the arrows
     /// scroll a line (as Ctrl+Up / Ctrl+Down), elsewhere the thumb goes
     /// there and follows a drag. Returns whether it was taken.
@@ -410,6 +445,35 @@ impl Editor {
         }
     }
 
+    /// A proposal's new line: the text from the left column, tabs as
+    /// blanks, the whole row in the proposal's colour.
+    fn draw_proposed(&self, text: &str, text_x: u16, y: u16, text_w: u16, buf: &mut Buffer) {
+        let st = theme::PROPOSAL_NEW;
+        for x in text_x..text_x + text_w {
+            buf[(x, y)].set_symbol(" ").set_style(st);
+        }
+        let mut v = 0usize;
+        for c in text.chars() {
+            let w = self.char_width(c, v);
+            if v >= self.left + usize::from(text_w) {
+                break;
+            }
+            if v >= self.left
+                && c != '\t'
+                && (c as u32) >= 0x20
+                && v + w <= self.left + usize::from(text_w)
+            {
+                let x = text_x + (v - self.left) as u16;
+                let mut b = [0u8; 4];
+                buf[(x, y)].set_symbol(c.encode_utf8(&mut b)).set_style(st);
+                if w == 2 {
+                    buf[(x + 1, y)].set_symbol("").set_style(st);
+                }
+            }
+            v += w;
+        }
+    }
+
     fn draw_scrollbar(&self, bar: Rect, buf: &mut Buffer) {
         let style = theme::EDITOR_SCROLLBAR;
         let h = bar.height;
@@ -444,6 +508,10 @@ impl Editor {
         let h = usize::from(self.area.height.max(1));
         if self.hold_view {
             self.top = self.top.min(self.lines.len().saturating_sub(h));
+            return;
+        }
+        if !self.proposals.is_empty() {
+            self.scroll_with_proposals(h);
             return;
         }
         if self.cursor.line < self.top {
@@ -738,6 +806,7 @@ impl Editor {
                 b.line = b.line.min(end.line);
             }
         }
+        self.proposals_after_change(s.line, e.line, delta);
         // So do the agent's marks (lines from 1).
         let shift = |l: u64| -> u64 {
             let z = l.saturating_sub(1) as usize;
@@ -1047,10 +1116,20 @@ impl Editor {
     /// F5 / Shift+F5: to the next / previous marked line.
     fn goto_mark(&mut self, forward: bool) {
         let at = self.cursor.line as u64 + 1;
+        // Marks and proposals (lines from 1).
+        let places: Vec<u64> = self
+            .marks
+            .iter()
+            .map(|m| m.from)
+            .chain(self.proposals.iter().map(|p| {
+                (p.start.saturating_sub(usize::from(p.old.is_empty())) as u64 + 1)
+                    .min(self.lines.len() as u64)
+            }))
+            .collect();
         let target = if forward {
-            self.marks.iter().map(|m| m.from).filter(|f| *f > at).min()
+            places.iter().copied().filter(|f| *f > at).min()
         } else {
-            self.marks.iter().map(|m| m.from).filter(|f| *f < at).max()
+            places.iter().copied().filter(|f| *f < at).max()
         };
         if let Some(line) = target {
             let line = (line as usize - 1).min(self.lines.len() - 1);
@@ -1059,6 +1138,20 @@ impl Editor {
                 self.top = line.saturating_sub(h / 4);
             }
             self.move_to(Pos::new(line, 0));
+            // A proposal there: its new lines on the screen too.
+            if let Some(k) = self
+                .proposals
+                .iter()
+                .position(|p| p.start == line || (p.old.is_empty() && p.start == line + 1))
+            {
+                let last = self.proposals[k].new.len().saturating_sub(1);
+                while self.top < line
+                    && !self.screen_rows(h).contains(&ScreenRow::Proposed(k, last))
+                {
+                    self.top += 1;
+                }
+                self.hold_view = true;
+            }
         }
     }
 
@@ -1116,6 +1209,26 @@ impl Editor {
             m.from = to_new(m.from as usize - 1) as u64 + 1;
             m.to = (to_new(m.to as usize - 1) as u64 + 1).max(m.from);
         }
+        // Proposals follow their lines; one whose lines are not as it saw
+        // them goes.
+        let count = before.len();
+        for p in &mut self.proposals {
+            p.start = if p.start >= count {
+                after.len()
+            } else {
+                to_new(p.start)
+            };
+        }
+        let before_ids: Vec<u64> = self.proposals.iter().map(|p| p.id).collect();
+        let lines = &self.lines;
+        self.proposals.retain(|p| {
+            p.old_end() <= lines.len()
+                && p.old
+                    .iter()
+                    .zip(&lines[p.start..p.old_end()])
+                    .all(|(o, l)| *o == l.text)
+        });
+        self.note_dropped(&before_ids);
     }
 
     // --------------------------------------------------------------- agent
@@ -1591,7 +1704,17 @@ impl Editor {
         if !a.contains(Position::new(x, y)) {
             return None;
         }
-        let line = (self.top + usize::from(y - a.y)).min(self.lines.len() - 1);
+        let row = usize::from(y - a.y);
+        let line = match self.shown_rows.get(row) {
+            Some(ScreenRow::Line(n)) => *n,
+            // A proposal's new line: its first old line (or the line it
+            // follows).
+            Some(ScreenRow::Proposed(k, _)) => self.proposals.get(*k).map_or(self.top, |p| {
+                p.start.saturating_sub(usize::from(p.old.is_empty()))
+            }),
+            _ => self.top + row,
+        }
+        .min(self.lines.len() - 1);
         let nw = self.number_width();
         let vx = usize::from(x.saturating_sub(a.x + nw)) + self.left;
         Some(Pos::new(line, self.col_at(line, vx)))
@@ -1669,12 +1792,28 @@ impl Editor {
             .map(|h| (h.start, h.end))
             .or_else(|| self.selection());
         let vb = self.highlight.is_none().then(|| self.vblock()).flatten();
-        for row in 0..area.height {
+        let rows = self.screen_rows(usize::from(area.height));
+        for (row, kind) in rows.iter().enumerate() {
+            let row = row as u16;
             let y = area.y + row;
             for x in area.left()..area.right() {
                 buf[(x, y)].set_symbol(" ").set_style(theme::EDITOR_TEXT);
             }
-            let line = self.top + usize::from(row);
+            let line = match *kind {
+                ScreenRow::Line(n) => n,
+                ScreenRow::End => self.lines.len(),
+                ScreenRow::Proposed(k, j) => {
+                    // A proposal's new line: in its colour, no number.
+                    let text = self
+                        .proposals
+                        .get(k)
+                        .and_then(|p| p.new.get(j))
+                        .cloned()
+                        .unwrap_or_default();
+                    self.draw_proposed(&text, text_x, y, text_w, buf);
+                    continue;
+                }
+            };
             if nw > 0 {
                 let label = if line < self.lines.len() {
                     format!("{:>w$} ", line + 1, w = usize::from(nw - 1))
@@ -1755,6 +1894,8 @@ impl Editor {
                         theme::EDITOR_SELECTED
                     } else if let Some((st, _)) = &mark {
                         *st
+                    } else if self.proposal_over(line).is_some() {
+                        theme::PROPOSAL_OLD
                     } else if l.by_agent {
                         theme::EDITOR_AGENT
                     } else {
@@ -1859,7 +2000,11 @@ impl Editor {
             self.draw_scrollbar(Rect::new(area.right() - 1, area.y, 1, area.height), buf);
         }
         let v = self.vcol(self.cursor.line, self.cursor.col);
-        let row = self.cursor.line.checked_sub(self.top)?;
+        let row = rows
+            .iter()
+            .position(|r| *r == ScreenRow::Line(self.cursor.line));
+        self.shown_rows = rows;
+        let row = row?;
         if row >= usize::from(area.height) || v < self.left || v - self.left >= usize::from(text_w)
         {
             return None;

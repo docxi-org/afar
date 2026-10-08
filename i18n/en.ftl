@@ -228,3 +228,6 @@ editor-agent-no-channel = The agent's channel is off ([agent] channels) and the 
 editor-agent-instruction = An instruction for the agent (empty: just the turn)
 editor-agent-question = A question for the agent (the text stays)
 editor-agent-send = Pass
+editor-no-proposal = No proposal of the agent under the cursor
+editor-keybar-accept = Accept
+editor-keybar-reject = Reject

@@ -6,7 +6,7 @@
 //! 4 = blue, 11 = bright yellow). `con` maps the former to the latter, so a
 //! terminal shows afar exactly as it shows Far.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 /// Windows console colors by their Far names.
 #[allow(dead_code)]
@@ -57,6 +57,10 @@ pub const EDITOR_SELECTED: Style = c(con::BLACK, con::CYAN);
 pub const EDITOR_STATUS: Style = c(con::BLACK, con::CYAN);
 pub const EDITOR_LINE_NUMBERS: Style = c(con::LIGHTGRAY, con::BLUE);
 pub const EDITOR_SCROLLBAR: Style = c(con::LIGHTCYAN, con::BLUE);
+/// The agent's proposal (docs/11 «Три слоя»): the lines it replaces, struck
+/// out, and its new lines.
+pub const PROPOSAL_OLD: Style = c(con::LIGHTRED, con::BLUE).add_modifier(Modifier::CROSSED_OUT);
+pub const PROPOSAL_NEW: Style = c(con::BLACK, con::GREEN);
 /// Text the agent wrote, not yet accepted (afar's).
 pub const EDITOR_AGENT: Style = c(con::LIGHTGREEN, con::BLUE);
 

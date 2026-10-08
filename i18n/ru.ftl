@@ -229,3 +229,6 @@ editor-agent-no-channel = Канал агента не включён ([agent] c
 editor-agent-instruction = Указание агенту (пусто — просто ход)
 editor-agent-question = Вопрос агенту — текст не трогать
 editor-agent-send = Передать
+editor-no-proposal = Под курсором нет предложения агента
+editor-keybar-accept = Принять
+editor-keybar-reject = Отклон

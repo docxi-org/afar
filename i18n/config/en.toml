@@ -130,6 +130,10 @@ answer_markers = ["??"]       # answer only: a note in the margin, the text stay
 marker_in_comments = true     # in code comments too (by the file's extension)
 marker_trigger = "enter"      # enter: Enter at the line's end, save: on saving, both
 marker_remove = true          # the marker line leaves the text when it goes to the agent
+# The agent's changes in the editor: direct — at once (marked, one Ctrl+Z
+# undoes them), propose — all as proposals (accept Alt+F5, reject Alt+F6),
+# mixed — new text at once, a change or removal of your text as a proposal.
+apply = "mixed"
 
 [autocomplete]
 # Autocompletion as in Far ("Options → AutoComplete settings").

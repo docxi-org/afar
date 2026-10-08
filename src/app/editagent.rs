@@ -193,6 +193,12 @@ impl App {
                     "line_endings": e.eol_summary(),
                     "locked": e.locked,
                     "disk_changed": e.disk_changed,
+                    "proposals_waiting": e.proposals.iter().map(|p| serde_json::json!({
+                        "id": p.id,
+                        "from_line": p.start + 1,
+                        "to_line": p.old_end(),
+                        "new_lines": p.new.len(),
+                    })).collect::<Vec<_>>(),
                 });
                 if let Some((s, t)) = e.selection() {
                     let text: String = e
@@ -375,8 +381,55 @@ impl App {
         if self.editors[i].locked {
             return Err("the user locked editing of this file (Ctrl+L)".into());
         }
+        // Proposed (docs/11 «Три слоя»): always, or (mixed) unless it
+        // changes only the agent's own lines not accepted yet.
+        use crate::config::Apply;
+        let propose = match self.config.editor.agent.apply {
+            Apply::Direct => false,
+            Apply::Propose => true,
+            Apply::Mixed => !self.editors[i].replace_is_agents_own(old),
+        };
+        if propose {
+            let made = self.editors[i].propose_replace(old, new, all)?;
+            return Ok(self.agent_proposed(i, &made));
+        }
         let edit = self.editors[i].agent_replace(old, new, all)?;
         Ok(self.agent_edited(i, edit))
+    }
+
+    /// The agent's proposals made: the journal, the reply.
+    fn agent_proposed(&mut self, i: usize, made: &[crate::editor::Proposal]) -> String {
+        let e = &self.editors[i];
+        let path = e.path().to_path_buf();
+        let id = e.id;
+        let list: Vec<String> = made
+            .iter()
+            .map(|p| {
+                if p.old.is_empty() {
+                    format!("#{} new lines after line {}", p.id, p.start)
+                } else {
+                    format!("#{} lines {}-{}", p.id, p.start + 1, p.old_end())
+                }
+            })
+            .collect();
+        self.journal.push(
+            Actor::Agent,
+            Event::Proposed {
+                path: path.clone(),
+                what: list.join(", "),
+            },
+        );
+        if self.wm.current_screen() != ScreenId::Editor(id) {
+            let first = made.first().map_or(1, |p| p.start + 1);
+            let what = format!("{}:{first}", path.display());
+            self.say(tr!("agent-edited-behind", what = what.as_str()));
+        }
+        format!(
+            "proposed in {}: {} — the user accepts (Alt+F5) or rejects (Alt+F6) it; until then the \
+             buffer keeps its text (afar_editor_state lists the proposals waiting)",
+            path.display(),
+            list.join(", ")
+        )
     }
 
     /// `afar_buffer_insert`: after a line, or after the line holding a
@@ -391,7 +444,7 @@ impl App {
         self.may_edit_buffer()?;
         let path = self.agent_path(path);
         let i = self.open_editor_for_agent(&path)?;
-        let e = &mut self.editors[i];
+        let e = &self.editors[i];
         if e.locked {
             return Err("the user locked editing of this file (Ctrl+L)".into());
         }
@@ -418,7 +471,11 @@ impl App {
             }
             _ => return Err("give after_line or after_text (one of them)".into()),
         };
-        let edit = e.agent_insert(after, text)?;
+        if self.config.editor.agent.apply == crate::config::Apply::Propose {
+            let p = self.editors[i].propose_insert(after, text)?;
+            return Ok(self.agent_proposed(i, &[p]));
+        }
+        let edit = self.editors[i].agent_insert(after, text)?;
         Ok(self.agent_edited(i, edit))
     }
 

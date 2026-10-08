@@ -214,7 +214,20 @@ pub enum MarkerTrigger {
     Both,
 }
 
-/// `[editor.agent]`: markers in the text.
+/// How the agent's changes of the editor's text go in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Apply {
+    /// At once (its lines marked, one undo step).
+    Direct,
+    /// Every change a proposal the user accepts or rejects.
+    Propose,
+    /// New text at once; a change of the user's text a proposal.
+    #[default]
+    Mixed,
+}
+
+/// `[editor.agent]`: markers in the text, how the agent's changes go in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorAgent {
@@ -227,6 +240,7 @@ pub struct EditorAgent {
     pub marker_trigger: MarkerTrigger,
     /// The marker line leaves the text when it goes to the agent.
     pub marker_remove: bool,
+    pub apply: Apply,
 }
 
 impl Default for EditorAgent {
@@ -237,6 +251,7 @@ impl Default for EditorAgent {
             marker_in_comments: true,
             marker_trigger: MarkerTrigger::Enter,
             marker_remove: true,
+            apply: Apply::Mixed,
         }
     }
 }
