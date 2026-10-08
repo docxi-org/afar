@@ -236,3 +236,5 @@ editor-syntax-none = Highlighting is on, but the file's language is not known
 editor-syntax-off = Syntax highlighting is off
 editor-keybar-syntax = Syntax
 viewer-found-first = { $title } (the first { $count } listed)
+panels-hidden-shown = Hidden and system files are shown
+panels-hidden-hidden = Hidden and system files are not shown

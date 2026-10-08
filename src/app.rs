@@ -414,6 +414,7 @@ impl App {
         let cwd = std::env::current_dir()
             .map(crate::panel::strip_verbatim)
             .unwrap_or_else(|_| PathBuf::from("."));
+        crate::panel::set_show_hidden(config.panels.show_hidden);
         // Sessions live in <data>/sessions/<time>; the history beside them.
         let data_dir = session_dir
             .parent()

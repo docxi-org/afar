@@ -237,3 +237,5 @@ editor-syntax-none = Подсветка включена, но язык файл
 editor-syntax-off = Подсветка синтаксиса выключена
 editor-keybar-syntax = Синтакс
 viewer-found-first = { $title } (в списке первые { $count })
+panels-hidden-shown = Скрытые и системные файлы показываются
+panels-hidden-hidden = Скрытые и системные файлы не показываются

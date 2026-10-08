@@ -200,6 +200,10 @@ impl FilePanel {
                         own.clone()
                     };
                     let (hidden, system) = hidden_system(&name, own.as_ref());
+                    // Found files are listed whatever they are.
+                    if (hidden || system) && !show_hidden() && self.list.is_none() {
+                        continue;
+                    }
                     entries.push(Entry {
                         hidden,
                         system,
@@ -892,6 +896,18 @@ fn name_key(name: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+/// Hidden and system files are listed (Far's `ShowHidden`, Ctrl+H; one
+/// setting for both panels).
+static SHOW_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_show_hidden(show: bool) {
+    SHOW_HIDDEN.store(show, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn show_hidden() -> bool {
+    SHOW_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Hidden and system attributes (on Unix: hidden = dot file).

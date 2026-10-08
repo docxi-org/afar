@@ -56,6 +56,8 @@ pub enum Command {
     Root,
     Enter,
     Refresh,
+    /// Ctrl+H: hidden and system files shown or not (both panels).
+    ToggleHidden,
     View(ViewMode),
     Sort(SortMode),
     SortMenu,
@@ -428,6 +430,7 @@ pub const COMMANDS: &[Def] = &[
     def("panel.root", Root, &["Ctrl+\\"], false),
     def("panel.enter", Enter, &["Enter"], true),
     def("panel.refresh", Refresh, &["Ctrl+R"], false),
+    def("panel.toggle_hidden", ToggleHidden, &["Ctrl+H"], false),
     def("view.brief", View(ViewMode::Brief), &["Ctrl+1"], false),
     def("view.medium", View(ViewMode::Medium), &["Ctrl+2"], false),
     def("view.full", View(ViewMode::Full), &["Ctrl+3"], false),

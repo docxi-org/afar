@@ -9,6 +9,8 @@ language = ""
 [panels]
 # Gray + and Gray * select folders too (Far: "Select folders").
 select_folders = false
+# Show hidden and system files (Ctrl+H in the panels).
+show_hidden = true
 # Lines one mouse wheel notch moves in panels and lists; 0: as set in Windows
 # ("Mouse → Wheel", usually 3), as Far does.
 wheel_lines = 0

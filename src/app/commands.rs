@@ -127,6 +127,23 @@ impl App {
                 }
             }
             Refresh => self.panels[a].reload(None),
+            ToggleHidden => {
+                let show = !self.config.panels.show_hidden;
+                self.config.panels.show_hidden = show;
+                crate::panel::set_show_hidden(show);
+                for p in &mut self.panels {
+                    p.reload(None);
+                }
+                self.say(tr!(if show {
+                    "panels-hidden-shown"
+                } else {
+                    "panels-hidden-hidden"
+                }));
+                let path = crate::config::config_path();
+                if let Err(e) = self.config.save(&path) {
+                    self.say(tr!("settings-save-failed", error = e));
+                }
+            }
             View(mode) => self.panels[a].view = mode,
             Sort(mode) => self.panels[a].set_sort_mode(mode),
             SortMenu => self.sort_menu(),

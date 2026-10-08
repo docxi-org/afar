@@ -354,14 +354,27 @@ pub struct General {
     pub language: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Panels {
     /// Gray + and Gray * select folders too (Far's "Select folders").
     pub select_folders: bool,
+    /// Hidden and system files are listed (Far's "Show hidden and system
+    /// files"; Ctrl+H).
+    pub show_hidden: bool,
     /// Lines a mouse wheel notch moves in panels and lists; 0: as set in
     /// Windows (Far's System.MsWheelDelta).
     pub wheel_lines: u32,
+}
+
+impl Default for Panels {
+    fn default() -> Self {
+        Self {
+            select_folders: false,
+            show_hidden: true,
+            wheel_lines: 0,
+        }
+    }
 }
 
 /// Far's confirmations (Options → Confirmations).
