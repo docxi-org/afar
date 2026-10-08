@@ -88,8 +88,10 @@ impl App {
         else {
             return;
         };
-        let hint = if self.has_overlay() || self.hovered_link.is_some() {
+        let hint = if self.hovered_link.is_some() {
             None
+        } else if self.has_overlay() {
+            self.overlay_hint(x, y)
         } else {
             self.hint_at(x, y)
         };
@@ -97,6 +99,35 @@ impl App {
             h.nothing = hint.is_none();
             h.shown = hint;
         }
+    }
+
+    /// Over a menu: the whole text of a cut item; why an item is grey.
+    fn overlay_hint(&self, x: u16, y: u16) -> Option<Hint> {
+        use super::fileops::Overlay;
+        if !self.config.hints.menus {
+            return None;
+        }
+        let pos = ratatui::layout::Position::new(x, y);
+        // F9's grey items are what afar does not have yet.
+        let (menu, main) = match self.overlays.last()? {
+            Overlay::Menu { menu, .. } => (menu, false),
+            Overlay::MenuBar(bar) => (bar.open_menu()?, true),
+            Overlay::AgentMenu(bar) => (bar.open_menu()?, false),
+            _ => return None,
+        };
+        let tip = menu.tip_at(pos)?;
+        if !tip.cut && !tip.disabled {
+            return None;
+        }
+        let mut hint = Hint::new(tip.text);
+        if tip.disabled {
+            hint = hint.line(if main {
+                tr!("tip-menu-not-yet")
+            } else {
+                tr!("tip-menu-disabled")
+            });
+        }
+        Some(hint)
     }
 
     /// What there is to say about the cell (x, y).
@@ -432,9 +463,6 @@ impl App {
     /// The hint shown: a block below and right of the mouse (above or to
     /// the left near the edges), lines wrapped at `MAX_WIDTH`.
     pub(super) fn draw_hint(&self, area: Rect, buf: &mut Buffer) {
-        if self.has_overlay() {
-            return;
-        }
         let Some(Hover {
             x,
             y,

@@ -714,6 +714,7 @@ impl App {
             (tr!("hints-panels"), h.panels),
             (tr!("hints-status"), h.status),
             (tr!("hints-marks"), h.marks),
+            (tr!("hints-menus"), h.menus),
         ];
         let delay = tr!("hints-delay");
         let content = checks
@@ -751,6 +752,7 @@ impl App {
         h.panels = dialog.checked(4);
         h.status = dialog.checked(5);
         h.marks = dialog.checked(6);
+        h.menus = dialog.checked(7);
         self.hover = None;
         self.save_config();
     }

@@ -217,6 +217,11 @@ impl<T: Clone> MenuBar<T> {
         }
     }
 
+    /// The submenu open, if one is.
+    pub fn open_menu(&self) -> Option<&Menu> {
+        self.open.as_ref()
+    }
+
     /// The bar on the top row of `area`, the open submenu below it.
     pub fn draw(&mut self, area: Rect, buf: &mut Buffer) {
         self.row = area.y;

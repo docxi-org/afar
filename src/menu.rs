@@ -117,6 +117,17 @@ pub struct Menu {
     max_items: Option<u16>,
     /// Where the menu belongs (set by its owner when first drawn).
     pub host: Option<crate::dialog::Host>,
+    /// Characters of text the last frame had room for.
+    text_w: usize,
+}
+
+/// An item under the mouse, for a hint.
+pub struct ItemTip {
+    /// The whole text (no hotkey marks).
+    pub text: String,
+    /// Shown cut.
+    pub cut: bool,
+    pub disabled: bool,
 }
 
 impl Menu {
@@ -147,6 +158,7 @@ impl Menu {
             row: None,
             max_items: None,
             host: None,
+            text_w: 0,
             thin: false,
             outer: Rect::default(),
             list: Rect::default(),
@@ -352,6 +364,24 @@ impl Menu {
         let row = usize::from(pos.y - l.y - 1);
         let i = self.top + row;
         (row < self.rows && self.items.get(i).is_some_and(Item::selectable)).then_some(i)
+    }
+
+    /// The item (disabled ones too) at a cell of the last frame.
+    pub fn tip_at(&self, pos: Position) -> Option<ItemTip> {
+        let l = self.list;
+        if pos.x <= l.x || pos.x + 1 >= l.right() || pos.y <= l.y {
+            return None;
+        }
+        let row = usize::from(pos.y - l.y - 1);
+        let item = self.items.get(self.top + row).filter(|_| row < self.rows)?;
+        if item.separator {
+            return None;
+        }
+        Some(ItemTip {
+            text: crate::i18n::plain(&item.text),
+            cut: label_cells(&item.text, self.text_w).1,
+            disabled: item.disabled,
+        })
     }
 
     /// The scroll bar's column and rows (arrows included), when shown.
@@ -570,6 +600,7 @@ impl Menu {
         }
 
         let text_w = usize::from(wn - 5);
+        self.text_w = text_w;
         for r in 0..rows {
             let cy = ly + 1 + r as u16;
             let i = self.top + r;

@@ -398,6 +398,8 @@ pub struct Hints {
     pub status: bool,
     /// The agent's marks and proposals in the viewer and the editor.
     pub marks: bool,
+    /// Menus: the whole text of a cut item, why an item is grey.
+    pub menus: bool,
 }
 
 impl Default for Hints {
@@ -411,6 +413,7 @@ impl Default for Hints {
             panels: true,
             status: true,
             marks: true,
+            menus: true,
         }
     }
 }
