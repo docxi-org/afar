@@ -547,9 +547,12 @@ impl AfarMcp {
     }
 
     #[tool(
-        description = "Mark lines in a file in afar's viewer with labels (kind: info, warning \
-        or error) so the user sees them; flash to draw the eye, ttl_s to remove them later. The \
-        user goes from mark to mark with Alt+Down / Alt+Up and removes them with Esc."
+        description = "Mark lines in a file with labels (kind: info, warning or error) so the \
+        user sees them; flash to draw the eye, ttl_s to remove them later. A file open in afar's \
+        editor gets the marks there: the lines coloured, the label as a note at the line's end \
+        (F5 / Shift+F5 go from mark to mark) — the way to answer about the text without changing \
+        it. Otherwise afar's viewer shows it (Alt+Down / Alt+Up go from mark to mark, Esc removes \
+        them)."
     )]
     async fn afar_highlight(
         &self,

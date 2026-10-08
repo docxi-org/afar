@@ -24,7 +24,8 @@ pub struct MarkSpec {
     pub from_line: u64,
     /// Last line (inclusive); `from_line` if omitted.
     pub to_line: Option<u64>,
-    /// Shown in the status line when the place is on the screen.
+    /// Shown with the place: in the viewer's status line, as a note at the
+    /// line's end in the editor.
     pub label: Option<String>,
     /// `info` (default), `warning` or `error`.
     pub kind: Option<String>,
@@ -233,6 +234,11 @@ impl App {
         clear: bool,
     ) -> Result<String, String> {
         let path = self.resolve_path(path);
+        // A file open in the editor: the marks go there (docs/11, plan
+        // step 3) — lines and notes in the margin.
+        if let Some(i) = self.editor_for_path(&path) {
+            return self.agent_highlight_editor(i, &path, marks, flash, ttl_s, clear);
+        }
         let (i, opened) = self.agent_viewer(&path)?;
         for spec in &marks {
             let from = spec.from_line;
@@ -273,6 +279,63 @@ impl App {
         };
         let behind = if n > 0 { self.agent_show(i, &what) } else { "" };
         Ok(format!("{n} place(s) marked in {}{behind}", path.display()))
+    }
+
+    /// The editor window of `path` (the shown one first, when there are two).
+    fn editor_for_path(&self, path: &Path) -> Option<usize> {
+        let key = super::fswatch::path_key;
+        let same = |i: &usize| key(self.editors[*i].path()) == key(path);
+        self.shown_editor()
+            .filter(same)
+            .or_else(|| (0..self.editors.len()).find(same))
+    }
+
+    fn agent_highlight_editor(
+        &mut self,
+        i: usize,
+        path: &Path,
+        marks: Vec<MarkSpec>,
+        flash: bool,
+        ttl_s: Option<u64>,
+        clear: bool,
+    ) -> Result<String, String> {
+        let total = self.editors[i].line_count() as u64;
+        for spec in &marks {
+            let to = spec.to_line.unwrap_or(spec.from_line);
+            if spec.from_line < 1 || to > total || to < spec.from_line {
+                return Err(format!(
+                    "lines {}-{to} are outside the editor buffer (1-{total})",
+                    spec.from_line
+                ));
+            }
+        }
+        let e = &mut self.editors[i];
+        if clear {
+            e.marks.retain(|m| !m.agent);
+        }
+        let expires = ttl_s.map(|s| Instant::now() + Duration::from_secs(s));
+        let n = marks.len();
+        let first = marks.iter().map(|m| m.from_line).min();
+        for spec in &marks {
+            let mut m = make_mark(spec, flash);
+            m.to = m.to.min(total);
+            m.expires = expires;
+            e.marks.push(m);
+        }
+        // The first place on the screen when it is not; the cursor stays
+        // where it is, the screen too until the user acts.
+        if let Some(l) = first {
+            let line = l as usize - 1;
+            let h = usize::from(e.area.height.max(1));
+            if line < e.top || line >= e.top + h {
+                e.top = line.saturating_sub(h / 4);
+                e.hold_view = true;
+            }
+        }
+        Ok(format!(
+            "{n} place(s) marked in the editor buffer of {} (the labels show at the lines' ends)",
+            path.display()
+        ))
     }
 
     /// `afar_viewer_state`: the open files, what the user sees and selected.

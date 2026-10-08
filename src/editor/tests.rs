@@ -197,3 +197,51 @@ fn a_typed_line_is_the_agent_instruction() {
     e.undo();
     assert_eq!(e.plain_lines(), vec!["from the file", "  make a table  "]);
 }
+
+#[test]
+fn agent_marks_move_with_their_lines() {
+    let mut e = ed("a\nb\nc\n");
+    e.marks.push(crate::viewer::Mark {
+        from: 3,
+        to: 3,
+        label: "here".into(),
+        kind: crate::viewer::MarkKind::Info,
+        agent: true,
+        flash_until: None,
+        expires: None,
+        stale: false,
+    });
+    e.cursor = Pos::new(0, 0);
+    e.insert_text("x\ny\n");
+    assert_eq!((e.marks[0].from, e.marks[0].to), (5, 5));
+    assert_eq!(e.lines()[4].text, "c");
+    e.command(C::FileStart);
+    e.command(C::NextMark);
+    assert_eq!(e.cursor.line, 4);
+}
+
+#[test]
+fn undo_moves_marks_and_bookmarks_back() {
+    let mut e = ed("l1\nl2\nl3\nl4\n");
+    e.marks.push(crate::viewer::Mark {
+        from: 4,
+        to: 4,
+        label: String::new(),
+        kind: crate::viewer::MarkKind::Info,
+        agent: true,
+        flash_until: None,
+        expires: None,
+        stale: false,
+    });
+    e.cursor = Pos::new(3, 0);
+    e.command(C::SetBookmark(1));
+    e.cursor = Pos::new(1, 0);
+    e.command(C::DeleteLine);
+    assert_eq!(e.marks[0].from, 3);
+    e.command(C::Undo);
+    assert_eq!(e.marks[0].from, 4);
+    assert_eq!(e.bookmarks[1].map(|b| b.line), Some(3));
+    e.command(C::Redo);
+    assert_eq!(e.marks[0].from, 3);
+    assert_eq!(e.bookmarks[1].map(|b| b.line), Some(2));
+}

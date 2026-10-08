@@ -161,7 +161,8 @@ An event starting with [afar editor #N … | the user passes you the turn] comes
 instruction (if any), the cursor, the selection and the changes since the version you last saw; mode auto — do \
 what it asks in that buffer (\"after this line\" means the line the instruction was typed at — the event says \
 which, 0 meaning before the first line: afar_buffer_insert after_line 0); mode answer — \
-do not change the text, answer in your pane. Blocks starting with [afar journal] in a \
+do not change the text: answer in your pane, or mark the lines you speak about with afar_highlight (its label \
+shows as a note at the line's end in the editor). Blocks starting with [afar journal] in a \
 user message are recent user actions added automatically. In the journal, `fs` entries are file changes afar saw in the panels' folders; afar cannot tell who wrote them: \
 `(while your Bash ran)` means they happened during your shell command (Bash or PowerShell) and most likely are its own \
 writes, `(while [cmd-N] ran)` — during the user's command. `tool` entries are your own tool uses; files you change \

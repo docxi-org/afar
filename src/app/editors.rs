@@ -146,9 +146,9 @@ pub struct EditorPlaces {
     entries: Vec<(String, EditorPlace)>,
 }
 
+/// A path as a key: `/` and `\\` alike, case ignored on Windows.
 fn place_key(path: &Path) -> String {
-    let s = path.display().to_string();
-    if cfg!(windows) { s.to_lowercase() } else { s }
+    super::fswatch::path_key(path)
 }
 
 impl EditorPlaces {
@@ -663,6 +663,15 @@ impl App {
             Settings => {
                 let id = self.editors[i].id;
                 self.editor_settings_dialog(Some(id));
+            }
+            NextMark | PrevMark => {
+                let e = &self.editors[i];
+                if let Some(m) = e.mark_at(e.cursor.line)
+                    && !m.label.is_empty()
+                {
+                    let label = m.label.clone();
+                    self.say(label);
+                }
             }
             AgentTurn => self.editor_agent_turn(i, false),
             AgentAnswer => self.editor_agent_turn(i, true),
@@ -1304,6 +1313,10 @@ impl App {
     /// Once a second: the shown editor's file changed on the disk? Not
     /// modified here — read again; modified — asked once per change.
     pub(super) fn editor_tick(&mut self) {
+        // The agent's marks expire in every window.
+        for e in &mut self.editors {
+            e.marks_tick();
+        }
         let Some(i) = self.shown_editor() else { return };
         if self.has_overlay() {
             return;

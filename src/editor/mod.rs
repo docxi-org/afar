@@ -177,6 +177,12 @@ pub struct Editor {
     pub bad_conversion: Option<Vec<u8>>,
     /// The user passed the turn to the agent (until the agent's turn ends).
     pub agent_turn: Option<Instant>,
+    /// Lines marked by the agent (`afar_highlight`; lines from 1, as in
+    /// the viewer): coloured, the label as a note in the margin.
+    pub marks: Vec<crate::viewer::Mark>,
+    /// The screen was moved to show something (the agent's marks): it
+    /// stays there, the cursor off it, until the user acts.
+    pub hold_view: bool,
     /// Ctrl+Shift+0…9 / Ctrl+0…9.
     pub bookmarks: [Option<Bookmark>; 10],
 }
@@ -223,6 +229,8 @@ impl Editor {
             dragging_bar: false,
             bad_conversion: None,
             agent_turn: None,
+            marks: Vec::new(),
+            hold_view: false,
             bookmarks: [None; 10],
         }
     }
@@ -433,6 +441,10 @@ impl Editor {
     /// Keeps the cursor on the screen with the least scrolling (Far).
     pub fn scroll_to_cursor(&mut self) {
         let h = usize::from(self.area.height.max(1));
+        if self.hold_view {
+            self.top = self.top.min(self.lines.len().saturating_sub(h));
+            return;
+        }
         if self.cursor.line < self.top {
             self.top = self.cursor.line;
         } else if self.cursor.line >= self.top + h {
@@ -718,6 +730,22 @@ impl Editor {
                 b.line = b.line.min(end.line);
             }
         }
+        // So do the agent's marks (lines from 1).
+        let shift = |l: u64| -> u64 {
+            let z = l.saturating_sub(1) as usize;
+            let z = if z > e.line {
+                (z as isize + delta).max(0) as usize
+            } else if z > s.line {
+                z.min(end.line)
+            } else {
+                z
+            };
+            z as u64 + 1
+        };
+        for m in &mut self.marks {
+            m.from = shift(m.from);
+            m.to = shift(m.to).max(m.from);
+        }
         // A finished block moves with the text after the change.
         let after = |p: Pos| -> Pos {
             if p < e {
@@ -793,6 +821,7 @@ impl Editor {
     /// A typed character (Far: a stream block is replaced unless blocks
     /// persist; past the end the line is filled with spaces).
     pub fn type_char(&mut self, c: char) {
+        self.hold_view = false;
         if !self.editable() {
             return;
         }
@@ -993,19 +1022,83 @@ impl Editor {
         Some((n, text))
     }
 
+    /// Marks whose time ran out go.
+    pub fn marks_tick(&mut self) {
+        let now = Instant::now();
+        self.marks.retain(|m| m.expires.is_none_or(|t| t > now));
+    }
+
+    /// F5 / Shift+F5: to the next / previous marked line.
+    fn goto_mark(&mut self, forward: bool) {
+        let at = self.cursor.line as u64 + 1;
+        let target = if forward {
+            self.marks.iter().map(|m| m.from).filter(|f| *f > at).min()
+        } else {
+            self.marks.iter().map(|m| m.from).filter(|f| *f < at).max()
+        };
+        if let Some(line) = target {
+            let line = (line as usize - 1).min(self.lines.len() - 1);
+            let h = usize::from(self.area.height.max(1));
+            if line < self.top || line >= self.top + h {
+                self.top = line.saturating_sub(h / 4);
+            }
+            self.move_to(Pos::new(line, 0));
+        }
+    }
+
+    /// The mark on `line` (from 0) drawn on top, if any.
+    pub fn mark_at(&self, line: usize) -> Option<&crate::viewer::Mark> {
+        let l = line as u64 + 1;
+        self.marks.iter().rev().find(|m| l >= m.from && l <= m.to)
+    }
+
     pub fn undo(&mut self) {
+        let before: Vec<String> = self.plain_lines();
         if let Some(pos) = self.history.undo(&mut self.lines) {
             self.cursor = pos;
             self.unselect();
             self.version += 1;
+            self.remap_places(&before);
         }
     }
 
     pub fn redo(&mut self) {
+        let before: Vec<String> = self.plain_lines();
         if let Some(pos) = self.history.redo(&mut self.lines) {
             self.cursor = pos;
             self.unselect();
             self.version += 1;
+            self.remap_places(&before);
+        }
+    }
+
+    /// After undo / redo (which put whole lines back, past `replace`): the
+    /// marks and bookmarks follow their lines, found by comparing the
+    /// text before and after; a place on a line that went moves to the
+    /// next one.
+    fn remap_places(&mut self, before: &[String]) {
+        let after = self.plain_lines();
+        let mut map = vec![after.len().saturating_sub(1); before.len() + 1];
+        let ops = similar::capture_diff_slices(similar::Algorithm::Myers, before, &after);
+        for op in &ops {
+            let (old, new) = (op.old_range(), op.new_range());
+            for (k, o) in old.clone().enumerate() {
+                map[o] = match op.tag() {
+                    similar::DiffTag::Equal | similar::DiffTag::Replace => {
+                        (new.start + k).min(new.end.saturating_sub(1).max(new.start))
+                    }
+                    _ => new.start,
+                };
+            }
+        }
+        let last = after.len().saturating_sub(1);
+        let to_new = |l: usize| map.get(l).copied().unwrap_or(last).min(last);
+        for b in self.bookmarks.iter_mut().flatten() {
+            b.line = to_new(b.line);
+        }
+        for m in &mut self.marks {
+            m.from = to_new(m.from as usize - 1) as u64 + 1;
+            m.to = (to_new(m.to as usize - 1) as u64 + 1).max(m.from);
         }
     }
 
@@ -1229,6 +1322,7 @@ impl Editor {
 
     pub fn command(&mut self, cmd: EditorCmd) -> Outcome {
         use EditorCmd::*;
+        self.hold_view = false;
         let vertical = matches!(
             cmd,
             Up | Down
@@ -1402,6 +1496,11 @@ impl Editor {
                     self.top = line.saturating_sub(b.screen_line);
                 }
             }
+            // The window says the mark's label after the move.
+            NextMark | PrevMark => {
+                self.goto_mark(cmd == NextMark);
+                return Outcome::App(cmd);
+            }
             BlockLeft => self.shift_block(false),
             BlockRight => self.shift_block(true),
             BlockCopyHere => self.copy_block_here(false),
@@ -1483,6 +1582,7 @@ impl Editor {
     }
 
     pub fn click(&mut self, x: u16, y: u16, shift: bool) {
+        self.hold_view = false;
         let Some(p) = self.pos_at(x, y) else { return };
         if shift {
             self.select_to(p);
@@ -1527,6 +1627,7 @@ impl Editor {
     /// The wheel: the screen and the cursor by `lines` (Far: as Ctrl+Up /
     /// Ctrl+Down).
     pub fn wheel(&mut self, lines: isize) {
+        self.hold_view = false;
         let max_top = self.lines.len().saturating_sub(1) as isize;
         let top = (self.top as isize + lines).clamp(0, max_top);
         let d = top - self.top as isize;
@@ -1598,6 +1699,34 @@ impl Editor {
                     Some((from, to))
                 })
             });
+            // The agent's mark: the whole row in its colour (blinking when
+            // asked), the label after the text.
+            let mark = self.mark_at(line).map(|m| {
+                let mut st = match m.kind {
+                    crate::viewer::MarkKind::Info => theme::VIEWER_MARK_INFO,
+                    crate::viewer::MarkKind::Warning => theme::VIEWER_MARK_WARNING,
+                    crate::viewer::MarkKind::Error => theme::VIEWER_MARK_ERROR,
+                    crate::viewer::MarkKind::Changed => theme::VIEWER_MARK_CHANGED,
+                };
+                let phase = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() / 250);
+                if m.flash_until.is_some_and(|t| t > Instant::now()) && phase.is_multiple_of(2) {
+                    st = st.add_modifier(ratatui::style::Modifier::REVERSED);
+                }
+                // The label once, at the mark's first line.
+                let label = if line as u64 + 1 == m.from {
+                    m.label.clone()
+                } else {
+                    String::new()
+                };
+                (st, label)
+            });
+            if let Some((st, _)) = &mark {
+                for x in text_x..text_x + text_w {
+                    buf[(x, y)].set_style(*st);
+                }
+            }
             let mut v = 0usize;
             for c in l.text.chars() {
                 let w = self.char_width(c, v);
@@ -1608,6 +1737,8 @@ impl Editor {
                     let selected = sel_v.is_some_and(|(a, b)| v >= a && v < b);
                     let style = if selected {
                         theme::EDITOR_SELECTED
+                    } else if let Some((st, _)) = &mark {
+                        *st
                     } else if l.by_agent {
                         theme::EDITOR_AGENT
                     } else {
@@ -1675,6 +1806,27 @@ impl Editor {
                             .set_symbol(ch.encode_utf8(&mut b))
                             .set_style(style);
                     }
+                }
+            }
+            // The mark's label: a note in the margin, two columns after
+            // the text (as far as the window goes).
+            if let Some((st, label)) = &mark
+                && !label.is_empty()
+            {
+                let start = (v + 2).max(self.left);
+                let room = (self.left + usize::from(text_w)).saturating_sub(start);
+                if room > 2 {
+                    let x = text_x + (start - self.left) as u16;
+                    let full = format!("◆ {label}");
+                    let note: String = if full.chars().count() > room {
+                        // Cut: the end shows it (F5 says it whole).
+                        let mut s: String = full.chars().take(room - 1).collect();
+                        s.push('…');
+                        s
+                    } else {
+                        full
+                    };
+                    buf.set_stringn(x, y, &note, room, *st);
                 }
             }
             // Selection past the text (the line's end selected).

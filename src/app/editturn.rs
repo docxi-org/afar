@@ -122,7 +122,8 @@ impl App {
             e.path().display(),
             e.version,
             if answer {
-                "answer — do not change the text, answer in your pane"
+                "answer — do not change the text: answer in your pane, or mark the lines with \
+                 afar_highlight (the label shows as a note in the margin)"
             } else {
                 "auto — act in the buffer as the instruction asks (afar_buffer_insert to write \
                  after a line, afar_buffer_edit to change text)"
