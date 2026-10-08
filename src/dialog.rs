@@ -15,6 +15,23 @@ use crate::complete::fuzzy;
 use crate::panel::draw_frame;
 use crate::theme;
 
+/// Where a dialog or menu belongs: it is centred there (the manager's
+/// screen, or the agent's pane), and goes beyond only when it does not fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Host {
+    Screen,
+    Agent,
+}
+
+/// The start of `size` cells centred in the parent's `start..start+len`,
+/// kept within the area's `area_start..area_start+area_len` (a window
+/// bigger than its parent spreads both ways, then is pushed back in).
+pub fn centred(start: u16, len: u16, area_start: u16, area_len: u16, size: u16) -> u16 {
+    let c = i32::from(start) + (i32::from(len) - i32::from(size)) / 2;
+    let max = i32::from(area_start) + i32::from(area_len.saturating_sub(size));
+    c.clamp(i32::from(area_start), max) as u16
+}
+
 /// Position of an item: from the dialog's left edge, or centred.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum X {
@@ -448,6 +465,8 @@ pub struct Dialog {
     /// Check boxes that mean something only when another is checked:
     /// (dependent, the one it depends on), by their order in the dialog.
     links: Vec<(usize, usize)>,
+    /// Where the dialog belongs (set by its owner when first drawn).
+    pub host: Option<Host>,
 }
 
 impl Dialog {
@@ -476,6 +495,7 @@ impl Dialog {
             focused_rect: Rect::default(),
             ghost: None,
             links: Vec::new(),
+            host: None,
         }
     }
 
@@ -1737,31 +1757,25 @@ impl Dialog {
 
     /// Draws the dialog centred in `area`; returns the text cursor.
     pub fn draw(&mut self, area: Rect, buf: &mut Buffer) -> Option<Position> {
+        self.draw_in(area, area, buf)
+    }
+
+    /// Draws the dialog centred in `parent` (its window), within `area`.
+    pub fn draw_in(&mut self, parent: Rect, area: Rect, buf: &mut Buffer) -> Option<Position> {
         let c = if self.warning { &WARNING } else { &NORMAL };
         let w = self.width.min(area.width);
         let h = (self.rows.len() as u16 + 4).min(area.height);
-        // Centred, moved by the user, kept on the screen.
+        // Centred in the parent, moved by the user, kept on the screen.
+        let cx = centred(parent.x, parent.width, area.x, area.width, w);
+        let cy = centred(parent.y, parent.height, area.y, area.height, h);
         let clamp = |centre: u16, delta: i32, start: u16, room: u16| {
             (i32::from(centre) + delta).clamp(i32::from(start), i32::from(start + room)) as u16
         };
-        let x0 = clamp(
-            area.x + area.width.saturating_sub(w) / 2,
-            self.offset.0,
-            area.x,
-            area.width.saturating_sub(w),
-        );
-        let y0 = clamp(
-            area.y + area.height.saturating_sub(h) / 2,
-            self.offset.1,
-            area.y,
-            area.height.saturating_sub(h),
-        );
+        let x0 = clamp(cx, self.offset.0, area.x, area.width.saturating_sub(w));
+        let y0 = clamp(cy, self.offset.1, area.y, area.height.saturating_sub(h));
         // Remember the clamped offset so dragging past the edge does not
         // accumulate.
-        self.offset = (
-            i32::from(x0) - i32::from(area.x + area.width.saturating_sub(w) / 2),
-            i32::from(y0) - i32::from(area.y + area.height.saturating_sub(h) / 2),
-        );
+        self.offset = (i32::from(x0) - i32::from(cx), i32::from(y0) - i32::from(cy));
         let outer = Rect::new(x0, y0, w, h);
         self.outer = outer;
 

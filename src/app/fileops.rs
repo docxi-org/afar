@@ -18,7 +18,7 @@ use super::policy::AgentAction;
 use super::{App, AppMsg, Focus};
 use crate::config::Level;
 use crate::dialog::{
-    Button, Dialog, Outcome, check_at, combo_at, input_at, radio_at, text_at, visible, wrap,
+    Button, Dialog, Host, Outcome, check_at, combo_at, input_at, radio_at, text_at, visible, wrap,
 };
 use crate::journal::{Actor, Event};
 use crate::mcp::Reply;
@@ -701,15 +701,50 @@ impl App {
         buf: &mut Buffer,
     ) -> Option<Position> {
         let mut cursor = None;
+        // Each dialog and menu is centred in its window: the manager's
+        // screen, or the agent's pane — the agent's requests and what is
+        // opened while the agent has the focus.
+        let (screen, pane) = self
+            .last_layout
+            .as_ref()
+            .map_or((area, area), |l| (l.top, l.agent_frame));
+        let rect = |h: Host| match h {
+            Host::Agent if pane.width > 0 && pane.height > 0 => pane.intersection(area),
+            _ if screen.width > 0 && screen.height > 0 => screen.intersection(area),
+            _ => area,
+        };
+        let focus_host = if self.focus == super::Focus::Agent {
+            Host::Agent
+        } else {
+            Host::Screen
+        };
         for overlay in &mut self.overlays {
             cursor = match overlay {
-                Overlay::Dialog { dialog, .. } => dialog.draw(area, buf),
+                Overlay::Dialog { dialog, purpose } => {
+                    let host = *dialog.host.get_or_insert_with(|| {
+                        let agent = match purpose {
+                            Purpose::MkDir { actor, .. }
+                            | Purpose::Delete { actor, .. }
+                            | Purpose::Copy { actor, .. } => *actor == Actor::Agent,
+                            Purpose::IdeDiff { .. } => true,
+                            _ => false,
+                        };
+                        if agent { Host::Agent } else { focus_host }
+                    });
+                    dialog.draw_in(rect(host), area, buf)
+                }
                 Overlay::Progress(p) => {
-                    progress_dialog(p).draw(area, buf);
+                    let agent = self
+                        .ops
+                        .get(&p.op)
+                        .is_some_and(|op| op.actor == Actor::Agent);
+                    let host = if agent { Host::Agent } else { Host::Screen };
+                    progress_dialog(p).draw_in(rect(host), area, buf);
                     None
                 }
                 Overlay::Menu { menu, .. } => {
-                    menu.draw(area, buf);
+                    let host = *menu.host.get_or_insert(focus_host);
+                    menu.draw_in(rect(host), area, buf);
                     None
                 }
                 Overlay::MenuBar(menubar) => {
@@ -720,13 +755,19 @@ impl App {
                     menubar.draw(agent_bar, buf);
                     None
                 }
+                // The big windows fill the manager's screen while it is
+                // tall enough.
                 Overlay::Find(v) => {
-                    super::findfiles::draw_find(v, area, buf);
+                    let r = rect(Host::Screen);
+                    let r = if r.height >= 12 { r } else { area };
+                    super::findfiles::draw_find(v, r, buf);
                     None
                 }
                 Overlay::FolderTree(ft) => {
                     let tree = self.trees.get(&ft.root);
-                    super::foldertree::draw_folder_tree(ft, tree, area, buf);
+                    let r = rect(Host::Screen);
+                    let r = if r.height >= 10 { r } else { area };
+                    super::foldertree::draw_folder_tree(ft, tree, r, buf);
                     None
                 }
             };

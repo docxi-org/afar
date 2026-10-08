@@ -132,7 +132,10 @@ impl<T: Clone> MenuBar<T> {
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> Outcome<T> {
         let n = self.titles.len();
+        // An item's own key (Ctrl+Left…) goes to the open submenu.
+        let own = self.open.as_ref().is_some_and(|m| m.has_accel(key));
         match key.code {
+            _ if own => {}
             KeyCode::Left => {
                 self.select((self.selected + n - 1) % n);
                 return Outcome::Pending;

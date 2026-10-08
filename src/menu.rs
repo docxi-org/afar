@@ -21,6 +21,9 @@ pub struct Item {
     /// Cannot be chosen; the cursor skips it.
     pub disabled: bool,
     accel: Option<Chord>,
+    /// The accelerator's name is already in `text` (the items of a menu
+    /// given to the next one, as the menu bar's submenus are).
+    decorated: bool,
 }
 
 impl Item {
@@ -31,6 +34,7 @@ impl Item {
             separator: false,
             disabled: false,
             accel: None,
+            decorated: false,
         }
     }
 
@@ -111,6 +115,8 @@ pub struct Menu {
     margin_cols: u16,
     /// At most this many items shown at once.
     max_items: Option<u16>,
+    /// Where the menu belongs (set by its owner when first drawn).
+    pub host: Option<crate::dialog::Host>,
 }
 
 impl Menu {
@@ -120,13 +126,15 @@ impl Menu {
     pub fn new(title: impl Into<String>, mut items: Vec<Item>) -> Self {
         let longest = items
             .iter()
+            .filter(|i| !i.decorated)
             .map(|i| visible_len(&i.text))
             .max()
             .unwrap_or(0);
-        for item in items.iter_mut().filter(|i| !i.separator) {
+        for item in items.iter_mut().filter(|i| !i.separator && !i.decorated) {
             if let Some(chord) = item.accel {
                 let pad = longest + 1 - visible_len(&item.text);
                 item.text = format!("{}{}{}", item.text, " ".repeat(pad), chord.far_label());
+                item.decorated = true;
             }
         }
         let mut menu = Self {
@@ -138,6 +146,7 @@ impl Menu {
             column: None,
             row: None,
             max_items: None,
+            host: None,
             thin: false,
             outer: Rect::default(),
             list: Rect::default(),
@@ -268,6 +277,12 @@ impl Menu {
         if self.items.is_empty() {
             return Outcome::Closed(None);
         }
+        // An item's own key first: Ctrl+Down may choose an item rather
+        // than move the cursor.
+        if let Some(i) = self.accel_item(key) {
+            self.selected = i;
+            return Outcome::Closed(Some(i));
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc | KeyCode::F(10) => return Outcome::Closed(None),
@@ -293,13 +308,18 @@ impl Menu {
             KeyCode::PageUp => self.page(-1),
             KeyCode::PageDown => self.page(1),
             _ => {
-                if let Some(i) = self.accel_item(key).or_else(|| self.hotkey_item(key)) {
+                if let Some(i) = self.hotkey_item(key) {
                     self.selected = i;
                     return Outcome::Closed(Some(i));
                 }
             }
         }
         Outcome::Pending
+    }
+
+    /// An item has `key` as its own key.
+    pub fn has_accel(&self, key: &KeyEvent) -> bool {
+        self.accel_item(key).is_some()
     }
 
     fn accel_item(&self, key: &KeyEvent) -> Option<usize> {
@@ -446,6 +466,12 @@ impl Menu {
     }
 
     pub fn draw(&mut self, area: Rect, buf: &mut Buffer) {
+        self.draw_in(area, area, buf);
+    }
+
+    /// Draws the menu; a centred one is centred in `parent` (its window),
+    /// a placed one (`at_column`, `set_row`) is placed in `area`.
+    pub fn draw_in(&mut self, parent: Rect, area: Rect, buf: &mut Buffer) {
         let n = self.items.len();
         let longest = self
             .items
@@ -476,14 +502,14 @@ impl Menu {
         let mut x = match self.column {
             Some(c) if c >= mx => area.x + c - mx,
             Some(c) => area.x + c,
-            None => area.x + (area.width - w) / 2,
+            None => crate::dialog::centred(parent.x, parent.width, area.x, area.width, w),
         };
         if x > area.x && x + w > area.right().saturating_sub(1) {
             x = area.right().saturating_sub(1).saturating_sub(w);
         }
         let y = match self.row {
             Some(r) => area.y + r.saturating_sub(my),
-            None => area.y + area.height.saturating_sub(h) / 2,
+            None => crate::dialog::centred(parent.y, parent.height, area.y, area.height, h),
         };
         let outer = Rect::new(x, y, w, h);
         let list = Rect::new(x + mx, y + my, wn, h.saturating_sub(2 * my));
@@ -706,6 +732,31 @@ mod tests {
         )
         .bottom_title("+ - * F4")
         .at_column(4)
+    }
+
+    #[test]
+    fn an_items_key_beats_the_cursor_keys() {
+        let mut m = Menu::new(
+            "View",
+            vec![
+                Item::new("Up").accel(KeyCode::Up, KeyModifiers::CONTROL),
+                Item::new("Down").accel(KeyCode::Down, KeyModifiers::CONTROL),
+            ],
+        );
+        let ctrl_down = KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL);
+        assert_eq!(m.handle_key(&ctrl_down), Outcome::Closed(Some(1)));
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(m.handle_key(&down), Outcome::Pending);
+    }
+
+    #[test]
+    fn keys_are_appended_once() {
+        // The menu bar gives a submenu's items to the next one.
+        let texts =
+            |m: Menu| -> Vec<String> { m.into_items().into_iter().map(|i| i.text).collect() };
+        let first = texts(sort_like());
+        let again = Menu::new("Sort by", sort_like().into_items());
+        assert_eq!(texts(again), first);
     }
 
     #[test]

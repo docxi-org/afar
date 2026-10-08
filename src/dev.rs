@@ -9,6 +9,10 @@
 //! - The app watches the sources and runs `cargo build` (the same profile)
 //!   in the background; after a successful build it saves its state to a
 //!   file the next instance reads, and exits with `RESTART_EXIT_CODE`.
+//! - A build records which sources it was made from (`state-<pid>.built`);
+//!   the next instance rebuilds at once if they changed since (an edit
+//!   during the build, or a build left running by the instance that
+//!   exited).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -87,6 +91,7 @@ pub fn supervise() -> anyhow::Result<i32> {
         let _ = std::fs::remove_file(&copy);
         if status.code() != Some(RESTART_EXIT_CODE) {
             let _ = std::fs::remove_file(&state);
+            let _ = std::fs::remove_file(state.with_extension("built"));
             // Nothing was rebuilt: put the executable back for `cargo run`.
             if parked_ok && !target.exists() {
                 let _ = std::fs::rename(&parked, &target);
@@ -223,7 +228,17 @@ pub fn spawn_watcher(send: impl Fn(DevMsg) + Send + 'static) -> std::io::Result<
     std::thread::Builder::new()
         .name("dev-watcher".into())
         .spawn(move || {
+            let built_file =
+                std::env::var_os(STATE_ENV).map(|s| PathBuf::from(s).with_extension("built"));
             let mut last = fingerprint(&root);
+            // This instance runs the build made from the recorded sources:
+            // anything changed since is not in it yet.
+            if let Some(f) = &built_file
+                && let Ok(saved) = std::fs::read_to_string(f)
+                && saved.trim() != digest(&last)
+            {
+                last.clear();
+            }
             loop {
                 std::thread::sleep(Duration::from_millis(500));
                 let mut now = fingerprint(&root);
@@ -241,6 +256,7 @@ pub fn spawn_watcher(send: impl Fn(DevMsg) + Send + 'static) -> std::io::Result<
                     now = again;
                 }
                 last = now;
+                let building = digest(&last);
                 send(DevMsg::BuildStarted);
                 let started = Instant::now();
                 let mut cmd = Command::new("cargo");
@@ -262,6 +278,9 @@ pub fn spawn_watcher(send: impl Fn(DevMsg) + Send + 'static) -> std::io::Result<
                     }
                     Err(e) => (false, vec![format!("cargo: {e}")]),
                 };
+                if ok && let Some(f) = &built_file {
+                    let _ = std::fs::write(f, &building);
+                }
                 send(DevMsg::BuildFinished {
                     ok,
                     output,
@@ -270,6 +289,14 @@ pub fn spawn_watcher(send: impl Fn(DevMsg) + Send + 'static) -> std::io::Result<
             }
         })?;
     Ok(())
+}
+
+/// A short text standing for a fingerprint.
+fn digest(fp: &[(PathBuf, u64, Option<SystemTime>)]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    fp.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// Changes to the sources: paths, sizes and modification times.

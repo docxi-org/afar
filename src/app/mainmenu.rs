@@ -107,8 +107,8 @@ fn files_menu() -> Vec<Entry> {
     use Command::*;
     use MainAction::Run;
     vec![
-        ("MMenuView", Some("F3"), None),
-        ("MMenuEdit", Some("F4"), None),
+        ("MMenuView", Some("F3"), Some(Run(ViewFile))),
+        ("MMenuEdit", Some("F4"), Some(Run(EditFile))),
         ("MMenuCopy", Some("F5"), Some(Run(Copy))),
         ("MMenuMove", Some("F6"), Some(Run(Move))),
         ("MMenuLink", Some("Alt+F6"), None),
@@ -170,7 +170,7 @@ fn commands_menu() -> Vec<Entry> {
         ("MMenuFilter", Some("Ctrl+I"), None),
         SEP,
         ("MMenuPluginCommands", Some("F11"), None),
-        ("MMenuWindowsList", Some("F12"), None),
+        ("MMenuWindowsList", Some("F12"), Some(Run(Screens))),
         ("MMenuProcessList", Some("Ctrl+W"), None),
         ("MMenuHotPlugList", None, None),
     ]
