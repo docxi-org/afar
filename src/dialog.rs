@@ -65,6 +65,9 @@ pub enum Kind {
         /// Holds a command: completion offers programs too
         /// (DIF_EDITPATHEXEC).
         exec: bool,
+        /// A line of a text in several fields (Far's DIF_EDITOR): Enter
+        /// goes to the next field instead of closing the dialog.
+        line: bool,
         readonly: bool,
         disabled: bool,
     },
@@ -1494,6 +1497,16 @@ impl Dialog {
             {
                 return Outcome::Pressed(n);
             }
+            // A line of a text: on to the next field.
+            KeyCode::Enter
+                if focus.is_some_and(|t| {
+                    matches!(t, Target::Elem(r, e)
+                        if matches!(self.elem(r, e).map(|e| &e.kind), Some(Kind::Input { line: true, .. })))
+                }) =>
+            {
+                self.move_focus(1);
+                return Outcome::Pending;
+            }
             KeyCode::Enter => {
                 return Outcome::Closed(match focus {
                     Some(Target::Button(_, _, n)) => Some(n),
@@ -2532,6 +2545,7 @@ pub fn input_at(x: u16, width: u16, value: impl Into<String>, history: Option<&s
             use_last: false,
             path: false,
             exec: false,
+            line: false,
             readonly: false,
             disabled: false,
         },
@@ -2648,6 +2662,14 @@ impl Elem {
     }
 
     /// A field for a command: completion offers files and programs.
+    /// A line of a text in several fields (Far's DIF_EDITOR).
+    pub fn text_line(mut self) -> Self {
+        if let Kind::Input { line, .. } = &mut self.kind {
+            *line = true;
+        }
+        self
+    }
+
     pub fn exec(mut self) -> Self {
         if let Kind::Input { path, exec, .. } = &mut self.kind {
             *path = true;

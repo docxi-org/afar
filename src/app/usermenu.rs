@@ -349,7 +349,7 @@ impl App {
                 .row(vec![text_at(5, tr!("MEditMenuCommands"))]);
             for k in 0..COMMAND_LINES {
                 let line = item.commands.get(k).cloned().unwrap_or_default();
-                d = d.row(vec![input_at(5, 66, line, None).exec()]);
+                d = d.row(vec![input_at(5, 66, line, None).exec().text_line()]);
             }
         }
         let dialog = d.separator().buttons(&[&tr!("MOk"), &tr!("MCancel")], 0);
