@@ -53,6 +53,7 @@ mod mainmenu;
 mod outer;
 mod panelcmds;
 mod paste;
+mod permits;
 mod policy;
 mod quicksearch;
 mod quickview;
@@ -1009,6 +1010,7 @@ impl App {
                         let _ = reply.send(Err(e));
                     }
                 },
+                Request::HookPermission(input) => self.permission_request(input, reply),
                 Request::MkDir { side, names } => match self.resolve_side(&side) {
                     Ok(side) => self.agent_mkdir_request(side, names, reply),
                     Err(e) => {
@@ -1038,6 +1040,7 @@ impl App {
     /// Periodic work: debounced journal entries, message expiry.
     fn tick(&mut self) {
         self.panel_drag_tick();
+        self.permission_tick();
         self.ide_diff_tick();
         self.hint_tick();
         self.fs_tick();
@@ -1158,6 +1161,17 @@ impl App {
             "PostToolUseFailure": tool_hook("post-tool-failure", "Bash|PowerShell"),
             // What the agent is doing, for the pane's frame (docs/16).
             "Stop": hook("stop"),
+            // Its permission questions, in afar's dialog (waiting for the
+            // user: a long time-out).
+            "PermissionRequest": if self.config.agent.ask_in_afar {
+                serde_json::json!([{ "matcher": "*", "hooks": [{
+                    "type": "command",
+                    "command": format!("\"{exe}\" hook permission"),
+                    "timeout": crate::mcp::PERMISSION_WAIT.as_secs() + 10,
+                }]}])
+            } else {
+                serde_json::json!([])
+            },
             "Notification": hook("notification"),
         }});
         let mcp_path = dir.join("mcp.json");
@@ -2136,6 +2150,8 @@ impl App {
             Request::Delete { .. } | Request::Copy { .. } | Request::MkDir { .. } => {
                 Err("handled asynchronously".into())
             }
+            // Answered in `handle` (it waits for the user).
+            Request::HookPermission(_) => Err("handled asynchronously".into()),
             Request::HookStop => {
                 self.agent_state(agent::AgentState::Ready);
                 self.fs_agent_idle();

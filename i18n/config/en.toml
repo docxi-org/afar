@@ -75,6 +75,14 @@ confirm_channels = false
 # outside the agent's folder is still asked about. Claude Code stays in its
 # own permission mode.
 accept_edits = false
+# The agent's permission questions (commands and other tools) come as afar's
+# dialog, not in its terminal; it has a button to ask there. Applies when the
+# agent starts next time.
+ask_in_afar = true
+# afar allows the agent's commands (Bash, PowerShell) itself after 3 seconds
+# you can stop it in. Claude Code's rules ("don't ask again for ...") work as
+# usual.
+allow_commands = false
 # The agent's test tools: it presses keys in afar, types, clicks and takes
 # screenshots (text with colors or a PNG picture) to test afar by itself.
 # The keys count as yours, past the permissions below: turn this on only

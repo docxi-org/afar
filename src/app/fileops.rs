@@ -173,6 +173,14 @@ pub(super) enum Purpose {
         id: String,
     },
     AgentModel,
+    /// The agent asks for a tool (Claude Code's `PermissionRequest`).
+    AgentPermission {
+        /// The hook's input, to ask again.
+        input: String,
+        reply: Option<oneshot::Sender<Reply>>,
+        /// afar allows it itself then, unless the user stops it.
+        deadline: Option<Instant>,
+    },
     /// The agent's edit through the IDE protocol (`openDiff`).
     IdeDiff {
         path: PathBuf,
@@ -694,6 +702,11 @@ impl App {
                     let _ = reply.send(answer);
                 }
             }
+            Purpose::AgentPermission {
+                input,
+                reply,
+                deadline,
+            } => self.permission_closed(button, input, reply, deadline),
             Purpose::FindAsk => self.find_ask_closed(&dialog, button),
             Purpose::FindAdvanced { mask, text } => {
                 self.find_advanced_closed(&dialog, button, mask, text)

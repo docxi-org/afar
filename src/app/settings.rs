@@ -107,6 +107,8 @@ impl App {
         let channels = tr!("agent-settings-channels");
         let confirm_channels = tr!("agent-settings-confirm-channels");
         let accept_edits = tr!("agent-settings-accept-edits");
+        let ask_in_afar = tr!("agent-settings-ask-in-afar");
+        let allow_commands = tr!("agent-settings-allow-commands");
         let note = tr!("agent-settings-note");
         let position_label = tr!("agent-settings-position");
         let positions = [tr!("agent-position-bottom"), tr!("agent-position-top")];
@@ -134,6 +136,8 @@ impl App {
             .row(vec![check_at(5, channels, a.channels)])
             .row(vec![check_at(9, confirm_channels, a.confirm_channels)])
             .row(vec![check_at(5, accept_edits, a.accept_edits)])
+            .row(vec![check_at(5, ask_in_afar, a.ask_in_afar)])
+            .row(vec![check_at(9, allow_commands, a.allow_commands)])
             .check_depends(3, 2)
             .row(vec![
                 text_at(5, position_label.clone()),
@@ -196,6 +200,8 @@ impl App {
         a.channels = dialog.checked(2);
         a.confirm_channels = dialog.checked(3);
         a.accept_edits = dialog.checked(4);
+        a.ask_in_afar = dialog.checked(5);
+        a.allow_commands = dialog.checked(6);
         a.position = if dialog.combo(0) == 1 {
             AgentPosition::Top
         } else {
@@ -884,6 +890,8 @@ pub(super) fn setting_of(
                 "channels",
                 "confirm_channels",
                 "accept_edits",
+                "ask_in_afar",
+                "allow_commands",
             ])?,
         ),
         (Purpose::AgentSettings, Combo) if n == 0 => ("agent", "position"),

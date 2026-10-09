@@ -82,6 +82,9 @@ pub enum Request {
     /// `Notification` hook (the agent asks for permission or waits for
     /// input): the hook's JSON input.
     HookNotification(String),
+    /// `PermissionRequest` hook: the agent's question, answered by the
+    /// user in afar (the decision's JSON; empty: ask in the terminal).
+    HookPermission(String),
     /// `afar channel` waits for events for the agent (answered when there
     /// are some, or with none after a while).
     ChannelWait,
@@ -827,12 +830,15 @@ async fn hook(
         "post-tool-failure" => Request::HookPostToolFailure(body),
         "stop" => Request::HookStop,
         "notification" => Request::HookNotification(body),
+        "permission" => Request::HookPermission(body),
         // `afar channel` waits here for events (long polling).
         "channel-wait" => Request::ChannelWait,
         _ => return (StatusCode::NOT_FOUND, String::new()),
     };
     let limit = if matches!(request, Request::ChannelWait) {
         CHANNEL_WAIT + Duration::from_secs(5)
+    } else if matches!(request, Request::HookPermission(_)) {
+        PERMISSION_WAIT
     } else {
         Duration::from_secs(30)
     };
@@ -841,6 +847,10 @@ async fn hook(
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e),
     }
 }
+
+/// How long a permission question waits for the user in afar (the hook's
+/// own time-out in settings.json is a little longer).
+pub const PERMISSION_WAIT: Duration = Duration::from_secs(590);
 
 /// Starts the server; returns its port.
 pub fn start(tx: Sender<AppMsg>, token: String, test_tools: bool) -> anyhow::Result<u16> {
@@ -1002,7 +1012,13 @@ pub fn run_hook(event: &str) -> anyhow::Result<()> {
     // Claude Code passes the hook input on stdin; drain it.
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
-    if let Some(body) = post_to_afar(&format!("/hook/{event}"), &input, Duration::from_secs(10))
+    // A permission question waits for the user.
+    let wait = if event == "permission" {
+        PERMISSION_WAIT + Duration::from_secs(5)
+    } else {
+        Duration::from_secs(10)
+    };
+    if let Some(body) = post_to_afar(&format!("/hook/{event}"), &input, wait)
         && !body.is_empty()
     {
         // afar's own JSON (a PreToolUse decision) goes out as it is.

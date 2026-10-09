@@ -473,6 +473,12 @@ pub struct Agent {
     /// protocol's `openDiff`): each goes to the message line; an edit
     /// outside the agent's folder is still asked about.
     pub accept_edits: bool,
+    /// The agent's permission questions (commands and other tools) come
+    /// as afar's dialog instead of the terminal's (`PermissionRequest`).
+    pub ask_in_afar: bool,
+    /// afar allows the agent's shell commands itself after a few seconds
+    /// (in that dialog; the user may stop it).
+    pub allow_commands: bool,
     /// The agent's test tools (`afar_test_input`, `afar_test_screen`): it
     /// presses keys and takes screenshots of afar — past its permissions.
     pub test_tools: bool,
@@ -508,6 +514,8 @@ impl Default for Agent {
             channels: false,
             confirm_channels: false,
             accept_edits: false,
+            ask_in_afar: true,
+            allow_commands: false,
             test_tools: false,
             permissions: Permissions::default(),
         }
