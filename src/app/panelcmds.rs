@@ -122,11 +122,10 @@ fn literal_brackets(s: &str) -> String {
 
 /// What a menu was opened for.
 pub(super) enum MenuPurpose {
-    /// F2: the menu file (F4 edits it) and the items shown.
-    UserMenu {
-        path: std::path::PathBuf,
-        items: Vec<crate::usermenu::Item>,
-    },
+    /// F9 → Commands → File associations.
+    Associations,
+    /// F2: the menu's file, items and submenus entered.
+    UserMenu(Box<super::usermenu::MenuState>),
     /// Alt+F7's "Drive": the drives' roots; the dialog's mask and text.
     FindDrive {
         roots: Vec<std::path::PathBuf>,
@@ -288,20 +287,12 @@ impl App {
     }
 
     pub(super) fn menu_key(&mut self, key: KeyEvent) {
-        if self.history_menu_key(&key) {
+        if self.history_menu_key(&key) || self.user_menu_key(&key) || self.assoc_menu_key(&key) {
             return;
         }
         let Some(Overlay::Menu { menu, purpose }) = self.overlays.last_mut() else {
             return;
         };
-        // F4 in the user menu: its file in the editor.
-        if let MenuPurpose::UserMenu { path, .. } = purpose
-            && key.code == KeyCode::F(4)
-        {
-            let path = path.clone();
-            self.user_menu_edit(&path);
-            return;
-        }
         if matches!(purpose, MenuPurpose::Sort { .. })
             && let KeyCode::Char(c @ ('+' | '-' | '*')) = key.code
         {
@@ -333,10 +324,19 @@ impl App {
             self.find_drive_chosen(root, &mask, &text);
             return;
         }
+        // Esc in a submenu of the user menu: the menu above.
+        let purpose = match (purpose, choice) {
+            (MenuPurpose::UserMenu(state), None) => {
+                self.user_menu_up(*state);
+                return;
+            }
+            (p, _) => p,
+        };
         let Some(i) = choice else { return };
         match purpose {
             MenuPurpose::FindDrive { .. } => {}
-            MenuPurpose::UserMenu { path, items } => self.user_menu_chosen(path, items, i),
+            MenuPurpose::UserMenu(state) => self.user_menu_chosen(*state, i),
+            MenuPurpose::Associations => self.assoc_chosen(i),
             // A click on an entry: as Enter.
             MenuPurpose::History {
                 which,

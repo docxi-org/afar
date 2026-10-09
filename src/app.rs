@@ -28,6 +28,7 @@ use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
 mod agent;
 mod agentmenu;
+mod assocs;
 mod attributes;
 mod autocomplete;
 mod cmdline;

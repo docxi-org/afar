@@ -23,11 +23,68 @@ impl Item {
     }
 }
 
+/// A menu file: its leading comment lines (kept when it is saved) and
+/// its items.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuFile {
+    pub header: Vec<String>,
+    pub items: Vec<Item>,
+}
+
 /// The items of a menu file's text.
 pub fn parse(text: &str) -> Vec<Item> {
+    parse_file(text).items
+}
+
+pub fn parse_file(text: &str) -> MenuFile {
     let lines: Vec<&str> = text.lines().collect();
+    let header = lines
+        .iter()
+        .take_while(|l| l.starts_with(';'))
+        .map(|l| l.to_string())
+        .collect();
     let mut at = 0;
-    parse_from(&lines, &mut at)
+    MenuFile {
+        header,
+        items: parse_from(&lines, &mut at),
+    }
+}
+
+/// The text of a menu file, Far's format (CRLF).
+pub fn serialize(menu: &MenuFile) -> String {
+    let mut out = String::new();
+    for l in &menu.header {
+        out.push_str(l);
+        out.push_str("\r\n");
+    }
+    write_items(&mut out, &menu.items);
+    out
+}
+
+fn write_items(out: &mut String, items: &[Item]) {
+    for i in items {
+        out.push_str(&format!("{}: {}\r\n", i.hotkey, i.label));
+        for c in &i.commands {
+            out.push_str(&format!("   {c}\r\n"));
+        }
+        if let Some(sub) = &i.submenu {
+            out.push_str("{\r\n");
+            write_items(out, sub);
+            out.push_str("}\r\n");
+        }
+    }
+}
+
+/// Writes a menu file (UTF-8 with a BOM, as Far does).
+pub fn save(path: &Path, menu: &MenuFile) -> std::io::Result<()> {
+    let mut bytes = b"\xEF\xBB\xBF".to_vec();
+    bytes.extend(serialize(menu).into_bytes());
+    std::fs::write(path, bytes)
+}
+
+/// The nearest folder menu: `dir`'s, else its parents' (Far's BS).
+pub fn find_up(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors().find_map(local_file)
 }
 
 /// Items from line `at` up to the closing `}` (or the end).
@@ -84,9 +141,9 @@ pub fn global_file() -> PathBuf {
 
 /// A menu file's items (UTF-8 with or without a BOM, else the OEM code
 /// page, as Far reads it).
-pub fn load(path: &Path) -> Vec<Item> {
+pub fn load(path: &Path) -> MenuFile {
     let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
+        return MenuFile::default();
     };
     let body = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
     let text = match std::str::from_utf8(body) {
@@ -107,19 +164,19 @@ pub fn load(path: &Path) -> Vec<Item> {
             }
         }
     };
-    parse(&text)
+    parse_file(&text)
 }
 
 /// The user's menu, written from the template in the interface's language
 /// the first time.
-pub fn global() -> (PathBuf, Vec<Item>) {
+pub fn global() -> (PathBuf, MenuFile) {
     let path = global_file();
     if !path.exists() {
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
         let _ = std::fs::write(&path, template(crate::i18n::lang()));
     }
-    let items = load(&path);
-    (path, items)
+    let menu = load(&path);
+    (path, menu)
 }
 
 /// The menu a new user starts with: the agent's items.
@@ -151,5 +208,9 @@ mod tests {
         for lang in ["ru", "en"] {
             assert!(!parse(template(lang)).is_empty(), "{lang}");
         }
+        // Saved and read back: the same, the header comments kept.
+        let file = parse_file(&format!("; about\n{text}"));
+        assert_eq!(file.header, vec!["; about"]);
+        assert_eq!(parse_file(&serialize(&file)), file);
     }
 }

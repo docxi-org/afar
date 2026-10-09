@@ -692,6 +692,9 @@ impl Config {
 fn merge(old: &mut toml_edit::Table, new: &toml_edit::Table) {
     for (key, item) in new.iter() {
         match (old.get_mut(key), item) {
+            // A list of tables (`[[associations]]`): replaced whole.
+            (Some(o), n @ toml_edit::Item::ArrayOfTables(_)) => *o = n.clone(),
+            (Some(o @ toml_edit::Item::ArrayOfTables(_)), n) => *o = n.clone(),
             (Some(toml_edit::Item::Table(o)), toml_edit::Item::Table(n)) => merge(o, n),
             (Some(toml_edit::Item::Value(o)), toml_edit::Item::Value(n)) => {
                 if o.to_string().trim() != n.to_string().trim() {
@@ -701,6 +704,8 @@ fn merge(old: &mut toml_edit::Table, new: &toml_edit::Table) {
                 }
             }
             (Some(_), _) => {}
+            // An empty list is not written where there was none.
+            (None, toml_edit::Item::Value(toml_edit::Value::Array(a))) if a.is_empty() => {}
             (None, item) => {
                 old.insert(key, item.clone());
             }
@@ -728,6 +733,34 @@ mod tests {
             let config: Config = toml::from_str(template(lang)).unwrap();
             assert_eq!(config, Config::default(), "{lang}");
         }
+    }
+
+    #[test]
+    fn associations_are_saved_and_removed() {
+        let dir = std::env::temp_dir().join(format!("afar-assoc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let (mut config, _) = Config::load(&path, || "ru".into());
+        config.save(&path).unwrap();
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("associations = []")
+        );
+        config.associations.push(Association {
+            mask: "*.log".into(),
+            enter: "@view !.!".into(),
+            ..Default::default()
+        });
+        config.save(&path).unwrap();
+        let (again, problem) = Config::load(&path, || "ru".into());
+        assert!(problem.is_none());
+        assert_eq!(again.associations, config.associations);
+        config.associations.clear();
+        config.save(&path).unwrap();
+        let (again, _) = Config::load(&path, || "ru".into());
+        assert!(again.associations.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

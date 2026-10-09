@@ -173,6 +173,10 @@ pub(super) enum Purpose {
         id: String,
     },
     AgentModel,
+    /// A dialog of the file associations (an association, delete).
+    AssocEdit(super::assocs::AssocEdit),
+    /// A dialog of the user menu (insert, an item, delete).
+    UserMenuEdit(Box<super::usermenu::MenuState>, super::usermenu::MenuEdit),
     /// The user menu's or an association's commands, asking their
     /// `!?…!` questions.
     FarCommands {
@@ -712,6 +716,10 @@ impl App {
                 reply,
                 deadline,
             } => self.permission_closed(button, input, reply, deadline),
+            Purpose::AssocEdit(edit) => self.assoc_edited(edit, button, &dialog),
+            Purpose::UserMenuEdit(state, edit) => {
+                self.user_menu_edited(*state, edit, button, &dialog)
+            }
             Purpose::FarCommands { lines } => {
                 if button == Some(0) {
                     self.far_commands_answered(lines, &dialog);

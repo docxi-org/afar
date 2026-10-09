@@ -24,6 +24,7 @@ pub(super) enum MainAction {
     EditorSettings,
     AutocompleteSettings,
     HintSettings,
+    Associations,
     FarImport,
 }
 
@@ -204,7 +205,11 @@ fn commands_menu() -> Vec<Entry> {
         ("MMenuCompareFolders", None, None),
         SEP,
         ("MMenuUserMenu", Some("F2"), Some(Run(UserMenu))),
-        ("MMenuFileAssociations", None, None),
+        (
+            "MMenuFileAssociations",
+            None,
+            Some(MainAction::Associations),
+        ),
         ("MMenuFolderShortcuts", None, None),
         ("MMenuFilter", Some("Ctrl+I"), None),
         SEP,
@@ -387,6 +392,7 @@ impl App {
             Some(MainAction::EditorSettings) => self.editor_settings_dialog(None),
             Some(MainAction::AutocompleteSettings) => self.autocomplete_settings_dialog(),
             Some(MainAction::HintSettings) => self.hint_settings_dialog(),
+            Some(MainAction::Associations) => self.assoc_menu(0),
             Some(MainAction::FarImport) => self.far_import_menu(),
             None => {}
         }
