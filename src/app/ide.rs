@@ -15,6 +15,9 @@ use crate::tr;
 /// A viewer's file, found text and top, as last told to the agent.
 pub(super) type SentSelection = (std::path::PathBuf, Option<(u64, u64)>, u64);
 
+/// How long an edit afar accepts by itself waits for the user to stop it.
+const ACCEPT_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl App {
     pub(super) fn on_ide(&mut self, msg: IdeMsg) {
         match msg {
@@ -35,7 +38,7 @@ impl App {
                 new_contents,
                 tab_name,
                 reply,
-            } => self.ide_diff_dialog(path, new_contents, tab_name, Some(reply)),
+            } => self.ide_diff_dialog(path, new_contents, tab_name, Some(reply), true),
             // Answered in the agent's terminal: the dialog goes.
             IdeMsg::CloseTab { tab_name } => {
                 // Answered while its difference was being viewed.
@@ -67,6 +70,7 @@ impl App {
         new_contents: String,
         tab_name: String,
         reply: Option<tokio::sync::oneshot::Sender<DiffAnswer>>,
+        countdown: bool,
     ) {
         let old = std::fs::read_to_string(&path).unwrap_or_default();
         let diff = similar::TextDiff::from_lines(&old, &new_contents);
@@ -78,32 +82,29 @@ impl App {
                 similar::ChangeTag::Equal => {}
             }
         }
-        // Accepted by afar itself: in the agent's folder, one at a time.
-        if self.config.agent.accept_edits && self.in_agent_folder(&path) {
-            if let Some(reply) = reply {
-                let _ = reply.send(DiffAnswer::Saved(new_contents));
-            }
-            let name = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            );
-            self.say(tr!(
-                "ide-diff-auto",
-                file = name,
-                added = added,
-                removed = removed
-            ));
-            return;
-        }
+        // Accepted by afar itself (in the agent's folder) after a few
+        // seconds the user has to stop it; the seconds tick on the button.
+        let auto = countdown && self.config.agent.accept_edits && self.in_agent_folder(&path);
+        let deadline = auto.then(|| std::time::Instant::now() + ACCEPT_DELAY);
         let lines = tr!("ide-diff-counts", added = added, removed = removed);
+        let accept = if auto {
+            tr!("ide-diff-accept-in", sec = ACCEPT_DELAY.as_secs())
+        } else {
+            tr!("ide-diff-accept")
+        };
+        let last = if auto {
+            tr!("ide-diff-stop-auto")
+        } else {
+            tr!("ide-diff-accept-all")
+        };
         let dialog = Dialog::message(
             &tr!("ide-diff-title"),
             &[path.display().to_string(), lines],
             &[
-                &tr!("ide-diff-accept"),
+                &accept,
                 &tr!("ide-diff-reject"),
                 &tr!("ide-diff-show"),
-                &tr!("ide-diff-accept-all"),
+                &last,
             ],
             false,
         );
@@ -114,6 +115,7 @@ impl App {
                 tab_name,
                 new_contents,
                 reply,
+                deadline,
             },
         });
     }
@@ -164,11 +166,11 @@ impl App {
             .dir()
             .join(format!("diff-{}.diff", self.next_viewer_id));
         if std::fs::write(&file, &text).is_err() {
-            self.ide_diff_dialog(path, new_contents, tab_name, reply);
+            self.ide_diff_dialog(path, new_contents, tab_name, reply, false);
             return;
         }
         let Some(id) = self.open_viewer(&file, vec![file.clone()]) else {
-            self.ide_diff_dialog(path, new_contents, tab_name, reply);
+            self.ide_diff_dialog(path, new_contents, tab_name, reply, false);
             return;
         };
         // The diff's lines in colors.
@@ -211,7 +213,54 @@ impl App {
         if self.diff_parked.as_ref().is_some_and(|p| p.0 == viewer)
             && let Some((_, path, new_contents, tab_name, reply)) = self.diff_parked.take()
         {
-            self.ide_diff_dialog(path, new_contents, tab_name, reply);
+            self.ide_diff_dialog(path, new_contents, tab_name, reply, false);
+        }
+    }
+
+    /// The edits afar accepts by itself: the seconds left on the button;
+    /// when they are over, accepted.
+    pub(super) fn ide_diff_tick(&mut self) {
+        let now = std::time::Instant::now();
+        let mut due = None;
+        for (i, o) in self.overlays.iter_mut().enumerate() {
+            if let Overlay::Dialog {
+                dialog,
+                purpose:
+                    Purpose::IdeDiff {
+                        deadline: Some(t), ..
+                    },
+            } = o
+            {
+                if now >= *t {
+                    due = Some(i);
+                    break;
+                }
+                let left = (*t - now).as_secs_f32().ceil() as u64;
+                dialog.set_button_label(0, &tr!("ide-diff-accept-in", sec = left));
+            }
+        }
+        let Some(i) = due else {
+            return;
+        };
+        if let Overlay::Dialog {
+            purpose:
+                Purpose::IdeDiff {
+                    path,
+                    new_contents,
+                    reply,
+                    ..
+                },
+            ..
+        } = self.overlays.remove(i)
+        {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            if let Some(reply) = reply {
+                let _ = reply.send(DiffAnswer::Saved(new_contents));
+            }
+            self.say(tr!("ide-diff-auto", file = name));
         }
     }
 

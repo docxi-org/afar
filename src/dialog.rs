@@ -775,6 +775,22 @@ impl Dialog {
         }
     }
 
+    /// Sets the label of button number `n` (a countdown on it).
+    pub fn set_button_label(&mut self, n: usize, label: &str) {
+        if let Some(b) = self
+            .rows
+            .iter_mut()
+            .filter_map(|r| match r {
+                Row::Buttons(b) => Some(b),
+                _ => None,
+            })
+            .flatten()
+            .nth(n)
+        {
+            b.label = label.to_string();
+        }
+    }
+
     /// The label of button number `n` (as shown, `&` removed).
     pub fn button_label(&self, n: usize) -> Option<String> {
         self.rows

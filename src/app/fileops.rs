@@ -179,6 +179,8 @@ pub(super) enum Purpose {
         tab_name: String,
         new_contents: String,
         reply: Option<tokio::sync::oneshot::Sender<crate::ide::DiffAnswer>>,
+        /// afar accepts it itself then, unless the user stops it.
+        deadline: Option<Instant>,
     },
     /// A viewer's search reached the end (start): continue from the other
     /// end up to where it began?
@@ -666,9 +668,17 @@ impl App {
                 new_contents,
                 reply,
                 tab_name,
+                deadline,
             } => {
                 if button == Some(2) {
                     self.ide_diff_show(path, new_contents, tab_name, reply);
+                    return;
+                }
+                // During the countdown: afar stops accepting by itself, the
+                // edit is asked about as usual (not rejected).
+                if button == Some(3) && deadline.is_some() {
+                    self.accept_edits_on(false);
+                    self.ide_diff_dialog(path, new_contents, tab_name, reply, false);
                     return;
                 }
                 // "Accept all": this one and the next ones.

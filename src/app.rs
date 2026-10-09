@@ -1038,6 +1038,7 @@ impl App {
     /// Periodic work: debounced journal entries, message expiry.
     fn tick(&mut self) {
         self.panel_drag_tick();
+        self.ide_diff_tick();
         self.hint_tick();
         self.fs_tick();
         self.drop_abandoned_requests();
