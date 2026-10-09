@@ -66,6 +66,12 @@ pub enum Command {
     SelectToggle,
     SelectUp,
     SelectDown,
+    /// Shift+Home / Shift+End: to the first / last item.
+    SelectHome,
+    SelectEnd,
+    /// Shift+Left / Shift+Right: a column over (several columns only).
+    SelectLeft,
+    SelectRight,
     SelectDialog,
     UnselectDialog,
     SelectAll,
@@ -454,6 +460,10 @@ pub const COMMANDS: &[Def] = &[
     def("select.toggle", SelectToggle, &["Ins"], false),
     def("select.up", SelectUp, &["Shift+Up"], false),
     def("select.down", SelectDown, &["Shift+Down"], false),
+    def("select.home", SelectHome, &["Shift+Home"], false),
+    def("select.end", SelectEnd, &["Shift+End"], false),
+    def("select.left", SelectLeft, &["Shift+Left"], false),
+    def("select.right", SelectRight, &["Shift+Right"], false),
     def("select.dialog", SelectDialog, &["Gray+"], false),
     def("select.unselect_dialog", UnselectDialog, &["Gray-"], false),
     def("select.all", SelectAll, &["Shift+Gray+"], false),

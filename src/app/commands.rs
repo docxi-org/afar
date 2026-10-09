@@ -152,10 +152,26 @@ impl App {
                 p.sort.selected_first = !p.sort.selected_first;
                 p.resort();
             }
-            SelectToggle | SelectUp | SelectDown => {
+            SelectToggle => {
                 self.panels[a].toggle_selection();
-                self.panels[a].move_cursor(if command == SelectUp { -1 } else { 1 });
+                self.panels[a].move_cursor(1);
                 self.mark_selection_changed();
+            }
+            // One column over only with several columns (else the command
+            // line's selection, as in Far).
+            SelectLeft | SelectRight if !self.panels[a].multi_column() => return false,
+            SelectUp | SelectDown | SelectHome | SelectEnd | SelectLeft | SelectRight => {
+                let p = &self.panels[a];
+                let (n, cur) = (p.entries.len() as isize, p.cursor as isize);
+                let to = match command {
+                    SelectUp => cur - 1,
+                    SelectDown => cur + 1,
+                    SelectHome => 0,
+                    SelectEnd => n - 1,
+                    SelectLeft => cur - p.page_rows() as isize,
+                    _ => cur + p.page_rows() as isize,
+                };
+                self.shift_select_to(to, matches!(command, SelectHome | SelectEnd));
             }
             SelectDialog => self.select_dialog(true),
             UnselectDialog => self.select_dialog(false),

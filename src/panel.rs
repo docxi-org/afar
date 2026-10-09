@@ -518,6 +518,11 @@ impl FilePanel {
         self.move_cursor(delta * self.rows as isize);
     }
 
+    /// Rows of one column on the page.
+    pub fn page_rows(&self) -> usize {
+        self.rows.max(1)
+    }
+
     /// The view mode shows several columns of names.
     pub fn multi_column(&self) -> bool {
         self.stripes > 1

@@ -245,6 +245,9 @@ pub struct App {
     drag: Option<(SplitId, u16)>,
     /// The mouse dragged over a panel's files.
     panel_drag: Option<PanelDrag>,
+    /// Shift held with the cursor keys: select (or unselect) what it passes
+    /// (Far's `ShiftSelection`).
+    shift_select: Option<bool>,
     cmdline: String,
     /// Cursor in `cmdline`, in chars.
     cmd_cursor: usize,
@@ -451,6 +454,7 @@ impl App {
             },
             drag: None,
             panel_drag: None,
+            shift_select: None,
             cmdline: String::new(),
             cmd_cursor: 0,
             cmd_anchor: None,
@@ -1831,6 +1835,10 @@ impl App {
         if key.code != KeyCode::F(10) {
             self.quit_armed = None;
         }
+        // Shift let go: the selection by Shift ends (sorted only now).
+        if !key.modifiers.contains(KeyModifiers::SHIFT) {
+            self.shift_select_end();
+        }
         let command = Chord::from_event(&key).and_then(|c| self.keymap.panels(&c));
         // With the panels hidden only some commands work (as in Far).
         if let Some(command) = command
@@ -2741,6 +2749,51 @@ impl App {
             MouseEventKind::ScrollUp => self.panels[side].move_cursor(-(wheel as isize)),
             MouseEventKind::ScrollDown => self.panels[side].move_cursor(wheel as isize),
             _ => {}
+        }
+    }
+
+    /// Shift with a cursor key: the files from the cursor to `to` get the
+    /// state the first one got (the other one than it had), the cursor goes
+    /// to `to`; `with_end` (Shift+Home / End): that one too (Far's
+    /// `MoveSelection`).
+    fn shift_select_to(&mut self, to: isize, with_end: bool) {
+        let a = self.active;
+        let p = &mut self.panels[a];
+        if p.entries.is_empty() {
+            return;
+        }
+        let last = p.entries.len() as isize - 1;
+        let cur = p.cursor;
+        let on = *self
+            .shift_select
+            .get_or_insert_with(|| !p.entries[cur].selected);
+        let to = to.clamp(0, last) as usize;
+        // The cursor's item and the ones passed, not the one it lands on;
+        // at an edge the cursor stays and its item is selected.
+        let (from, end) = if to > cur {
+            (cur, to)
+        } else if to < cur {
+            (to + 1, cur + 1)
+        } else {
+            (cur, cur + 1)
+        };
+        for k in from..end {
+            p.set_selected(k, on);
+        }
+        if with_end {
+            p.set_selected(to, on);
+        }
+        p.cursor = to;
+        self.selection_changed[a] = Some(Instant::now());
+    }
+
+    /// Shift let go after selecting with it: "selected first" sorts.
+    fn shift_select_end(&mut self) {
+        if self.shift_select.take().is_some() {
+            let p = &mut self.panels[self.active];
+            if p.sort.selected_first {
+                p.resort();
+            }
         }
     }
 
