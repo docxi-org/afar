@@ -114,6 +114,35 @@ pub struct Button {
     pub hidden: bool,
 }
 
+/// A scrolled part of a dialog's rows.
+#[derive(Clone, Copy, Debug)]
+struct Scroll {
+    from: usize,
+    len: usize,
+    height: usize,
+    top: usize,
+}
+
+impl Scroll {
+    /// The row's place on the screen (counting rows from the first), or
+    /// `None` while scrolled away.
+    fn shown(&self, r: usize) -> Option<usize> {
+        if r < self.from {
+            Some(r)
+        } else if r < self.from + self.len {
+            let k = r - self.from;
+            (k >= self.top && k < self.top + self.height).then(|| self.from + k - self.top)
+        } else {
+            Some(r - (self.len - self.height))
+        }
+    }
+
+    fn by(&mut self, delta: isize) {
+        let max = self.len - self.height;
+        self.top = self.top.saturating_add_signed(delta).min(max);
+    }
+}
+
 pub enum Row {
     Items(Vec<Elem>),
     Separator,
@@ -464,6 +493,9 @@ pub struct Dialog {
     drag: Option<(u16, u16)>,
     /// Where the dialog was last drawn.
     outer: Rect,
+    /// Rows `from..from + len` shown `height` at a time from `top` (a long
+    /// text scrolls).
+    scroll: Option<Scroll>,
     /// Where the open drop-down list was last drawn.
     list_rect: Rect,
     pressed: Option<Pressed>,
@@ -504,6 +536,7 @@ impl Dialog {
             offset: (0, 0),
             drag: None,
             outer: Rect::default(),
+            scroll: None,
             list_rect: Rect::default(),
             pressed: None,
             cycle_prefix: None,
@@ -709,6 +742,21 @@ impl Dialog {
 
     pub fn button_row(mut self, buttons: Vec<Button>) -> Self {
         self.rows.push(Row::Buttons(buttons));
+        self
+    }
+
+    /// Rows `from..from + len` scroll, `height` of them shown (wheel,
+    /// PgUp / PgDn, Ctrl+Home / Ctrl+End); nothing when they fit.
+    pub fn scroll_rows(mut self, from: usize, len: usize, height: usize) -> Self {
+        let height = height.max(1);
+        if len > height && from + len <= self.rows.len() {
+            self.scroll = Some(Scroll {
+                from,
+                len,
+                height,
+                top: 0,
+            });
+        }
         self
     }
 
@@ -1343,6 +1391,22 @@ impl Dialog {
         if self.list.is_some() {
             return self.list_key(key);
         }
+        // The scrolled text.
+        if let Some(s) = &mut self.scroll {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let page = s.height as isize - 1;
+            let delta = match key.code {
+                KeyCode::PageUp => Some(-page.max(1)),
+                KeyCode::PageDown => Some(page.max(1)),
+                KeyCode::Home if ctrl => Some(-(s.len as isize)),
+                KeyCode::End if ctrl => Some(s.len as isize),
+                _ => None,
+            };
+            if let Some(d) = delta {
+                s.by(d);
+                return Outcome::Pending;
+            }
+        }
         let focus = self.focus();
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -1707,6 +1771,22 @@ impl Dialog {
 
     fn handle_mouse_inner(&mut self, ev: &MouseEvent) -> Option<Outcome> {
         let pos = Position::new(ev.column, ev.row);
+        // The wheel over the dialog scrolls its text.
+        if let Some(s) = &mut self.scroll
+            && self.outer.contains(pos)
+        {
+            match ev.kind {
+                MouseEventKind::ScrollUp => {
+                    s.by(-3);
+                    return Some(Outcome::Pending);
+                }
+                MouseEventKind::ScrollDown => {
+                    s.by(3);
+                    return Some(Outcome::Pending);
+                }
+                _ => {}
+            }
+        }
         // Moving the dialog: grabbed anywhere but on its items.
         if let Some((lx, ly)) = self.drag {
             match ev.kind {
@@ -1858,7 +1938,8 @@ impl Dialog {
     pub fn draw_in(&mut self, parent: Rect, area: Rect, buf: &mut Buffer) -> Option<Position> {
         let c = if self.warning { &WARNING } else { &NORMAL };
         let w = self.width.min(area.width);
-        let h = (self.rows.len() as u16 + 4).min(area.height);
+        let hidden = self.scroll.map_or(0, |s| s.len - s.height);
+        let h = ((self.rows.len() - hidden) as u16 + 4).min(area.height);
         // Centred in the parent, moved by the user, kept on the screen.
         let cx = centred(parent.x, parent.width, area.x, area.width, w);
         let cy = if self.bottom {
@@ -1905,8 +1986,16 @@ impl Dialog {
         let mut number = 0usize;
         let max_x = x0 + w.saturating_sub(4);
         let rows = std::mem::take(&mut self.rows);
+        let scroll = self.scroll;
         for (r, row) in rows.iter().enumerate() {
-            let y = y0 + 2 + r as u16;
+            let place = match scroll {
+                Some(s) => match s.shown(r) {
+                    Some(p) => p,
+                    None => continue,
+                },
+                None => r,
+            };
+            let y = y0 + 2 + place as u16;
             if y + 1 >= frame.bottom() || y >= area.bottom() {
                 break;
             }
@@ -1982,6 +2071,21 @@ impl Dialog {
             }
         }
         self.rows = rows;
+        // The scrolled rows' bar on the frame: the thumb where they are.
+        if let Some(s) = scroll {
+            let bx = frame.right().saturating_sub(1);
+            let top = y0 + 2 + s.from as u16;
+            let max = s.len - s.height;
+            let thumb = (s.top * (s.height - 1)).div_ceil(max.max(1));
+            for k in 0..s.height {
+                let y = top + k as u16;
+                if y + 1 >= frame.bottom() {
+                    break;
+                }
+                let sym = if k == thumb { "█" } else { "░" };
+                buf[(bx, y)].set_symbol(sym).set_style(c.box_);
+            }
+        }
         if self.draw_list(buf, x0, y0, area) {
             return None;
         }
@@ -2231,7 +2335,9 @@ impl Dialog {
             l.top = top;
         }
         let h = shown as u16 + 2;
-        let field_y = y0 + 2 + r as u16;
+        // Rows below a scrolled text are shown higher.
+        let place = self.scroll.and_then(|sc| sc.shown(r)).unwrap_or(r);
+        let field_y = y0 + 2 + place as u16;
         let lx = x0 + fx;
         // Below the field; above it when there is no room below.
         let ly = if field_y + 1 + h > area.bottom() && field_y >= area.y + h {

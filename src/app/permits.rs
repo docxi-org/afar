@@ -18,6 +18,8 @@ use crate::tr;
 const ALLOW_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 /// Characters per line of a command in the dialog.
 const LINE: usize = 72;
+/// A command's lines shown at most (the rest scroll).
+const MAX_SHOWN: usize = 15;
 
 /// What the user answered.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,11 +56,15 @@ impl App {
         let args = &v["tool_input"];
         let shell = matches!(tool.as_str(), "Bash" | "PowerShell");
         let mut lines = Vec::new();
+        // The command (or what the tool works on): the first rows, they
+        // scroll when long.
+        let main_len;
         match tool.as_str() {
             "Bash" | "PowerShell" => {
                 for l in args["command"].as_str().unwrap_or("").lines() {
                     lines.extend(chunks(l, LINE));
                 }
+                main_len = lines.len();
                 if let Some(d) = args["description"].as_str().filter(|d| !d.is_empty()) {
                     lines.push("\u{1}".into());
                     lines.extend(chunks(d, LINE));
@@ -66,6 +72,7 @@ impl App {
             }
             "WebFetch" => {
                 lines.extend(chunks(args["url"].as_str().unwrap_or(""), LINE));
+                main_len = lines.len();
             }
             _ => {
                 let path = args["file_path"]
@@ -74,8 +81,9 @@ impl App {
                     .map(str::to_string);
                 match path {
                     Some(p) => lines.extend(chunks(&p, LINE)),
-                    None => lines.extend(chunks(&args.to_string(), LINE).into_iter().take(6)),
+                    None => lines.extend(chunks(&args.to_string(), LINE)),
                 }
+                main_len = lines.len();
             }
         }
         if let Some(cwd) = v["cwd"].as_str() {
@@ -106,12 +114,17 @@ impl App {
             });
         }
         let refs: Vec<&str> = buttons.iter().map(String::as_str).collect();
+        // The rest of the dialog and a margin stay on the screen.
+        let screen = crossterm::terminal::size().map_or(30, |(_, h)| usize::from(h));
+        let others = lines.len() - main_len + 2 + 4 + 2;
+        let room = screen.saturating_sub(others).clamp(3, MAX_SHOWN);
         let dialog = Dialog::message(
             &tr!("ask-title", tool = tool.as_str()),
             &lines,
             &refs,
             false,
-        );
+        )
+        .scroll_rows(0, main_len, room);
         self.overlays.push(Overlay::Dialog {
             dialog,
             purpose: Purpose::AgentPermission {
