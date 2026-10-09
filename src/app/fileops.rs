@@ -671,7 +671,11 @@ impl App {
                     self.ide_diff_show(path, new_contents, tab_name, reply);
                     return;
                 }
-                let answer = if button == Some(0) {
+                // "Accept all": this one and the next ones.
+                if button == Some(3) {
+                    self.accept_edits_on(true);
+                }
+                let answer = if matches!(button, Some(0 | 3)) {
                     crate::ide::DiffAnswer::Saved(new_contents)
                 } else {
                     crate::ide::DiffAnswer::Rejected

@@ -36,6 +36,7 @@ pub(super) enum AgentAction {
     Observe(bool),
     ToggleIde,
     ToggleChannels,
+    AcceptEdits,
     Follow,
     ShowIdeLog,
     ShowJournal,
@@ -174,6 +175,12 @@ impl App {
                 None,
                 Some(ToggleChannels),
                 self.config.agent.channels,
+            ),
+            (
+                tr!("agent-menu-accept-edits"),
+                None,
+                Some(AcceptEdits),
+                self.config.agent.accept_edits,
             ),
             (
                 tr!("agent-menu-follow"),
@@ -434,6 +441,10 @@ impl App {
                 self.save_settings_and_say_restart();
             }
             Follow => self.toggle_follow_agent(),
+            AcceptEdits => {
+                let on = !self.config.agent.accept_edits;
+                self.accept_edits_on(on);
+            }
             ToggleChannels => {
                 self.config.agent.channels = !self.config.agent.channels;
                 self.save_settings_and_say_restart();

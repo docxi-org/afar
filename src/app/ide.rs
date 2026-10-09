@@ -78,6 +78,23 @@ impl App {
                 similar::ChangeTag::Equal => {}
             }
         }
+        // Accepted by afar itself: in the agent's folder, one at a time.
+        if self.config.agent.accept_edits && self.in_agent_folder(&path) {
+            if let Some(reply) = reply {
+                let _ = reply.send(DiffAnswer::Saved(new_contents));
+            }
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            self.say(tr!(
+                "ide-diff-auto",
+                file = name,
+                added = added,
+                removed = removed
+            ));
+            return;
+        }
         let lines = tr!("ide-diff-counts", added = added, removed = removed);
         let dialog = Dialog::message(
             &tr!("ide-diff-title"),
@@ -86,6 +103,7 @@ impl App {
                 &tr!("ide-diff-accept"),
                 &tr!("ide-diff-reject"),
                 &tr!("ide-diff-show"),
+                &tr!("ide-diff-accept-all"),
             ],
             false,
         );
@@ -97,6 +115,31 @@ impl App {
                 new_contents,
                 reply,
             },
+        });
+    }
+
+    /// `path` is inside the folder the agent runs in.
+    fn in_agent_folder(&self, path: &std::path::Path) -> bool {
+        let key = |p: &std::path::Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+        self.agent.cwd.as_deref().is_some_and(|cwd| {
+            let dir = key(cwd);
+            let dir = dir.trim_end_matches('\\');
+            key(path).starts_with(&format!("{dir}\\"))
+        })
+    }
+
+    /// "Accept all": afar accepts the agent's edits from now on (kept in
+    /// `[agent] accept_edits`).
+    pub(super) fn accept_edits_on(&mut self, on: bool) {
+        self.config.agent.accept_edits = on;
+        let path = crate::config::config_path();
+        if let Err(e) = self.config.save(&path) {
+            self.say(tr!("settings-save-failed", error = e));
+        }
+        self.say(if on {
+            tr!("ide-accept-edits-on")
+        } else {
+            tr!("ide-accept-edits-off")
         });
     }
 

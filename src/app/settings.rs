@@ -106,6 +106,7 @@ impl App {
         let ide = tr!("agent-settings-ide");
         let channels = tr!("agent-settings-channels");
         let confirm_channels = tr!("agent-settings-confirm-channels");
+        let accept_edits = tr!("agent-settings-accept-edits");
         let note = tr!("agent-settings-note");
         let position_label = tr!("agent-settings-position");
         let positions = [tr!("agent-position-bottom"), tr!("agent-position-top")];
@@ -132,6 +133,7 @@ impl App {
             .row(vec![check_at(5, ide, a.ide)])
             .row(vec![check_at(5, channels, a.channels)])
             .row(vec![check_at(9, confirm_channels, a.confirm_channels)])
+            .row(vec![check_at(5, accept_edits, a.accept_edits)])
             .check_depends(3, 2)
             .row(vec![
                 text_at(5, position_label.clone()),
@@ -193,6 +195,7 @@ impl App {
         a.ide = dialog.checked(1);
         a.channels = dialog.checked(2);
         a.confirm_channels = dialog.checked(3);
+        a.accept_edits = dialog.checked(4);
         a.position = if dialog.combo(0) == 1 {
             AgentPosition::Top
         } else {
@@ -875,7 +878,13 @@ pub(super) fn setting_of(
         (Purpose::AgentSettings, Input) => ("agent", pick(&["command", "args"])?),
         (Purpose::AgentSettings, Check) => (
             "agent",
-            pick(&["live", "ide", "channels", "confirm_channels"])?,
+            pick(&[
+                "live",
+                "ide",
+                "channels",
+                "confirm_channels",
+                "accept_edits",
+            ])?,
         ),
         (Purpose::AgentSettings, Combo) if n == 0 => ("agent", "position"),
         (Purpose::AgentSettings, Combo) => (

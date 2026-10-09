@@ -469,6 +469,10 @@ pub struct Agent {
     /// afar answers Claude Code's question about development channels at
     /// the agent's start itself (only when afar's channel is the only one).
     pub confirm_channels: bool,
+    /// afar accepts the agent's edits itself, one by one (the IDE
+    /// protocol's `openDiff`): each goes to the message line; an edit
+    /// outside the agent's folder is still asked about.
+    pub accept_edits: bool,
     /// The agent's test tools (`afar_test_input`, `afar_test_screen`): it
     /// presses keys and takes screenshots of afar — past its permissions.
     pub test_tools: bool,
@@ -503,6 +507,7 @@ impl Default for Agent {
             ide: false,
             channels: false,
             confirm_channels: false,
+            accept_edits: false,
             test_tools: false,
             permissions: Permissions::default(),
         }
