@@ -31,6 +31,13 @@ pub(super) enum Answer {
 impl App {
     /// `PermissionRequest`: the agent wants a tool it must ask for.
     pub(super) fn permission_request(&mut self, input: String, reply: oneshot::Sender<Reply>) {
+        // An edit with the IDE protocol connected comes as its own question
+        // (`openDiff`, the "Agent's edit" dialog): one is enough.
+        let v: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+        if self.agent.ide_connected && is_edit(v["tool_name"].as_str().unwrap_or("")) {
+            let _ = reply.send(Ok(String::new()));
+            return;
+        }
         self.agent_state(agent::AgentState::Waiting(String::new()));
         self.permission_dialog(input, Some(reply), true);
     }
@@ -75,7 +82,15 @@ impl App {
             lines.push("\u{1}".into());
             lines.push(tr!("ask-folder", folder = cwd));
         }
-        let auto = countdown && shell && self.config.agent.allow_commands;
+        // A command or an edit afar takes itself after a countdown
+        // (`allow_commands`, `accept_edits` — in the agent's folder).
+        let edit = is_edit(&tool);
+        let in_folder = args["file_path"]
+            .as_str()
+            .is_some_and(|p| self.in_agent_folder(std::path::Path::new(p)));
+        let auto = countdown
+            && (shell && self.config.agent.allow_commands
+                || edit && in_folder && self.config.agent.accept_edits);
         let deadline = auto.then(|| Instant::now() + ALLOW_DELAY);
         let allow = if auto {
             tr!("ask-allow-in", sec = ALLOW_DELAY.as_secs())
@@ -83,7 +98,7 @@ impl App {
             tr!("ask-allow")
         };
         let mut buttons = vec![allow, tr!("ask-deny"), tr!("ask-terminal")];
-        if shell {
+        if shell || edit {
             buttons.push(if auto {
                 tr!("ask-stop-auto")
             } else {
@@ -125,13 +140,13 @@ impl App {
             // During the countdown: afar stops allowing by itself, the
             // command is asked about as usual (not denied).
             Some(3) if deadline.is_some() => {
-                self.allow_commands_on(false);
+                self.auto_on(&input, false);
                 self.permission_dialog(input, reply, false);
                 return;
             }
             // "Allow all": this one and the next ones.
             Some(3) => {
-                self.allow_commands_on(true);
+                self.auto_on(&input, true);
                 Answer::Allow
             }
             _ => Answer::Terminal,
@@ -160,6 +175,17 @@ impl App {
         }
         if answer != Answer::Terminal {
             self.agent_state(agent::AgentState::Working);
+        }
+    }
+
+    /// Allowing by itself on or off for the kind of `input`'s tool: edits
+    /// (`accept_edits`) or commands (`allow_commands`).
+    fn auto_on(&mut self, input: &str, on: bool) {
+        let v: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
+        if is_edit(v["tool_name"].as_str().unwrap_or("")) {
+            self.accept_edits_on(on);
+        } else {
+            self.allow_commands_on(on);
         }
     }
 
@@ -208,18 +234,25 @@ impl App {
             return;
         };
         if let Overlay::Dialog {
-            purpose: Purpose::AgentPermission { reply, .. },
+            purpose: Purpose::AgentPermission { reply, input, .. },
             ..
         } = self.overlays.remove(i)
         {
             if allow {
                 self.permission_answer(reply, Answer::Allow);
-                self.say(tr!("ask-allowed-auto"));
+                let v: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+                let tool = v["tool_name"].as_str().unwrap_or("?").to_string();
+                self.say(tr!("ask-allowed-auto", tool = tool));
             } else {
                 self.say(tr!("agent-request-abandoned"));
             }
         }
     }
+}
+
+/// A tool that edits files.
+fn is_edit(tool: &str) -> bool {
+    matches!(tool, "Edit" | "MultiEdit" | "Write" | "NotebookEdit")
 }
 
 /// `text` in pieces of at most `width` characters.

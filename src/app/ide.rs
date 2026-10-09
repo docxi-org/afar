@@ -121,7 +121,7 @@ impl App {
     }
 
     /// `path` is inside the folder the agent runs in.
-    fn in_agent_folder(&self, path: &std::path::Path) -> bool {
+    pub(super) fn in_agent_folder(&self, path: &std::path::Path) -> bool {
         let key = |p: &std::path::Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
         self.agent.cwd.as_deref().is_some_and(|cwd| {
             let dir = key(cwd);
