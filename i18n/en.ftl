@@ -390,3 +390,7 @@ tip-focus-agent-menu = F9 or a click on the agent's top frame — the agent's me
 tip-focus-agent-size = Ctrl+↑ / Ctrl+↓ — the agent's pane taller / shorter
 tip-focus-command = The keys go to the running command
 tip-focus-command-keys = Ctrl+Space — to the agent, Ctrl+O — the command's screen
+usermenu-title = User menu
+usermenu-bottom = F4 — edit the menu's file
+usermenu-ask-title = The command's parameters
+usermenu-agent-off = The agent is not running — the agent's item was not run

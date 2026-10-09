@@ -58,6 +58,7 @@ mod policy;
 mod quicksearch;
 mod quickview;
 mod settings;
+mod usermenu;
 mod viewagent;
 pub use viewagent::MarkSpec;
 mod viewers;
@@ -1662,6 +1663,10 @@ impl App {
             let target = panel.path.join(&e.name);
             self.change_dir(self.active, &target);
         } else {
+            // The file's association first (Far's `filetype`).
+            if self.run_association(usermenu::Assoc::Enter) {
+                return;
+            }
             self.execute(quote(&e.name));
         }
     }

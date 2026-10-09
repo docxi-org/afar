@@ -14,6 +14,8 @@ pub struct Config {
     pub general: General,
     pub panels: Panels,
     pub hints: Hints,
+    /// Commands by a file's mask (Far's file associations).
+    pub associations: Vec<Association>,
     pub confirm: Confirm,
     pub agent: Agent,
     pub viewer: Viewer,
@@ -376,6 +378,24 @@ impl Default for Panels {
             wheel_lines: 0,
         }
     }
+}
+
+/// A file association (Far's `filetype`): commands for the files of a
+/// mask, with Far's metasymbols; empty — afar's own action.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Association {
+    /// Far's masks: `*.log,*.txt`, exclusions after `|`.
+    pub mask: String,
+    pub description: String,
+    /// Enter.
+    pub enter: String,
+    /// Ctrl+PgDn.
+    pub alt_enter: String,
+    /// F3 instead of the viewer.
+    pub view: String,
+    /// F4 instead of the editor.
+    pub edit: String,
 }
 
 /// Hints: the mouse rests on something and a block tells about it.

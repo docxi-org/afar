@@ -290,7 +290,7 @@ impl App {
     }
 
     /// Types a command into the agent's input and presses Enter.
-    fn agent_type(&mut self, text: &str) {
+    pub(super) fn agent_type(&mut self, text: &str) {
         if let Some(pty) = &self.agent.pty
             && !pty.has_exited()
         {

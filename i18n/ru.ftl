@@ -392,3 +392,7 @@ tip-focus-agent-menu = F9 или щелчок по верхней рамке а�
 tip-focus-agent-size = Ctrl+↑ / Ctrl+↓ — панель агента выше / ниже
 tip-focus-command = Клавиши идут идущей команде
 tip-focus-command-keys = Ctrl+Space — к агенту, Ctrl+O — экран команды
+usermenu-title = Меню пользователя
+usermenu-bottom = F4 — править файл меню
+usermenu-ask-title = Параметры команды
+usermenu-agent-off = Агент не запущен — пункт для агента не выполнен

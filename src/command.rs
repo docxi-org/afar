@@ -58,6 +58,10 @@ pub enum Command {
     Refresh,
     /// Ctrl+H: hidden and system files shown or not (both panels).
     ToggleHidden,
+    /// F2: the user menu.
+    UserMenu,
+    /// Ctrl+PgDn: the file's association for it.
+    EnterAlt,
     View(ViewMode),
     Sort(SortMode),
     SortMenu,
@@ -437,6 +441,8 @@ pub const COMMANDS: &[Def] = &[
     def("panel.enter", Enter, &["Enter"], true),
     def("panel.refresh", Refresh, &["Ctrl+R"], false),
     def("panel.toggle_hidden", ToggleHidden, &["Ctrl+H"], false),
+    def("panel.user_menu", UserMenu, &["F2"], true),
+    def("panel.enter_alt", EnterAlt, &["Ctrl+PgDn"], false),
     def("view.brief", View(ViewMode::Brief), &["Ctrl+1"], false),
     def("view.medium", View(ViewMode::Medium), &["Ctrl+2"], false),
     def("view.full", View(ViewMode::Full), &["Ctrl+3"], false),

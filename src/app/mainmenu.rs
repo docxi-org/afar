@@ -203,7 +203,7 @@ fn commands_menu() -> Vec<Entry> {
         ("MMenuTogglePanels", Some("Ctrl+O"), Some(Run(TogglePanels))),
         ("MMenuCompareFolders", None, None),
         SEP,
-        ("MMenuUserMenu", None, None),
+        ("MMenuUserMenu", Some("F2"), Some(Run(UserMenu))),
         ("MMenuFileAssociations", None, None),
         ("MMenuFolderShortcuts", None, None),
         ("MMenuFilter", Some("Ctrl+I"), None),

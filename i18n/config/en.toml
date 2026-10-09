@@ -192,3 +192,16 @@ skip_leading_space = true # a command starting with a blank is not kept
 redact_secrets = true     # passwords, tokens, keys become *** in the history
 order = "frecency"        # "frecency": by how often and how lately, this folder's first; "recent": the newest first (Far)
 agent_entries = "marked"  # the agent's entries: "marked" (marked, after yours) or "mixed"
+
+# File associations (as in Far): commands for the files of a mask, with Far's
+# metasymbols (!.! the file's name, !\ the folder, !?Question?value! — ask, …)
+# and afar's own commands (@view file, @edit file, @agent text). An empty
+# command — afar's own action. The first matching association wins. Example:
+#
+# [[associations]]
+# mask = "*.log"
+# description = "Logs in the viewer"
+# enter = "@view !.!"
+# alt_enter = ""             # Ctrl+PgDn
+# view = ""                  # F3 instead of the viewer
+# edit = "notepad !.!"       # F4 instead of the editor

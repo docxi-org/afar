@@ -173,6 +173,11 @@ pub(super) enum Purpose {
         id: String,
     },
     AgentModel,
+    /// The user menu's or an association's commands, asking their
+    /// `!?…!` questions.
+    FarCommands {
+        lines: Vec<String>,
+    },
     /// The agent asks for a tool (Claude Code's `PermissionRequest`).
     AgentPermission {
         /// The hook's input, to ask again.
@@ -707,6 +712,11 @@ impl App {
                 reply,
                 deadline,
             } => self.permission_closed(button, input, reply, deadline),
+            Purpose::FarCommands { lines } => {
+                if button == Some(0) {
+                    self.far_commands_answered(lines, &dialog);
+                }
+            }
             Purpose::FindAsk => self.find_ask_closed(&dialog, button),
             Purpose::FindAdvanced { mask, text } => {
                 self.find_advanced_closed(&dialog, button, mask, text)

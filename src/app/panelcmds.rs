@@ -122,6 +122,11 @@ fn literal_brackets(s: &str) -> String {
 
 /// What a menu was opened for.
 pub(super) enum MenuPurpose {
+    /// F2: the menu file (F4 edits it) and the items shown.
+    UserMenu {
+        path: std::path::PathBuf,
+        items: Vec<crate::usermenu::Item>,
+    },
     /// Alt+F7's "Drive": the drives' roots; the dialog's mask and text.
     FindDrive {
         roots: Vec<std::path::PathBuf>,
@@ -289,6 +294,14 @@ impl App {
         let Some(Overlay::Menu { menu, purpose }) = self.overlays.last_mut() else {
             return;
         };
+        // F4 in the user menu: its file in the editor.
+        if let MenuPurpose::UserMenu { path, .. } = purpose
+            && key.code == KeyCode::F(4)
+        {
+            let path = path.clone();
+            self.user_menu_edit(&path);
+            return;
+        }
         if matches!(purpose, MenuPurpose::Sort { .. })
             && let KeyCode::Char(c @ ('+' | '-' | '*')) = key.code
         {
@@ -323,6 +336,7 @@ impl App {
         let Some(i) = choice else { return };
         match purpose {
             MenuPurpose::FindDrive { .. } => {}
+            MenuPurpose::UserMenu { path, items } => self.user_menu_chosen(path, items, i),
             // A click on an entry: as Enter.
             MenuPurpose::History {
                 which,

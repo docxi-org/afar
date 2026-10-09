@@ -127,6 +127,8 @@ impl App {
                 }
             }
             Refresh => self.panels[a].reload(None),
+            UserMenu => self.user_menu(),
+            EnterAlt => return self.run_association(super::usermenu::Assoc::AltEnter),
             ToggleHidden => {
                 let show = !self.config.panels.show_hidden;
                 self.config.panels.show_hidden = show;
@@ -257,9 +259,11 @@ impl App {
             Screens => self.screens_menu(),
             NextScreen => self.cycle_screens(true),
             PrevScreen => self.cycle_screens(false),
+            ViewFile if self.run_association(super::usermenu::Assoc::View) => {}
             ViewFile => return self.view_current(Some(self.config.viewer.external_f3)),
             ViewFileAlt => return self.view_current(Some(!self.config.viewer.external_f3)),
             ViewInternal => return self.view_current(None),
+            EditFile if self.run_association(super::usermenu::Assoc::Edit) => {}
             EditFile => return self.edit_current(false),
             EditNew => return self.edit_current(true),
             Viewer(_) | Editor(_) => return false,
