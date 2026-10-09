@@ -124,6 +124,7 @@ impl App {
             &refs,
             false,
         )
+        .left_rows(0, main_len)
         .scroll_rows(0, main_len, room);
         self.overlays.push(Overlay::Dialog {
             dialog,

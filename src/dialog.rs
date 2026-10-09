@@ -745,6 +745,19 @@ impl Dialog {
         self
     }
 
+    /// Rows `from..from + len` go from the left edge, not centred (code,
+    /// commands).
+    pub fn left_rows(mut self, from: usize, len: usize) -> Self {
+        for row in self.rows.iter_mut().skip(from).take(len) {
+            if let Row::Items(elems) = row {
+                for e in elems {
+                    e.x = X::At(5);
+                }
+            }
+        }
+        self
+    }
+
     /// Rows `from..from + len` scroll, `height` of them shown (wheel,
     /// PgUp / PgDn, Ctrl+Home / Ctrl+End); nothing when they fit.
     pub fn scroll_rows(mut self, from: usize, len: usize, height: usize) -> Self {
