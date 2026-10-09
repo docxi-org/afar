@@ -59,30 +59,6 @@ impl App {
             .map(|uri| (uri, ev.column, ev.row));
     }
 
-    /// The tooltip of the link under the mouse: a line below it (above at
-    /// the bottom), from the mouse's column, shifted left to fit.
-    pub(super) fn draw_link_tooltip(
-        &mut self,
-        area: ratatui::layout::Rect,
-        buf: &mut ratatui::buffer::Buffer,
-    ) {
-        if self.has_overlay() {
-            return;
-        }
-        let Some((uri, x, y)) = &self.hovered_link else {
-            return;
-        };
-        let text = format!(" {} ", tr!("link-tooltip", uri = uri.as_str()));
-        let w = (text.chars().count() as u16).min(area.width);
-        let ty = if *y + 1 < area.bottom() {
-            y + 1
-        } else {
-            y.saturating_sub(1)
-        };
-        let tx = (*x).min(area.right().saturating_sub(w));
-        buf.set_stringn(tx, ty, &text, usize::from(w), crate::theme::LINK_TOOLTIP);
-    }
-
     /// A Ctrl+left press on a link in `area` — the agent's screen
     /// (`agent`) or the running command's: the link.
     pub(super) fn link_click(

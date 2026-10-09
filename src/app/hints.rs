@@ -88,8 +88,9 @@ impl App {
         else {
             return;
         };
-        let hint = if self.hovered_link.is_some() {
-            None
+        let hint = if let Some((uri, ..)) = &self.hovered_link {
+            // A link: where it goes, how to open it.
+            Some(Hint::new(uri.clone()).line(tr!("link-tooltip-keys")))
         } else if self.has_overlay() {
             self.overlay_hint(x, y)
         } else {
@@ -143,7 +144,19 @@ impl App {
         let pos = ratatui::layout::Position::new(x, y);
         let h = &self.config.hints;
         if h.keybar && l.keybar.contains(pos) {
-            return self.keybar_hint(&l, x);
+            // The keys go to the agent or the command: what afar keeps.
+            return match self.focus {
+                super::Focus::Agent => Some(
+                    Hint::new(tr!("tip-focus-agent"))
+                        .line(tr!("tip-focus-agent-keys"))
+                        .line(tr!("tip-focus-agent-menu"))
+                        .line(tr!("tip-focus-agent-size")),
+                ),
+                super::Focus::Command => {
+                    Some(Hint::new(tr!("tip-focus-command")).line(tr!("tip-focus-command-keys")))
+                }
+                _ => self.keybar_hint(&l, x),
+            };
         }
         if h.agent && y == l.agent_frame.y && l.agent_frame.contains(pos) {
             return Some(self.agent_hint());

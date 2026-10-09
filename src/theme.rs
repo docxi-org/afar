@@ -156,7 +156,6 @@ pub const GHOST_EDIT: Style = c(con::DARKGRAY, con::CYAN);
 /// left the default one; underlined in any case.
 pub const LINK_FG: Color = con::LIGHTBLUE;
 /// The address of the link under the mouse.
-pub const LINK_TOOLTIP: Style = c(con::BLACK, con::CYAN);
 /// Hints: the block, its title, the agent's line.
 pub const HINT: Style = c(con::BLACK, con::CYAN);
 pub const HINT_TITLE: Style = c(con::WHITE, con::CYAN);

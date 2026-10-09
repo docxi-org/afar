@@ -193,14 +193,21 @@ impl<T: Clone> MenuBar<T> {
     pub fn handle_mouse(&mut self, ev: &MouseEvent) -> Outcome<T> {
         let pos = Position::new(ev.column, ev.row);
         if let Some(i) = self.title_at(pos) {
-            if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
-                if self.open.is_some() && i == self.selected {
-                    self.close_submenu();
-                } else {
-                    self.close_submenu();
-                    self.selected = i;
-                    self.open_submenu();
+            match ev.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if self.open.is_some() && i == self.selected {
+                        self.close_submenu();
+                    } else {
+                        self.close_submenu();
+                        self.selected = i;
+                        self.open_submenu();
+                    }
                 }
+                // The bar follows the mouse (an open submenu moves along).
+                MouseEventKind::Moved | MouseEventKind::Drag(_) if i != self.selected => {
+                    self.select(i)
+                }
+                _ => {}
             }
             return Outcome::Pending;
         }

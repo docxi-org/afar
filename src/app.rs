@@ -2439,7 +2439,7 @@ impl App {
             return;
         }
 
-        // A link under the mouse: its address in the message line.
+        // A link under the mouse: its hint.
         if ev.kind == MouseEventKind::Moved && !self.has_overlay() {
             self.hover_link(&ev, &l);
         }
@@ -3191,7 +3191,6 @@ impl App {
             .chars()
             .count() as u16;
         self.draw_completion(area, l.cmdline, prompt, buf);
-        self.draw_link_tooltip(area, buf);
         self.draw_hint(area, buf);
         cursor
     }
