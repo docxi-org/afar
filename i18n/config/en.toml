@@ -25,7 +25,7 @@ agent = true                  # the agent's frame: its session and state
 panels = true                 # the panels' titles: the sort, what a column shows
 status = true                 # the status lines of the viewer and the editor
 marks = true                  # the agent's marks and proposals in the viewer and the editor
-menus = true                  # menus: the whole text of a cut item, why an item is grey
+menus = true                  # menus and settings dialogs: a cut item in full, why it is grey, what a setting does
 
 [confirm]
 # Ask before deleting a folder that is not empty.

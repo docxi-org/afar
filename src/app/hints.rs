@@ -110,6 +110,13 @@ impl App {
         let pos = ratatui::layout::Position::new(x, y);
         // F9's grey items are what afar does not have yet.
         let (menu, main) = match self.overlays.last()? {
+            // A settings dialog: what the setting under the mouse does.
+            Overlay::Dialog { dialog, purpose } => {
+                let (control, n) = dialog.control_at(pos)?;
+                let (section, key) = super::settings::setting_of(purpose, control, n)?;
+                let text = crate::config::comment(section, key)?;
+                return Some(Hint::new(text).line(format!("config.toml: [{section}] {key}")));
+            }
             Overlay::Menu { menu, .. } => (menu, false),
             Overlay::MenuBar(bar) => (bar.open_menu()?, true),
             Overlay::AgentMenu(bar) => (bar.open_menu()?, false),

@@ -787,3 +787,118 @@ fn default_codepages() -> (Vec<u32>, Vec<String>) {
         .collect();
     (pages, labels)
 }
+
+/// The setting (`section`, `key` of `config.toml`) a control of a settings
+/// dialog changes, in the order the `*_from_dialog` functions read them.
+pub(super) fn setting_of(
+    purpose: &Purpose,
+    control: crate::dialog::Control,
+    n: usize,
+) -> Option<(&'static str, &'static str)> {
+    use crate::dialog::Control::{Check, Combo, Input};
+    let pick = |keys: &[&'static str]| keys.get(n).copied();
+    let found = match (purpose, control) {
+        (Purpose::ViewerSettings, Check) => (
+            "viewer",
+            pick(&[
+                "external_f3",
+                "persistent_selection",
+                "show_arrows",
+                "show_zero",
+                "scrollbar",
+                "save_position",
+                "save_mode",
+                "save_codepage",
+                "save_wrap",
+                "save_bookmarks",
+                "detect_dump",
+                "autodetect_codepage",
+            ])?,
+        ),
+        (Purpose::ViewerSettings, Input) => (
+            "viewer",
+            pick(&["external_command", "tab_size", "max_line"])?,
+        ),
+        (Purpose::ViewerSettings, Combo) => ("viewer", pick(&["default_codepage"])?),
+        (Purpose::EditorSettings { id }, Check) => {
+            let keys = [
+                "persistent_blocks",
+                "cursor_beyond_eol",
+                "del_removes_blocks",
+                "search_select_found",
+                "auto_indent",
+                "search_cursor_at_end",
+                "scrollbar",
+                "show_whitespace",
+                "line_numbers",
+                "save_position",
+                "save_bookmarks",
+                "autodetect_codepage",
+            ];
+            // The global dialog has the external editor first.
+            let key = match (id, n) {
+                (None, 0) => "external_f4",
+                (None, n) => *keys.get(n - 1)?,
+                (Some(_), n) => *keys.get(n)?,
+            };
+            ("editor", key)
+        }
+        (Purpose::EditorSettings { id }, Input) => {
+            let keys: &[&str] = if id.is_none() {
+                &["external_command", "tab_size"]
+            } else {
+                &["tab_size"]
+            };
+            ("editor", *keys.get(n)?)
+        }
+        (Purpose::EditorSettings { .. }, Combo) => {
+            ("editor", pick(&["expand_tabs", "default_codepage"])?)
+        }
+        (Purpose::AutocompleteSettings, Check) => (
+            "autocomplete",
+            pick(&["modal", "fuzzy", "", "dialogs", "command_line"]).filter(|k| !k.is_empty())?,
+        ),
+        (Purpose::AutocompleteSettings, Combo) => (
+            "autocomplete",
+            pick(&["suggest", "history", "files", "variables", "programs"])?,
+        ),
+        (Purpose::Confirmations, Check) => (
+            "confirm",
+            match CONFIRMATIONS.get(n)?.1? {
+                0 => "read_only",
+                1 => "delete_folder",
+                2 => "esc",
+                3 => "agent",
+                _ => "reedit",
+            },
+        ),
+        (Purpose::AgentSettings, Input) => ("agent", pick(&["command", "args"])?),
+        (Purpose::AgentSettings, Check) => (
+            "agent",
+            pick(&["live", "ide", "channels", "confirm_channels"])?,
+        ),
+        (Purpose::AgentSettings, Combo) if n == 0 => ("agent", "position"),
+        (Purpose::AgentSettings, Combo) => (
+            "agent.permissions",
+            *[
+                "navigate",
+                "mkdir",
+                "copy",
+                "move",
+                "delete",
+                "delete_permanent",
+                "run_command",
+            ]
+            .get(n - 1)?,
+        ),
+        (Purpose::HintSettings, Check) => (
+            "hints",
+            pick(&[
+                "enabled", "files", "keybar", "agent", "panels", "status", "marks", "menus",
+            ])?,
+        ),
+        (Purpose::HintSettings, Input) => ("hints", pick(&["delay_ms"])?),
+        _ => return None,
+    };
+    Some(found)
+}

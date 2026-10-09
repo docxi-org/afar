@@ -360,6 +360,6 @@ tip-mark-line = Строка { $line }
 tip-mark-lines = Строки { $from }–{ $to }
 tip-mark-stale = Строки с тех пор изменились
 tip-mark-keys = F5 / Shift+F5 (Alt+↓ / Alt+↑ в просмотре) — к следующей / предыдущей
-hints-menus = Меню: обрезанные и недоступные пункты
+hints-menus = Меню и диалоги настроек
 tip-menu-not-yet = В afar этого ещё нет
 tip-menu-disabled = Сейчас недоступно

@@ -398,7 +398,8 @@ pub struct Hints {
     pub status: bool,
     /// The agent's marks and proposals in the viewer and the editor.
     pub marks: bool,
-    /// Menus: the whole text of a cut item, why an item is grey.
+    /// Menus and settings dialogs: the whole text of a cut item, why an
+    /// item is grey, what a setting does.
     pub menus: bool,
 }
 
@@ -565,6 +566,49 @@ pub fn config_path() -> PathBuf {
 }
 
 /// The commented template in a language (English when there is none).
+/// What the template says about `section.key` in the interface's
+/// language: the comment at the end of its line, else the comment lines
+/// right above it.
+pub fn comment(section: &str, key: &str) -> Option<String> {
+    comment_in(template(crate::i18n::lang()), section, key)
+}
+
+fn comment_in(text: &str, section: &str, key: &str) -> Option<String> {
+    let header = format!("[{section}]");
+    let mut inside = false;
+    let mut above: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            inside = t == header;
+            above.clear();
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if let Some(c) = t.strip_prefix('#') {
+            above.push(c.trim());
+            continue;
+        }
+        let name = t.split('=').next().unwrap_or("").trim();
+        if name == key {
+            let inline = t
+                .split_once('#')
+                .map(|(_, c)| c.trim())
+                .filter(|c| !c.is_empty());
+            let text = match inline {
+                Some(c) => c.to_string(),
+                None if !above.is_empty() => above.join(" "),
+                None => return None,
+            };
+            return Some(text);
+        }
+        above.clear();
+    }
+    None
+}
+
 pub fn template(lang: &str) -> &'static str {
     match lang {
         "ru" => include_str!("../i18n/config/ru.toml"),
@@ -634,6 +678,16 @@ fn merge(old: &mut toml_edit::Table, new: &toml_edit::Table) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comments_of_settings() {
+        let t = "[a]\n# Above\n# it.\nx = 1\ny = 2  # inline\nz = 3\n[b]\nx = 4 # other\n";
+        assert_eq!(comment_in(t, "a", "x").as_deref(), Some("Above it."));
+        assert_eq!(comment_in(t, "a", "y").as_deref(), Some("inline"));
+        assert_eq!(comment_in(t, "a", "z"), None);
+        assert_eq!(comment_in(t, "b", "x").as_deref(), Some("other"));
+        assert!(comment_in(template("ru"), "hints", "delay_ms").is_some());
+    }
 
     #[test]
     fn templates_are_the_defaults() {

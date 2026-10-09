@@ -94,6 +94,14 @@ pub enum Kind {
     Button { label: String, disabled: bool },
 }
 
+/// A kind of control, for `Dialog::control_at`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    Check,
+    Input,
+    Combo,
+}
+
 pub struct Elem {
     pub x: X,
     pub kind: Kind,
@@ -972,6 +980,39 @@ impl Dialog {
                 }
             }
         }
+    }
+
+    /// The check box, field or list at a cell of the last frame, and its
+    /// number among those of its kind (as `checked`, `input_value` and
+    /// `combo` count them).
+    pub fn control_at(&self, pos: Position) -> Option<(Control, usize)> {
+        let (r, e) = self.hits.iter().find_map(|(rect, t)| match t {
+            Target::Elem(r, e) if rect.contains(pos) => Some((*r, *e)),
+            _ => None,
+        })?;
+        let control = match &self.elem(r, e)?.kind {
+            Kind::Check { .. } => Control::Check,
+            Kind::Input { .. } => Control::Input,
+            Kind::Combo { .. } => Control::Combo,
+            _ => return None,
+        };
+        let mut n = 0;
+        for (ri, row) in self.rows.iter().enumerate() {
+            let Row::Items(elems) = row else { continue };
+            for (ei, el) in elems.iter().enumerate() {
+                if (ri, ei) == (r, e) {
+                    return Some((control, n));
+                }
+                let same = matches!(
+                    (&el.kind, control),
+                    (Kind::Check { .. }, Control::Check)
+                        | (Kind::Input { .. }, Control::Input)
+                        | (Kind::Combo { .. }, Control::Combo)
+                );
+                n += usize::from(same);
+            }
+        }
+        None
     }
 
     pub fn input_value(&self, n: usize) -> String {

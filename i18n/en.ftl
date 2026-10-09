@@ -358,6 +358,6 @@ tip-mark-line = Line { $line }
 tip-mark-lines = Lines { $from }–{ $to }
 tip-mark-stale = The lines have changed since
 tip-mark-keys = F5 / Shift+F5 (Alt+↓ / Alt+↑ in the viewer) — the next / previous
-hints-menus = Menus: cut and unavailable items
+hints-menus = Menus and settings dialogs
 tip-menu-not-yet = afar does not have this yet
 tip-menu-disabled = Not available now
