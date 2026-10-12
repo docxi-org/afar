@@ -5,7 +5,7 @@
 
 use super::App;
 use super::fileops::{Overlay, Purpose};
-use crate::config::{AgentPosition, Level};
+use crate::config::{AgentPosition, Level, OnStart};
 use crate::dialog::{Dialog, check_at, combo_at, input_at, text_at};
 use crate::tr;
 
@@ -113,12 +113,21 @@ impl App {
         let position_label = tr!("agent-settings-position");
         let positions = [tr!("agent-position-bottom"), tr!("agent-position-top")];
         let position_w = positions.iter().map(|p| chars(p)).max().unwrap_or(10) + 3;
+        let on_start_label = tr!("agent-settings-on-start");
+        // In `OnStart`'s order.
+        let on_starts = [
+            tr!("agent-on-start-last"),
+            tr!("agent-on-start-new"),
+            tr!("agent-on-start-folder"),
+        ];
+        let on_start_w = on_starts.iter().map(|p| chars(p)).max().unwrap_or(10) + 3;
         let content = (label_w + 1 + COMBO)
             .max(chars(&live) + 4)
             .max(chars(&ide) + 4)
             .max(chars(&channels) + 4)
             .max(chars(&confirm_channels) + 8)
             .max(chars(&note))
+            .max(chars(&on_start_label) + 1 + on_start_w)
             .max(56);
         let field_x = 5 + chars(&command_label).max(chars(&args_label)) + 1;
         let field_w = content + 5 - field_x;
@@ -146,6 +155,19 @@ impl App {
                     position_w,
                     positions.iter().cloned().map(Some).collect(),
                     usize::from(a.position == AgentPosition::Top),
+                ),
+            ])
+            .row(vec![
+                text_at(5, on_start_label.clone()),
+                combo_at(
+                    5 + chars(&on_start_label) + 1,
+                    on_start_w,
+                    on_starts.iter().cloned().map(Some).collect(),
+                    match a.on_start {
+                        OnStart::Last => 0,
+                        OnStart::New => 1,
+                        OnStart::Folder => 2,
+                    },
                 ),
             ])
             .caption(tr!("agent-settings-permissions"));
@@ -207,9 +229,15 @@ impl App {
         } else {
             AgentPosition::Bottom
         };
+        a.on_start = match dialog.combo(1) {
+            1 => OnStart::New,
+            2 => OnStart::Folder,
+            _ => OnStart::Last,
+        };
         let top = a.position == AgentPosition::Top;
-        // Combo 0 is the position; the permissions follow.
-        let level = |i: usize, ask: bool| match (dialog.combo(i + 1), ask) {
+        // Combos 0 and 1 are the position and the start; the permissions
+        // follow.
+        let level = |i: usize, ask: bool| match (dialog.combo(i + 2), ask) {
             (0, _) => Level::Allow,
             (1, true) => Level::Confirm,
             _ => Level::Deny,
@@ -895,6 +923,7 @@ pub(super) fn setting_of(
             ])?,
         ),
         (Purpose::AgentSettings, Combo) if n == 0 => ("agent", "position"),
+        (Purpose::AgentSettings, Combo) if n == 1 => ("agent", "on_start"),
         (Purpose::AgentSettings, Combo) => (
             "agent.permissions",
             *[
@@ -906,7 +935,7 @@ pub(super) fn setting_of(
                 "delete_permanent",
                 "run_command",
             ]
-            .get(n - 1)?,
+            .get(n - 2)?,
         ),
         (Purpose::HintSettings, Check) => (
             "hints",
