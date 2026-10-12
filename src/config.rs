@@ -512,6 +512,9 @@ pub enum OnStart {
     #[default]
     Last,
     New,
+    /// The last conversation in the folder, only if afar had one there:
+    /// otherwise no agent until Enter in its pane.
+    Folder,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

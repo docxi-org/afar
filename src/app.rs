@@ -640,7 +640,7 @@ impl App {
         self.layout_restored = true;
         self.agent_sessions = state.agent_sessions;
         // The agent's last conversation in the folder afar starts in.
-        if self.config.agent.on_start == crate::config::OnStart::Last {
+        if self.config.agent.on_start != crate::config::OnStart::New {
             let here = folder_key(&self.panels[active].path);
             if let Some(s) = self
                 .agent_sessions
@@ -867,8 +867,11 @@ impl App {
         }
         self.last_layout = Some(self.layout(Rect::new(0, 0, size.width, size.height)));
         // AFAR_NO_AGENT: no agent until Enter in its pane (tests); its
-        // MCP config and hook settings are written anyway.
-        if std::env::var_os("AFAR_NO_AGENT").is_some() {
+        // MCP config and hook settings are written anyway. So with
+        // `on_start = "folder"` in a folder without a conversation.
+        let no_conversation = self.config.agent.on_start == crate::config::OnStart::Folder
+            && !(self.restored && self.agent.session_id.is_some());
+        if std::env::var_os("AFAR_NO_AGENT").is_some() || no_conversation {
             let _ = self.agent_args();
         } else {
             let (rows, cols) = self.last_agent_size();
@@ -2256,6 +2259,11 @@ impl App {
             return false;
         };
         let resumed = v.get("source").and_then(|s| s.as_str()) == Some("resume");
+        // `--resume` worked: an exit from now on is the user's own, not a
+        // failed resume to try again.
+        if resumed {
+            self.agent.resumed_at = None;
+        }
         if let Some(id) = v.get("session_id").and_then(|i| i.as_str())
             && self.agent.session_id.as_deref() != Some(id)
         {
@@ -3139,6 +3147,26 @@ impl App {
             );
             if agent_focused {
                 cursor = c;
+            }
+        } else if l.agent.height > 0 {
+            // No agent yet: how to start it, in the middle of the pane.
+            let lines = [
+                tr!("agent-pane-not-started"),
+                if agent_focused {
+                    tr!("agent-pane-start-here")
+                } else {
+                    tr!("agent-pane-start")
+                },
+            ];
+            let top = l.agent.y + l.agent.height.saturating_sub(lines.len() as u16) / 2;
+            for (k, text) in lines.iter().enumerate() {
+                let y = top + k as u16;
+                if y >= l.agent.bottom() {
+                    break;
+                }
+                let w = (text.chars().count() as u16).min(l.agent.width);
+                let x = l.agent.x + (l.agent.width - w) / 2;
+                put(buf, x, y, w, text, Style::reset());
             }
         }
 
