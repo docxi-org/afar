@@ -64,6 +64,9 @@ pub(super) struct AgentSession {
     pub enter_at: Option<Instant>,
     /// The development channels question has been answered by afar.
     pub channels_confirmed: bool,
+    /// The development channels it was started with (afar's and the
+    /// folder profile's).
+    pub channels: Vec<String>,
     pub state: AgentState,
 }
 
@@ -89,6 +92,7 @@ impl AgentSession {
             name_checked: Instant::now(),
             enter_at: None,
             channels_confirmed: false,
+            channels: Vec::new(),
             state: AgentState::Ready,
         }
     }

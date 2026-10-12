@@ -28,6 +28,7 @@ use crate::wm::{self, Arrangement, Extent, ScreenId, SplitId, WinId, Wm};
 
 mod agent;
 mod agentmenu;
+mod agenttrust;
 mod assocs;
 mod attributes;
 mod autocomplete;
@@ -133,6 +134,9 @@ const HIDING_CYCLE: Duration = Duration::from_secs(1);
 
 /// Environment variables of an enclosing Claude Code session that must not
 /// leak into the agent we start.
+/// afar's own development channel (`afar channel`).
+const AFAR_CHANNEL: &str = "server:afar-channel";
+
 const CLAUDE_SESSION_VARS: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
@@ -881,7 +885,7 @@ impl App {
             _ => true,
         };
         if std::env::var_os("AFAR_NO_AGENT").is_some() || !autostart {
-            let _ = self.agent_args();
+            let _ = self.agent_args(&[]);
         } else {
             let (rows, cols) = self.last_agent_size();
             self.start_agent(cols, rows);
@@ -1127,7 +1131,9 @@ impl App {
     /// Writes the MCP config and hook settings for the agent (also without
     /// an agent: tests call the MCP server and hooks with them); returns
     /// the command-line arguments for `claude`.
-    fn agent_args(&self) -> Result<Vec<String>> {
+    /// afar's own arguments of the agent; `channels`: those of the
+    /// folder's profile, with afar's channel in one list.
+    fn agent_args(&self, channels: &[String]) -> Result<Vec<String>> {
         let dir = self.journal.dir();
         let exe = std::env::current_exe()?
             .to_string_lossy()
@@ -1202,11 +1208,14 @@ impl App {
             "--append-system-prompt".into(),
             SYSTEM_PROMPT.into(),
         ];
+        let mut list: Vec<String> = Vec::new();
         if self.config.agent.channels {
-            args.extend([
-                "--dangerously-load-development-channels".into(),
-                "server:afar-channel".into(),
-            ]);
+            list.push(AFAR_CHANNEL.into());
+        }
+        list.extend(channels.iter().filter(|c| *c != AFAR_CHANNEL).cloned());
+        if !list.is_empty() {
+            args.push("--dangerously-load-development-channels".into());
+            args.extend(list);
         }
         // Variadic option: keep it last.
         args.extend([
@@ -1218,10 +1227,11 @@ impl App {
 
     /// `[agent] confirm_channels`: answers Claude Code's question about
     /// development channels on the agent's start — once, in its first
-    /// minute, and only when afar's own channel is the only one listed.
+    /// minute, and only when the channels listed are afar's own and the
+    /// folder profile's.
     fn confirm_dev_channels(&mut self) {
         let a = &self.config.agent;
-        if !a.channels
+        if self.agent.channels.is_empty()
             || !a.confirm_channels
             || self.agent.channels_confirmed
             || self.agent.started.elapsed() > Duration::from_secs(60)
@@ -1230,9 +1240,13 @@ impl App {
         }
         let Some(pty) = &self.agent.pty else { return };
         let lines = crate::termview::screen_lines(pty.parser().screen());
-        let ours = lines
-            .iter()
-            .any(|l| l.trim() == "Channels: server:afar-channel");
+        let expected = &self.agent.channels;
+        let ours = lines.iter().any(|l| {
+            l.trim().strip_prefix("Channels:").is_some_and(|rest| {
+                let listed: Vec<&str> = rest.split([',', ' ']).filter(|c| !c.is_empty()).collect();
+                !listed.is_empty() && listed.iter().all(|c| expected.iter().any(|e| e == c))
+            })
+        });
         let selected = lines.iter().any(|l| {
             let t = l.trim();
             t.starts_with('❯') && t.ends_with("I am using this for local development")
@@ -1314,9 +1328,28 @@ impl App {
         cols: u16,
         rows: u16,
     ) {
+        // The folder's profile; a project file not yet trusted holds the
+        // start until the user's answer.
+        let profile = match self.agent_profile(&cwd) {
+            Ok(profile) => profile,
+            Err(found) => {
+                let ask = agenttrust::TrustAsk {
+                    file: found.file.clone(),
+                    text: found.text.clone(),
+                    cwd,
+                    launch,
+                    extra: extra.to_vec(),
+                    cols,
+                    rows,
+                };
+                self.ask_agent_trust(found, ask);
+                return;
+            }
+        };
         let tx = self.tx.clone();
         let program = self.config.agent.command.clone();
-        let args = match self.agent_args() {
+        let channels = profile.channels();
+        let args = match self.agent_args(&channels) {
             Ok(args) => args,
             Err(e) => {
                 self.say(tr!("agent-config-failed", error = format!("{e:#}")));
@@ -1333,6 +1366,7 @@ impl App {
             // Ctrl+click (docs/16), whatever terminal afar runs in.
             ("FORCE_HYPERLINK".to_string(), "1".to_string()),
         ];
+        env.extend(profile.env.iter().map(|(k, v)| (k.clone(), v.clone())));
         // The agent connects to afar's IDE server by this port.
         if let Some(ide) = &self.agent.ide {
             env.push(("CLAUDE_CODE_SSE_PORT".to_string(), ide.port.to_string()));
@@ -1350,6 +1384,7 @@ impl App {
             .agent
             .args
             .iter()
+            .chain(&profile.args)
             .chain(extra)
             .cloned()
             .chain(args)
@@ -1360,6 +1395,10 @@ impl App {
         self.agent.resumed_at = None;
         self.agent.started = Instant::now();
         self.agent.channels_confirmed = false;
+        self.agent.channels = channels;
+        if self.config.agent.channels {
+            self.agent.channels.insert(0, AFAR_CHANNEL.into());
+        }
         self.agent.state = agent::AgentState::Ready;
         self.agent.cwd = Some(cwd.clone());
         self.agent.ide_sent = None;

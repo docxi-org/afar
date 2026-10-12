@@ -69,7 +69,8 @@ ide = false
 channels = false
 # Claude Code asks to confirm the development channel on every start ("I am
 # using this for local development"). true: afar answers itself when only its
-# own channel (server:afar-channel) is listed, and says so in the message line.
+# own channel (server:afar-channel) and the folder profile's channels (below)
+# are listed, and says so in the message line.
 # It is Claude Code's warning: turn this on only if you agree to confirm it
 # in advance.
 confirm_channels = false
@@ -106,6 +107,18 @@ delete = "confirm"          # to the recycle bin
 delete_permanent = "deny"   # bypassing the recycle bin
 run_command = "confirm"     # run a command in the command line
 edit_buffer = "allow"       # change the text of a file open in afar's editor (you save it, F2)
+
+# The agent's profile for a folder (and all inside it): what else the agent
+# gets when it starts there — development channels (with afar's own),
+# environment variables, arguments of claude (after args). There may be
+# several. A project may keep the same itself: the [agent] section of an
+# afar.toml in its folder; afar uses it only once you trust that text of the
+# file (it asks in a dialog).
+# [[agent.folders]]
+# path = 'F:\Projects\astronomer'
+# channels = ["server:astro-events"]
+# env = { MCP_PROTOCOL_NEGOTIATION = "legacy" }
+# args = []
 
 [viewer]
 # The command line stays visible in the viewer (F3); Far hides it.

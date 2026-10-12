@@ -503,6 +503,17 @@ pub struct Agent {
     /// presses keys and takes screenshots of afar — past its permissions.
     pub test_tools: bool,
     pub permissions: Permissions,
+    /// More for the agent in some folders (`[[agent.folders]]`):
+    /// channels, environment, arguments (`crate::agentprofile`).
+    pub folders: Vec<AgentFolder>,
+}
+
+/// The agent's profile for a folder and the folders inside it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentFolder {
+    pub path: PathBuf,
+    #[serde(flatten)]
+    pub profile: crate::agentprofile::Profile,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -544,6 +555,7 @@ impl Default for Agent {
             allow_commands: false,
             test_tools: false,
             permissions: Permissions::default(),
+            folders: Vec::new(),
         }
     }
 }
@@ -766,6 +778,23 @@ mod tests {
         config.save(&path).unwrap();
         let (again, _) = Config::load(&path, || "ru".into());
         assert!(again.associations.is_empty());
+        // The agent's folder profiles: a list of tables inside [agent].
+        config.agent.folders.push(AgentFolder {
+            path: PathBuf::from(r"F:\AGI\astronomer"),
+            profile: crate::agentprofile::Profile {
+                channels: vec!["server:astro-events".into()],
+                env: [("MCP_PROTOCOL_NEGOTIATION".to_string(), "legacy".to_string())].into(),
+                args: vec![],
+            },
+        });
+        config.save(&path).unwrap();
+        let (again, problem) = Config::load(&path, || "ru".into());
+        assert!(problem.is_none(), "{problem:?}");
+        assert_eq!(again.agent, config.agent);
+        config.agent.folders.clear();
+        config.save(&path).unwrap();
+        let (again, _) = Config::load(&path, || "ru".into());
+        assert!(again.agent.folders.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

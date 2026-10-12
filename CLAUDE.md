@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 План работ — `TODO.md` (чекбоксы по этапам); выполненное переносится в `READY.md` (новое сверху, с датой и коммитом) — обновлять оба файла вместе с работой.
 
-**Настройки** — `%APPDATA%\afar\config.toml` (`src/config.rs`, шаблоны с комментариями `i18n/config/<язык>.toml`; новый параметр — в структуру, оба шаблона и тест `templates_are_the_defaults`); состояние прошлого запуска — `%LOCALAPPDATA%\afar\state.json`. В проверках задавать и `APPDATA`, и `LOCALAPPDATA` во временные каталоги.
+**Настройки** — `%APPDATA%\afar\config.toml` (`src/config.rs`, шаблоны с комментариями `i18n/config/<язык>.toml`; новый параметр — в структуру, оба шаблона и тест `templates_are_the_defaults`); состояние прошлого запуска — `%LOCALAPPDATA%\afar\state.json`. Профиль агента для папки — `[[agent.folders]]` и раздел `[agent]` в `afar.toml` проекта (только с согласием пользователя на текст файла; `docs/13-agent-sessions.md`). В проверках задавать и `APPDATA`, и `LOCALAPPDATA` во временные каталоги.
 
 **Локализация** (`src/i18n.rs`, `docs/02-architecture.md`): никаких строк интерфейса в коде — только `tr!("id", аргументы…)`. Свои строки afar — в `i18n/en.ftl` и `i18n/ru.ftl` (Fluent, английский — базовый); строки Far — по идентификаторам Far (`MCopyDlgTitle`, …) из `i18n/far/<язык>.ftl` на 13 языках, генерируются `python tools/far_lng.py gen i18n/far-ids.txt i18n/far` (новый идентификатор — добавить в `i18n/far-ids.txt`; найти по тексту — `python tools/far_lng.py find <текст>`). Язык: `AFAR_LANG`, иначе язык интерфейса Windows, иначе английский. Не переводится только то, что читает модель (MCP, журнал, системный промпт).
 

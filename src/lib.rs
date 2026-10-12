@@ -1,3 +1,4 @@
+pub mod agentprofile;
 pub mod app;
 pub mod claude_sessions;
 pub mod clipboard;

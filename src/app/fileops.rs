@@ -172,6 +172,8 @@ pub(super) enum Purpose {
         dir: PathBuf,
         id: String,
     },
+    /// Whether to use a project's `afar.toml`; the agent's start waits.
+    AgentTrust(Box<super::agenttrust::TrustAsk>),
     AgentModel,
     /// A dialog of the file associations (an association, delete).
     AssocEdit(super::assocs::AssocEdit),
@@ -751,6 +753,7 @@ impl App {
                     self.agent_compact(dialog.input_value(0));
                 }
             }
+            Purpose::AgentTrust(ask) => self.agent_trust_answered(*ask, button),
             Purpose::AgentResume { dir, id } => {
                 if button == Some(0) {
                     self.relaunch_agent(dir, super::agent::Launch::Resume(id));
