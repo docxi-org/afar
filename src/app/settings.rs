@@ -119,6 +119,7 @@ impl App {
             tr!("agent-on-start-last"),
             tr!("agent-on-start-new"),
             tr!("agent-on-start-folder"),
+            tr!("agent-on-start-off"),
         ];
         let on_start_w = on_starts.iter().map(|p| chars(p)).max().unwrap_or(10) + 3;
         let content = (label_w + 1 + COMBO)
@@ -167,6 +168,7 @@ impl App {
                         OnStart::Last => 0,
                         OnStart::New => 1,
                         OnStart::Folder => 2,
+                        OnStart::Off => 3,
                     },
                 ),
             ])
@@ -232,6 +234,7 @@ impl App {
         a.on_start = match dialog.combo(1) {
             1 => OnStart::New,
             2 => OnStart::Folder,
+            3 => OnStart::Off,
             _ => OnStart::Last,
         };
         let top = a.position == AgentPosition::Top;

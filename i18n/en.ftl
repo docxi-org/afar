@@ -79,6 +79,7 @@ agent-settings-on-start = The agent on afar's start:
 agent-on-start-last = the folder's conversation, else a new one
 agent-on-start-new = always a new conversation
 agent-on-start-folder = only the folder's conversation
+agent-on-start-off = do not start (Enter in the agent's pane)
 agent-position-bottom = at the bottom, below the panels
 agent-position-top = at the top, above the panels
 agent-settings-ide = afar as the agent's &IDE: it sees the file in the viewer, Ctrl+Enter

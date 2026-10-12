@@ -80,6 +80,7 @@ agent-settings-on-start = Агент при запуске afar:
 agent-on-start-last = продолжить разговор папки, иначе новый
 agent-on-start-new = всегда новый разговор
 agent-on-start-folder = только продолжить разговор папки
+agent-on-start-off = не запускать (Enter в окне агента)
 agent-position-bottom = внизу, под панелями
 agent-position-top = вверху, над панелями
 agent-settings-ide = afar как &IDE агента: он видит открытый в просмотре файл, Ctrl+Enter

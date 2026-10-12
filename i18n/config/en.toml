@@ -49,8 +49,9 @@ args = []
 # afar's start: "last" continues the agent's last conversation in this folder
 # (if afar has worked there), "new" starts a new one, "folder" continues the
 # last one and starts no agent in a folder without one (Enter in the agent's
-# pane starts it). A new one can always be started from the agent's menu
-# (F9 on the agent).
+# pane starts it), "off" starts no agent at all until Enter in its pane (then
+# as "last"). A new one can always be started from the agent's menu (F9 on
+# the agent).
 on_start = "last"
 # Start in live mode: your actions go with each prompt to the agent.
 # Otherwise the agent reads the journal when it needs it.

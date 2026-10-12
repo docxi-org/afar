@@ -397,6 +397,8 @@ pub struct App {
     /// Restored after a dev restart: keep the layout, continue the agent's
     /// conversation.
     restored: bool,
+    /// Started again by a dev restart (not by the user).
+    dev_restarted: bool,
     /// The agent's last conversation in each folder (kept in state.json).
     agent_sessions: Vec<crate::dev::LastSession>,
     /// Window sizes came from a restart or the last run.
@@ -545,6 +547,7 @@ impl App {
                 last_agent_output: Instant::now(),
             }),
             restored: false,
+            dev_restarted: false,
             agent_sessions: Vec::new(),
             layout_restored: false,
             data_dir,
@@ -615,6 +618,7 @@ impl App {
             .next_cmd_id
             .max(self.commands.iter().map(|c| c.id + 1).max().unwrap_or(1));
         self.restored = true;
+        self.dev_restarted = true;
         self.layout_restored = true;
     }
 
@@ -868,10 +872,15 @@ impl App {
         self.last_layout = Some(self.layout(Rect::new(0, 0, size.width, size.height)));
         // AFAR_NO_AGENT: no agent until Enter in its pane (tests); its
         // MCP config and hook settings are written anyway. So with
-        // `on_start = "folder"` in a folder without a conversation.
-        let no_conversation = self.config.agent.on_start == crate::config::OnStart::Folder
-            && !(self.restored && self.agent.session_id.is_some());
-        if std::env::var_os("AFAR_NO_AGENT").is_some() || no_conversation {
+        // `on_start = "folder"` in a folder without a conversation, and with
+        // "off" except for a dev restart.
+        let has_conversation = self.restored && self.agent.session_id.is_some();
+        let autostart = match self.config.agent.on_start {
+            crate::config::OnStart::Folder => has_conversation,
+            crate::config::OnStart::Off => has_conversation && self.dev_restarted,
+            _ => true,
+        };
+        if std::env::var_os("AFAR_NO_AGENT").is_some() || !autostart {
             let _ = self.agent_args();
         } else {
             let (rows, cols) = self.last_agent_size();

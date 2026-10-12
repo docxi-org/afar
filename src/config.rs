@@ -515,6 +515,9 @@ pub enum OnStart {
     /// The last conversation in the folder, only if afar had one there:
     /// otherwise no agent until Enter in its pane.
     Folder,
+    /// No agent until Enter in its pane (it continues the folder's last
+    /// conversation, as `Last`).
+    Off,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
