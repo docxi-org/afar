@@ -14,6 +14,7 @@ agent-waiting = asks for permission
 agent-not-started = not started — Enter: start
 agent-exited = exited (code { $code }) — Enter: restart
 agent-pane-not-started = The agent is not running
+agent-pane-exited = The agent has exited (code { $code })
 agent-pane-start = Ctrl+Space or a click: here, then Enter: start · F9: the agent's menu
 agent-pane-start-here = Enter: start the agent · F9: the agent's menu
 observe-live = ● live

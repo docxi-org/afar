@@ -15,6 +15,7 @@ agent-waiting = ждёт разрешения
 agent-not-started = не запущен — Enter: запуск
 agent-exited = завершён (код { $code }) — Enter: перезапуск
 agent-pane-not-started = Агент не запущен
+agent-pane-exited = Агент завершён (код { $code })
 agent-pane-start = Ctrl+Space или щелчок — сюда, затем Enter — запуск · F9 — меню агента
 agent-pane-start-here = Enter — запустить агента · F9 — меню агента
 observe-live = ● live

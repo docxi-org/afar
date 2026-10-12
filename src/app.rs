@@ -3136,7 +3136,13 @@ impl App {
         // Only the frame is blue: inside, the program keeps the terminal's
         // own colors.
         buf.set_style(l.agent, Style::reset());
-        if let Some(agent) = &self.agent.pty {
+        let exit_code = self
+            .agent
+            .pty
+            .as_ref()
+            .filter(|a| a.has_exited())
+            .map(|a| a.exit_code().map_or(-1, |c| c as i64));
+        if let Some(agent) = self.agent.pty.as_ref().filter(|a| !a.has_exited()) {
             let c = termview::draw_rows_links(
                 &crate::term::view(&agent.parser()),
                 0,
@@ -3149,9 +3155,13 @@ impl App {
                 cursor = c;
             }
         } else if l.agent.height > 0 {
-            // No agent yet: how to start it, in the middle of the pane.
+            // No agent yet, or it has exited (its last screen is not
+            // kept): how to start it, in the middle of the pane.
             let lines = [
-                tr!("agent-pane-not-started"),
+                match exit_code {
+                    Some(code) => tr!("agent-pane-exited", code = code),
+                    None => tr!("agent-pane-not-started"),
+                },
                 if agent_focused {
                     tr!("agent-pane-start-here")
                 } else {
